@@ -1,0 +1,20 @@
+{
+  "schema": "fmt/line@1",
+  "id": "l0003",
+  "name": "1号线支线",
+  "groupId": "lg01",
+  "role": "branch",
+  "color": "#E40012",
+  "loop": false,
+  "path": "M 320 100 C 280 140 260 180 260 240",
+  "connects": [],
+  "stops": [
+    { "id": "l0003-s01", "name": "上海火车站", "t": 0.0, "geo": null },
+    { "id": "l0003-s02", "name": "汶水路", "t": 0.52, "geo": null },
+    { "id": "l0003-s03", "name": "彭浦新村", "t": 0.9, "geo": null }
+  ],
+  "segments": ["approved", "future"],
+  "status": null,
+  "info": { "note": "样例数据：支线，与主线同线组 lg01" },
+  "meta": { "created": "2026-11-20", "updated": "2026-11-20", "archived": false, "aliases": [], "sourceLayer": "1号线支线" }
+}

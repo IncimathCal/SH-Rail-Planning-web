@@ -1,0 +1,16 @@
+{
+  "schema": "fmt/line@1",
+  "id": "l0090",
+  "name": "联络线（样例）",
+  "groupId": null,
+  "role": "connector",
+  "color": "#888888",
+  "loop": false,
+  "path": "M 320 100 C 350 60 370 40 400 20",
+  "connects": ["l0001", "l0002"],
+  "stops": [],
+  "segments": [],
+  "status": "future",
+  "info": { "note": "样例数据：联络线，零设站，线路级状态替代 segments" },
+  "meta": { "created": "2026-11-20", "updated": "2026-11-20", "archived": false, "aliases": [], "sourceLayer": "联络线" }
+}

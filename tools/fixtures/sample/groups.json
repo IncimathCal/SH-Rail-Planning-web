@@ -1,0 +1,20 @@
+{
+  "schema": "fmt/groups@1",
+  "lineGroups": [
+    {
+      "id": "lg01",
+      "name": "1号线",
+      "color": "#E40012",
+      "members": ["l0001", "l0003"],
+      "note": "主线+支线（样例）"
+    }
+  ],
+  "stationGroups": [
+    {
+      "id": "g0001",
+      "stops": ["l0001-s03", "l0003-s01"],
+      "type": "same-station",
+      "info": { "note": "样例：主线与支线的岔点编为同一物理车站" }
+    }
+  ]
+}

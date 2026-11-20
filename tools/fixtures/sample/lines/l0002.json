@@ -1,0 +1,20 @@
+{
+  "schema": "fmt/line@1",
+  "id": "l0002",
+  "name": "4号线",
+  "groupId": null,
+  "role": "standalone",
+  "color": "#8FC7EE",
+  "loop": true,
+  "path": "M 400 0 C 500 0 500 120 400 120 C 300 120 300 0 400 0 Z",
+  "connects": [],
+  "stops": [
+    { "id": "l0002-s01", "name": "宜山路", "t": 0.0, "geo": null },
+    { "id": "l0002-s02", "name": "世纪大道", "t": 0.33, "geo": null },
+    { "id": "l0002-s03", "name": "宝山路", "t": 0.66, "geo": null }
+  ],
+  "segments": ["existing", "existing", "existing"],
+  "status": null,
+  "info": { "note": "样例数据：环线（含首尾环绕段）" },
+  "meta": { "created": "2026-11-20", "updated": "2026-11-20", "archived": false, "aliases": [], "sourceLayer": "4号线" }
+}

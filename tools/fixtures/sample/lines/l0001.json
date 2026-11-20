@@ -1,0 +1,21 @@
+{
+  "schema": "fmt/line@1",
+  "id": "l0001",
+  "name": "1号线",
+  "groupId": "lg01",
+  "role": "main",
+  "color": "#E40012",
+  "loop": false,
+  "path": "M 0 300 C 120 300 180 100 320 100 S 560 300 700 300",
+  "connects": [],
+  "stops": [
+    { "id": "l0001-s01", "name": "莘庄", "t": 0.0, "geo": null },
+    { "id": "l0001-s02", "name": "人民广场", "t": 0.34, "geo": null },
+    { "id": "l0001-s03", "name": "上海火车站", "t": 0.61, "geo": null },
+    { "id": "l0001-s04", "name": "富锦路", "t": 0.95, "geo": null }
+  ],
+  "segments": ["existing", "existing", "existing"],
+  "status": null,
+  "info": { "note": "样例数据（fixtures），非真实录入" },
+  "meta": { "created": "2026-11-20", "updated": "2026-11-20", "archived": false, "aliases": [], "sourceLayer": "1号线" }
+}

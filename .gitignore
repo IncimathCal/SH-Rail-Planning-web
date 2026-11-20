@@ -1,0 +1,13 @@
+# 用户源资产（AI 导出 SVG、GE 描线 KML 等）仅本地保留，不进 git
+/源资产/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# 系统与编辑器杂项
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+~$*
