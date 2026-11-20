@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - 阶段 1（规范与骨架）完成：目录结构、`tools/validate.py`、`tools/fixtures/sample` 样例数据；
 - 阶段 0（标定试验）完成：4 条线（6/14/15/23）SVG+KML 标定通过，单线横向 RMS 15~41 m、全局 80 m，见《标定试验-01-残差报告.md》（验收线建议已提请用户确认）；
-- **阶段 2（编辑器 MVP + 首批录入）进行中**：编辑器 MVP 已建成——`editor.html` + `src/geom.js`（与 Python 版对拍一致）+ `src/editor.js`（纯逻辑层有 node 单测），支持载入导入记录/数据、点选加站记弧长 t、拖动、改名、删站、分段状态循环、换乘编组（就近提示仅视觉）、线组管理、JSON 下载保存、localStorage 暂存、撤销。**待用户用编辑器录入首批 4 条线**（要求含环线/支线/共线/联络线各一例）。用户另将提供 2~4 条地理边缘方向线路的 SVG+KML 做全图尺度标定决策（三阶 vs TPS）。
+- **阶段 2（编辑器 MVP + 首批录入）进行中**：编辑器 MVP 已建成——`editor.html` + `src/geom.js`（与 Python 版对拍一致）+ `src/editor.js`（纯逻辑层有 node 单测），支持载入导入记录/数据、点选加站记弧长 t、拖动、改名、删站、分段状态循环、换乘编组（就近提示仅视觉）、线组管理、JSON 下载保存、localStorage 暂存、撤销；经 http 服务打开时启动自动拉取 `data/` 与 `import/` 目录（file:// 打开则手动载入）。**待用户用编辑器录入首批 4 条线**（要求含环线/支线/共线/联络线各一例）。用户另将提供 2~4 条地理边缘方向线路的 SVG+KML 做全图尺度标定决策（三阶 vs TPS）。
 
 实施基准见 **《架构方案-01-Schema与目录与阶段.md》**（v1.2），讨论历史见《讨论记录-01~03》。
 

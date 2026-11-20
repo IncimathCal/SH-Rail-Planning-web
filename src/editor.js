@@ -211,7 +211,10 @@
     $('banner').classList.add('show');
     $('btnRestore').onclick = () => {
       S.lines = new Map(snap.lines.map((l) => [l.id, l]));
-      S.groups = snap.groups; S.imports = snap.imports || [];
+      S.groups = snap.groups;
+      // 导入记录：同名来源以刚从 import/ 磁盘载入的为准（可能比暂存新），其余保留暂存里的
+      const diskSources = new Set(S.imports.map((i) => i.source));
+      S.imports = (snap.imports || []).filter((i) => !diskSources.has(i.source)).concat(S.imports);
       S.activeLine = snap.activeLine && S.lines.has(snap.activeLine) ? snap.activeLine : null;
       $('banner').classList.remove('show');
       syncCountersWithLoaded(); renderAll(); setStatus('已恢复本地暂存。');
@@ -290,6 +293,19 @@
             S.lines.set(obj.id, obj);
             if (!S.activeLine) S.activeLine = obj.id;
           }
+        }
+      }
+    } catch (e) { /* file:// 等，忽略 */ }
+    // import/ 目录：svg_parse --import 的产物自动载入（导入源开箱即见）
+    try {
+      const r = await fetch('import/');
+      if (r.ok) {
+        const html = await r.text();
+        // 目录列表 href 为 URL 编码后的文件名（含中文），取单段 *.json、排除 ../ 等路径
+        const hrefs = [...html.matchAll(/href="([^"/]+\.json)"/g)].map((m) => m[1]);
+        for (const h of new Set(hrefs)) {
+          const obj = await get('import/' + h);
+          if (obj && obj.schema === 'fmt/import@1') addImportRecord(obj);
         }
       }
     } catch (e) { /* file:// 等，忽略 */ }
