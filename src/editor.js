@@ -85,6 +85,21 @@
     return issues;
   }
 
+  /** 批量命名规划：names 每行一个，按序配给 line.stops 中站名为空（含纯空白）的站；
+   *  已命名的站跳过不动——「先点完设站再一次贴名」与逐站命名两种方式并存。
+   *  返回 {pairs:[[stop,name]...], total}；写入由调用方执行（便于先快照后改）。 */
+  function planBulkFill(line, names) {
+    const clean = (names || []).map((s) => String(s).trim()).filter(Boolean);
+    const pairs = [];
+    let k = 0;
+    for (const st of line.stops) {
+      if (st.name && st.name.trim()) continue;
+      if (k >= clean.length) break;
+      pairs.push([st, clean[k++]]);
+    }
+    return { pairs, total: clean.length };
+  }
+
   // ---------- 标定变换与瓦片数学（fmt/calibration@1；node 单测覆盖往返） ----------
   // 多项式基次序与 tools/georef.py 的 features(deg=3) 一致：1,u,v,u²,uv,v²,u³,u²v,uv²,v³
   function poly3Basis(u, v) {
@@ -141,7 +156,7 @@
   }
 
   const SHLogic = { SEG_ORDER, SEG_LABEL, ROLE_LABEL, EPS, segInsert, segRemove,
-    nextStopSeq, fixStatusField, lineIssues,
+    nextStopSeq, fixStatusField, lineIssues, planBulkFill,
     calibForward, calibInverse, lonToTileX, latToTileY, tileXToLon, tileYToLat };
   global.SHEditorLogic = SHLogic;
   if (typeof module !== 'undefined' && module.exports) module.exports = SHLogic;
@@ -944,12 +959,20 @@
   }
 
   // ---------- 交互 ----------
-  let drag = null;    // {type:'pan',...} | {type:'stop', lid, sid, moved}
-  let panning = null;
+  let drag = null;     // {type:'stop', lid, sid, moved, pre}
+  let panning = null;  // {x,y,sx,sy,view,moved}；点按位移 ≤4px 视为点击而非拖动
+  let rubber = null;   // 编组模式拉框 {x0,y0,x1,y1,sx,sy,moved}（世界坐标）
+
+  function startPan(e) {
+    panning = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY,
+      view: { ...S.view }, moved: false };
+    svg.setPointerCapture(e.pointerId);
+    svg.classList.add('panning');
+  }
 
   function nearestLineAt(wx, wy) {
     const wpp = worldPerPixel();
-    const maxD = 14 * wpp;
+    const maxD = 40 * wpp;
     let best = null;
     for (const [lid, line] of S.lines) {
       if (line.meta && line.meta.archived) continue;
@@ -962,11 +985,8 @@
   }
 
   svg.addEventListener('pointerdown', (e) => {
-    if (e.button === 1 || (e.button === 0 && e.target === svg)) {
-      panning = { x: e.clientX, y: e.clientY, view: { ...S.view } };
-      svg.setPointerCapture(e.pointerId);
-      return;
-    }
+    if (e.button === 1) { startPan(e); return; }          // 中键：任何位置、任何模式平移
+    if (e.button !== 0) return;
     const stopEl = e.target.closest('.stop-c');
     if (stopEl && S.mode === 'select') {
       const sid = stopEl.dataset.sid, lid = stopEl.dataset.lid;
@@ -978,15 +998,36 @@
       renderStopList(); renderLineList(); renderLineForm();
       return;
     }
+    if (S.mode === 'group') {
+      if (stopEl) return;                                  // 站圈点按：pointerup 切换待编组
+      const [wx, wy] = toWorld(e);                         // 其余任意处起拉：框选批量编组
+      rubber = { x0: wx, y0: wy, x1: wx, y1: wy, sx: e.clientX, sy: e.clientY, moved: false };
+      svg.setPointerCapture(e.pointerId);
+      return;
+    }
+    startPan(e);   // 选择/加站：空白或线路上左键拖动平移；未移动的松手仍按点击处理
   });
 
   svg.addEventListener('pointermove', (e) => {
     if (panning && S.view) {
+      if (Math.hypot(e.clientX - panning.sx, e.clientY - panning.sy) > 4) panning.moved = true;
       const kx = S.view.w / svg.clientWidth;
       S.view.x = panning.view.x - (e.clientX - panning.x) * kx;
       S.view.y = panning.view.y - (e.clientY - panning.y) * kx;
       applyView();
       scheduleBasemap();   // 平移只改 viewBox 不重绘，底图需单独补瓦片
+      return;
+    }
+    if (rubber) {
+      const [wx, wy] = toWorld(e);
+      rubber.x1 = wx; rubber.y1 = wy;
+      if (Math.hypot(e.clientX - rubber.sx, e.clientY - rubber.sy) > 4) rubber.moved = true;
+      const r = $('rubber');
+      r.style.display = '';
+      r.setAttribute('x', Math.min(rubber.x0, rubber.x1).toFixed(2));
+      r.setAttribute('y', Math.min(rubber.y0, rubber.y1).toFixed(2));
+      r.setAttribute('width', Math.abs(rubber.x1 - rubber.x0).toFixed(2));
+      r.setAttribute('height', Math.abs(rubber.y1 - rubber.y0).toFixed(2));
       return;
     }
     if (drag && drag.type === 'stop') {
@@ -999,7 +1040,18 @@
   });
 
   svg.addEventListener('pointerup', (e) => {
-    if (panning) { panning = null; return; }
+    if (panning) {
+      const wasPan = panning.moved;
+      panning = null;
+      svg.classList.remove('panning');
+      if (wasPan) return;          // 确实拖动过：这是平移，吞掉点击语义
+    }
+    if (rubber) {
+      const rb = rubber;
+      rubber = null;
+      $('rubber').style.display = 'none';
+      if (rb.moved) { boxSelectStops(rb); return; }
+    }
     if (drag && drag.type === 'stop') {
       if (drag.moved) {
         S.undo.push(drag.pre);  // 用拖动前快照
@@ -1016,7 +1068,7 @@
       if (hit) {
         addStop(hit.lid, hit.pr.t);
       } else {
-        setStatus('点击位置不在任何线路附近（吸附半径 14px）。', true);
+        setStatus('点击位置不在任何线路附近（吸附半径 40px）。', true);
       }
       return;
     }
@@ -1087,6 +1139,38 @@
     const ap = arcOf(lid);
     return ap ? ap.project(wx, wy).t : 0;
   }
+
+  /** 编组模式拉框收尾：框内设站批量加入待编组；框内已全在待编组则整框移出 */
+  function boxSelectStops(rb) {
+    const x0 = Math.min(rb.x0, rb.x1), x1 = Math.max(rb.x0, rb.x1);
+    const y0 = Math.min(rb.y0, rb.y1), y1 = Math.max(rb.y0, rb.y1);
+    const inside = [];
+    for (const [lid, line] of S.lines) {
+      if (line.meta && line.meta.archived) continue;
+      const ap = arcOf(lid);
+      if (!ap) continue;
+      for (const st of line.stops) {
+        const p = ap.pointAt(st.t);
+        if (p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1) inside.push(st.id);
+      }
+    }
+    if (!inside.length) { setStatus('框内没有设站。', true); return; }
+    const nonPend = inside.filter((sid) => !S.pending.includes(sid));
+    if (nonPend.length) {
+      S.pending = [...new Set([...S.pending, ...inside])];
+      setStatus(`拉框加入 ${nonPend.length} 站进待编组（共 ${S.pending.length} 站）。`);
+    } else {
+      S.pending = S.pending.filter((sid) => !inside.includes(sid));
+      setStatus(`框内 ${inside.length} 站原已在待编组，已整框移出。`);
+    }
+    renderAll();
+  }
+
+  svg.addEventListener('pointercancel', () => {
+    panning = null; rubber = null; drag = null;
+    svg.classList.remove('panning');
+    $('rubber').style.display = 'none';
+  });
 
   svg.addEventListener('wheel', (e) => {
     e.preventDefault();
@@ -1173,6 +1257,26 @@
     e.target.value = st.t.toFixed(6);
     if (bad) setStatus('警告：t 未严格递增（保存线路时会被拦截）。', true);
     else setStatus(`t 已更新为 ${st.t}。`);
+  });
+
+  // 批量命名：先点完全线设站、再一次贴入名字（与逐站命名并存，互不破坏）
+  $('btnBulkFill').addEventListener('click', () => {
+    const line = S.lines.get(S.activeLine);
+    if (!line) { setStatus('没有当前线路，无法批量命名。', true); return; }
+    const plan = planBulkFill(line, $('bulkNames').value.split(/\r?\n/));
+    if (!plan.total) { setStatus('批量命名：每行一个站名，当前没有可用的名字。', true); return; }
+    if (!plan.pairs.length) {
+      setStatus(`当前线没有站名为空的设站（${plan.total} 个名字未用）。`, true);
+      return;
+    }
+    snapshot();
+    for (const [st, nm] of plan.pairs) st.name = nm;
+    line.meta.updated = today();
+    const stillEmpty = line.stops.filter((s) => !s.name || !s.name.trim()).length;
+    renderAll();
+    setStatus(`已按序填入 ${plan.pairs.length} 个站名`
+      + (plan.total > plan.pairs.length ? `（${plan.total - plan.pairs.length} 个多余未用）` : '')
+      + (stillEmpty ? `；仍有 ${stillEmpty} 站未命名。` : '；当前线全部站已命名。'));
   });
 
   $('lineform').addEventListener('input', (e) => {
@@ -1320,9 +1424,9 @@
   });
 
   const MODE_HINT = {
-    select: '选择：点击设站选中（左侧改名）、拖动设站沿线移动、点击线段循环切换状态、点线路激活、滚轮缩放、拖空白平移。',
-    add: '加站：点击线路附近即可加站（自动吸附到最近点，记录弧长 t）；站名在左侧列表录入。',
-    group: '编组：点击设站加入/移出待编组（≥2 站后「编组」）；黄色虚线为就近提示，仅供参考。',
+    select: '选择：点击设站选中（左侧改名）、拖动设站沿线移动、点击线段循环切换状态；左键拖动平移、滚轮缩放。',
+    add: '加站：点击线路附近即可加站（吸附半径 40px，自动记弧长 t）。可以先一路点完，再展开「批量命名」一次贴入站名。',
+    group: '编组：点设站或任意处拉框批量加入/移出待编组（≥2 站后「编组」）；中键拖动平移。',
   };
   for (const btn of document.querySelectorAll('#toolbar [data-mode]')) {
     btn.addEventListener('click', () => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// editor.js 纯逻辑层单测：分段簿记（加站/删站/环线环绕）、stopSeq 水位、status 修正、lineIssues。
+// editor.js 纯逻辑层单测：分段簿记（加站/删站/环线环绕）、stopSeq 水位、status 修正、lineIssues、批量命名。
 // 用法：node tools/test_editor_logic.js
 
 const L = require(path_join('src', 'editor.js'));
@@ -149,6 +149,27 @@ ok(L.lineIssues(conn).some((x) => x.includes('connects')), 'connector 数量检�
 let mainNoGroup = mkLine(false);
 mainNoGroup.role = 'main';
 ok(L.lineIssues(mainNoGroup).some((x) => x.includes('线组')), 'main 需线组检查');
+
+// ---------- 批量命名 planBulkFill ----------
+console.log('planBulkFill:');
+let bl = mkLine(false);
+bl.stops = [
+  { id: 'l0001-s01', name: '', t: 0.1 },
+  { id: 'l0001-s02', name: '已有名', t: 0.2 },
+  { id: 'l0001-s03', name: '   ', t: 0.3 },   // 纯空白视为空名
+  { id: 'l0001-s04', name: '', t: 0.4 },
+];
+let bp = L.planBulkFill(bl, ['甲', '乙', '', '丙', '丁', '戊']);
+eq(bp.total, 5, '总名数 = 去空行后的行数');
+eq(bp.pairs.map((p) => p[0].id), ['l0001-s01', 'l0001-s03', 'l0001-s04'], '只配给空名站、按站序');
+eq(bp.pairs.map((p) => p[1]), ['甲', '乙', '丙'], '名字按序消耗（多余丢弃）');
+for (const [st, nm] of bp.pairs) st.name = nm;
+eq(bl.stops.map((s) => s.name), ['甲', '已有名', '乙', '丙'], '应用后已命名的未被覆盖');
+ok(!L.lineIssues(bl).some((x) => x.includes('站名为空')), '批量命名后无空名告警');
+eq(L.planBulkFill(bl, ['己']).pairs.length, 0, '无空名站时无可配对');
+let bl2 = mkLine(false);
+bl2.stops = [{ id: 'l0001-s01', name: '', t: 0 }, { id: 'l0001-s02', name: '', t: 0.5 }];
+eq(L.planBulkFill(bl2, ['一', '二']).pairs.length, 2, '全部空名时可全填');
 
 // ---------- 标定变换与瓦片数学（fmt/calibration@1，文件存在时） ----------
 console.log('calibration:');

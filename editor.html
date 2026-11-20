@@ -22,7 +22,8 @@
   aside#side { grid-area: side; overflow-y: auto; background: var(--panel);
     border-right: 1px solid var(--border); padding: 8px; }
   main#canvas { grid-area: canvas; position: relative; overflow: hidden; }
-  svg#view { width: 100%; height: 100%; display: block; background: #101216; cursor: default; }
+  svg#view { width: 100%; height: 100%; display: block; background: #101216; cursor: grab; }
+  svg#view.panning { cursor: grabbing; }
   footer#status { grid-area: st; padding: 4px 10px; background: var(--panel);
     border-top: 1px solid var(--border); color: var(--dim); font-size: 12px; min-height: 22px; }
 
@@ -37,6 +38,10 @@
   input[type=text], input[type=color] { background: var(--bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
   label { color: var(--dim); }
+  #bulkName summary { cursor: pointer; color: var(--dim); font-size: 12px; user-select: none; }
+  #bulkNames { width: 100%; margin-top: 4px; min-height: 70px; resize: vertical;
+    background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 3px 6px; font: inherit; }
 
   .tb-group { display: flex; gap: 5px; align-items: center; padding: 0 8px 0 0;
     border-right: 1px solid var(--border); margin-right: 2px; }
@@ -100,7 +105,8 @@
   #osmAttr { position: absolute; right: 6px; bottom: 6px; font-size: 10px; color: var(--dim);
     background: rgba(16, 18, 22, .65); padding: 1px 6px; border-radius: 3px;
     pointer-events: none; display: none; }
-  #basemap { opacity: .45; }
+  #basemap { opacity: .45; pointer-events: none; }  /* 瓦片不参与命中：左键拖动画布不被吞 */
+  #rubber { fill: rgba(77, 163, 255, .12); stroke: var(--acc); stroke-dasharray: 5 4; }
   .svg-line { fill: none; }
   .line-base { stroke-width: 5; opacity: .28; }
   .line-raw { stroke-width: 3; stroke-dasharray: 2 6; opacity: .8; }
@@ -108,7 +114,7 @@
   .seg-existing { opacity: 1; }
   .seg-approved { opacity: .5; }
   .seg-future { opacity: .85; stroke-dasharray: 10 7; }
-  .seg-hit { fill: none; stroke: transparent; stroke-width: 14; cursor: pointer; }
+  .seg-hit { fill: none; stroke: transparent; stroke-width: 40; cursor: pointer; }
   .stop-c { fill: #fff; cursor: pointer; }
   .stop-c.pend { fill: var(--warn); }
   .stop-merge { fill: #fff; cursor: pointer; }
@@ -176,7 +182,17 @@
 
   <section id="secStops">
     <h3>设站（当前线）</h3>
-    <div class="body" id="stopList"><div style="color:var(--dim)">在「加站」模式下点击线路加站；站名在此录入。</div></div>
+    <div class="body">
+      <details id="bulkName">
+        <summary>批量命名（先点完全线设站，再一次贴入名字）</summary>
+        <textarea id="bulkNames" rows="6" placeholder="每行一个站名，按线路走向顺序；只填入当前线站名为空的站，已命名的跳过"></textarea>
+        <div style="margin-top:4px;display:flex;align-items:center;gap:6px">
+          <button class="mini primary" id="btnBulkFill">按序填入空名站</button>
+          <span style="color:var(--dim);font-size:11px">逐站命名照常可用，两种方式可混用</span>
+        </div>
+      </details>
+      <div id="stopList"><div style="color:var(--dim)">在「加站」模式下点击线路加站；站名在此录入（逐站或批量）。</div></div>
+    </div>
   </section>
 
   <section id="secGroups">
@@ -197,6 +213,7 @@
 <main id="canvas">
   <svg id="view" xmlns="http://www.w3.org/2000/svg">
     <g id="world"></g>
+    <rect id="rubber" style="display:none" pointer-events="none" vector-effect="non-scaling-stroke"></rect>
   </svg>
   <div class="hint" id="canvasHint"></div>
   <div id="osmAttr">底图 © OpenStreetMap contributors</div>
