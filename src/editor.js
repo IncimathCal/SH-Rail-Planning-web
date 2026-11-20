@@ -1000,7 +1000,7 @@
     }
     if (S.mode === 'group') {
       if (stopEl) return;                                  // 站圈点按：pointerup 切换待编组
-      const [wx, wy] = toWorld(e);                         // 其余任意处起拉：框选批量编组
+      const [wx, wy] = toWorld(e);                         // 其余任意处起拉：拉框直接建组
       rubber = { x0: wx, y0: wy, x1: wx, y1: wy, sx: e.clientX, sy: e.clientY, moved: false };
       svg.setPointerCapture(e.pointerId);
       return;
@@ -1140,7 +1140,7 @@
     return ap ? ap.project(wx, wy).t : 0;
   }
 
-  /** 编组模式拉框收尾：框内设站批量加入待编组；框内已全在待编组则整框移出 */
+  /** 编组模式拉框收尾：框内 ≥2 站直接建组（免确认）；已在其他组的站跳过并提示 */
   function boxSelectStops(rb) {
     const x0 = Math.min(rb.x0, rb.x1), x1 = Math.max(rb.x0, rb.x1);
     const y0 = Math.min(rb.y0, rb.y1), y1 = Math.max(rb.y0, rb.y1);
@@ -1155,15 +1155,26 @@
       }
     }
     if (!inside.length) { setStatus('框内没有设站。', true); return; }
-    const nonPend = inside.filter((sid) => !S.pending.includes(sid));
-    if (nonPend.length) {
-      S.pending = [...new Set([...S.pending, ...inside])];
-      setStatus(`拉框加入 ${nonPend.length} 站进待编组（共 ${S.pending.length} 站）。`);
-    } else {
-      S.pending = S.pending.filter((sid) => !inside.includes(sid));
-      setStatus(`框内 ${inside.length} 站原已在待编组，已整框移出。`);
+    // 一设站至多一组：已在其他组的站跳过（要改先拆组），不阻断其余建组
+    const grouped = new Set();
+    for (const g of (S.groups && S.groups.stationGroups) || []) {
+      for (const sid of g.stops) grouped.add(sid);
     }
+    const skipped = inside.filter((sid) => grouped.has(sid));
+    const fresh = inside.filter((sid) => !grouped.has(sid));
+    if (fresh.length < 2) {
+      setStatus(`框内 ${inside.length} 站中可建组的仅 ${fresh.length} 站`
+        + (skipped.length ? `（${skipped.length} 站已在其他组，先拆组再框）` : '') + '，不足 2 站，未建组。', true);
+      return;
+    }
+    if (!S.groups) S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
+    snapshot();
+    const id = bumpCounter('nextG', 'g', 4);
+    S.groups.stationGroups.push({ id, stops: fresh, type: 'same-station', info: {} });
+    S.pending = S.pending.filter((sid) => !fresh.includes(sid));   // 已入组的不再留在待编组
     renderAll();
+    setStatus(`拉框已建换乘节点组 ${id}（${fresh.length} 站，默认同站；可改出闸/未定）`
+      + (skipped.length ? `；跳过 ${skipped.length} 站（已在其他组）。` : '。'));
   }
 
   svg.addEventListener('pointercancel', () => {
@@ -1426,7 +1437,7 @@
   const MODE_HINT = {
     select: '选择：点击设站选中（左侧改名）、拖动设站沿线移动、点击线段循环切换状态；左键拖动平移、滚轮缩放。',
     add: '加站：点击线路附近即可加站（吸附半径 40px，自动记弧长 t）。可以先一路点完，再展开「批量命名」一次贴入站名。',
-    group: '编组：点设站或任意处拉框批量加入/移出待编组（≥2 站后「编组」）；中键拖动平移。',
+    group: '编组：任意处拉框直接建组（框内 ≥2 站即建，已在其他组的跳过）；也可点选站圈攒待编组后点「编组」；中键拖动平移。',
   };
   for (const btn of document.querySelectorAll('#toolbar [data-mode]')) {
     btn.addEventListener('click', () => {
