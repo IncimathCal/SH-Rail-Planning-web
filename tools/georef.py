@@ -260,6 +260,29 @@ def emit_calibration(matched, warp_store, n, gx, gy, gsc, kml_name, out_path):
         return
     deg3 = fit_model([p[:4] for p in s_all], 3, gx, gy, gsc)
     aff = fit_model([p[:4] for p in s_all], 1, gx, gy, gsc)
+
+    # features() 的展开次序是 [1, v, u, v², uv, u², v³, uv², u²v, u³]（t 内 i 从 0 起，
+    # 故 v 幂次在前）。导出时重排为人类可读的规范次序 [1, u, v, u², uv, v², u³, u²v, uv², v³]。
+    PERM = [0, 2, 1, 5, 4, 3, 9, 8, 7, 6]        # 规范[k] = features[PERM[k]]
+    PERM1 = [0, 2, 1]                            # deg1：[1, v, u] -> [1, u, v]
+
+    def permuted(coefs, perm):
+        return [coefs[i] for i in perm]
+
+    # 防再犯断言：重排后的系数按规范基求值必须与 PolyModel.apply 一致
+    canon = [1, "u", "v", "u2", "uv", "v2", "u3", "u2v", "uv2", "v3"]
+
+    def eval_canon(c, u, v):
+        b = [1, u, v, u * u, u * v, v * v, u ** 3, u * u * v, u * v * v, v ** 3]
+        return sum(ci * bi for ci, bi in zip(c, b))
+
+    for uu, vv in ((0.3, -0.7), (-0.5, 0.4), (0.9, 0.9)):
+        plon, plat = deg3.apply(gx + uu * gsc, gy + vv * gsc)
+        clon = eval_canon(permuted(deg3.c_lon, PERM), uu, vv)
+        clat = eval_canon(permuted(deg3.c_lat, PERM), uu, vv)
+        assert abs(plon - clon) < 1e-9 and abs(plat - clat) < 1e-9, \
+            "coefficient permutation mismatch"
+
     geo0 = matched[0][3]
     tot = [math.hypot((deg3.apply(x, y)[0] - lon) * geo0.m_per_deg_lon,
                       (deg3.apply(x, y)[1] - lat) * M_PER_DEG_LAT)
@@ -268,12 +291,13 @@ def emit_calibration(matched, warp_store, n, gx, gy, gsc, kml_name, out_path):
         "schema": "fmt/calibration@1",
         "method": "poly3",
         "uv": {"cx": gx, "cy": gy, "scale": gsc},
-        # coefOrder: [1, u, v, u^2, uv, v^2, u^3, u^2v, uv^2, v^3]
+        # 系数次序（规范、人类可读）：1, u, v, u², uv, v², u³, u²v, uv², v³
         #   u = (x_svg - cx)/scale, v = (y_svg - cy)/scale
-        # affine*（deg1）用于 geo->svg 牛顿迭代的初值
+        # affine*（deg1，次序 1, u, v）用于 geo->svg 牛顿迭代的初值
+        "coefOrder": canon,
         "coef": {
-            "lon": deg3.c_lon, "lat": deg3.c_lat,
-            "affineLon": aff.c_lon, "affineLat": aff.c_lat,
+            "lon": permuted(deg3.c_lon, PERM), "lat": permuted(deg3.c_lat, PERM),
+            "affineLon": permuted(aff.c_lon, PERM1), "affineLat": permuted(aff.c_lat, PERM1),
         },
         "residuals": {
             "n": len(s_all),

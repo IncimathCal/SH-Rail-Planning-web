@@ -175,6 +175,25 @@ if (require('fs').existsSync(calibFile)) {
     return [a0[0] + a0[1] + a0[2], b0[0] + b0[1] + b0[2]];
   })();
   ok(Math.abs(affGuess[0] - 121.5) < 2 && Math.abs(affGuess[1] - 31.2) < 1, 'affine 系数量级合理');
+  // 外部真值（6/14/15/23 号线 SVG 弧长点 ↔ GE 描线 KML 对应点，2026-11-21 提取）。
+  // 往返自洽测试抓不住"基次序转置"类 bug（正逆共享同一错误），必须对真值校验。
+  const MPLAT = 111320;
+  const TRUTH = [
+    { line: '6', x: 2878.5, y: 773.1, lon: 121.584427, lat: 31.288155 },
+    { line: '6', x: 2215.5, y: 1785.5, lon: 121.516461, lat: 31.200513 },
+    { line: '14', x: 2498.9, y: 1195.6, lon: 121.543867, lat: 31.249931 },
+    { line: '14', x: 1151.9, y: 1220, lon: 121.407237, lat: 31.249784 },
+    { line: '15', x: 1005.5, y: 1213.1, lon: 121.392325, lat: 31.248055 },
+    { line: '15', x: 1423.6, y: 2714.3, lon: 121.43571, lat: 31.114899 },
+    { line: '23', x: 1582.2, y: 2770.5, lon: 121.45053, lat: 31.113416 },
+    { line: '23', x: 1541.6, y: 3778, lon: 121.446027, lat: 31.025531 },
+  ];
+  for (const p of TRUTH) {
+    const [lon, lat] = L.calibForward(calib, p.x, p.y);
+    const mPerLon = MPLAT * Math.cos(p.lat * Math.PI / 180);
+    const d = Math.hypot((lon - p.lon) * mPerLon, (lat - p.lat) * MPLAT);
+    ok(d < 1000, `${p.line} 号线真值点误差 ${d.toFixed(0)} m < 1000 m`);
+  }
   // 瓦片数学往返
   for (const [lon, lat] of [[121.46, 31.18], [121.9, 31.35], [120.85, 30.68]]) {
     for (const z of [5, 10, 14]) {
