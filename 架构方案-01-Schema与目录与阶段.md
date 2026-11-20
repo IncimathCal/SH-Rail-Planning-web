@@ -83,7 +83,7 @@
 ```
 
 - **lineGroups**：绑定主线/支线（及需要捆绑展示的线族）；颜色以组为单位时成员可继承组色。
-- **stationGroups**（换乘节点库）：把多条线上的设站匹配为同一物理车站。**铁律：绝不按站名自动合并**——同站不同名靠人工编组，同名不同站靠人工不组。一个设站至多属于一个节点组；未编组的设站即非换乘站。`type` 预留：`same-station（同站）| passage（通道）| out-of-station（出闸）| null`。
+- **stationGroups**（换乘节点库）：把多条线上的设站匹配为同一物理车站。**铁律：绝不按站名自动合并**——同站不同名靠人工编组，同名不同站靠人工不组。一个设站至多属于一个节点组；未编组的设站即非换乘站。`type`：`same-station（同站）| out-of-station（出闸）| null（未定）`（v1.3 起取消 passage/通道——同站与出闸两类已覆盖需求）。
 
 ### 1.4 `data/manifest.json`
 
@@ -91,7 +91,7 @@
 
 ### 1.5 `data/calibration.json`
 
-标定方法（多项式/薄板样条）、参数、控制点来源（用户 KML 文件名+线路）、**hold-out 线路与残差数据**、拟合日期。随 GE 描线增加可全局重拟合，版本化留存历史。
+`georef.py --emit` 产物（`fmt/calibration@1`）：`method`（现 poly3）、`uv`（SVG 归一化基准 cx/cy/scale）、`coef`（`lon`/`lat` 为 deg3 十项系数，次序 1,u,v,u²,uv,v²,u³,u²v,uv²,v³；`affineLon`/`affineLat` 为 deg1，供 geo→svg 牛顿迭代初值）、`residuals`（n/rms/mean/max，米）、`controlLines`（每线 sourceLayer、KML 文件名、头尾偏差 warp (ds,de)）、`fitted` 日期。编辑器 OSM 底图垫层与后续设站 geo 派生共用此变换；随 GE 描线增加可全局重拟合，版本化留存历史。
 
 ### 1.6 ID 与编号规则
 
@@ -202,3 +202,4 @@
 - 2026-11-20 v1：依据讨论记录 01~03 定案首次成文。
 - 2026-11-20 v1.1：按用户决定，schema 枚举与角色等取值全英文化（existing/approved/future；main/branch/connector/standalone；same-station/passage/out-of-station），新增 §1 语言与编码规则与校验规则第 10 条；修正「基準」为「基准」。
 - 2026-11-20 v1.2（非破坏性，不触发迁移）：线路 `meta` 新增可选字段 `stopSeq`（设站编号分配水位）；明确 `import/` 记录格式 `fmt/import@1`（`svg_parse --import` 产物：source/imported/paths[]{sourceLayer,color,path}，作为编辑器的数据桥梁）。
+- 2026-11-21 v1.3（收窄枚举，无存量数据，不触发迁移）：stationGroup `type` 取消 `passage`（通道）——用户决定同站/出闸两类已够；编辑器中同站组渲染为合并黑边大圈（位置取距所有成员线路最近点）、出闸组站圈描黑边。§1.5 明确 `calibration.json`（fmt/calibration@1）字段。

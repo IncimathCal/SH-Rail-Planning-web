@@ -17,6 +17,8 @@
 """
 
 import argparse
+import datetime
+import json
 import math
 import re
 import sys
@@ -241,11 +243,66 @@ def eval_bins(model, svg, geo, ds, de, n=121):
 
 # ---------- 主流程 ----------
 
+def build_all_samples(matched, warp_store, n):
+    """全部匹配线路（含各自头尾偏差校正）的控制点合集。"""
+    s_all = []
+    for name, _, svg, geo in matched:
+        ds, de = warp_store[name]
+        s_all += make_samples(svg, geo, ds, de, 0.02, 0.98, n)
+    return s_all
+
+
+def emit_calibration(matched, warp_store, n, gx, gy, gsc, kml_name, out_path):
+    """拟合全局 deg3（编辑器底图/geo 派生用）并写 fmt/calibration@1。"""
+    s_all = build_all_samples(matched, warp_store, n)
+    if not s_all:
+        print("emit skipped: no matched lines")
+        return
+    deg3 = fit_model([p[:4] for p in s_all], 3, gx, gy, gsc)
+    aff = fit_model([p[:4] for p in s_all], 1, gx, gy, gsc)
+    geo0 = matched[0][3]
+    tot = [math.hypot((deg3.apply(x, y)[0] - lon) * geo0.m_per_deg_lon,
+                      (deg3.apply(x, y)[1] - lat) * M_PER_DEG_LAT)
+           for x, y, lon, lat, _ in s_all]
+    calib = {
+        "schema": "fmt/calibration@1",
+        "method": "poly3",
+        "uv": {"cx": gx, "cy": gy, "scale": gsc},
+        # coefOrder: [1, u, v, u^2, uv, v^2, u^3, u^2v, uv^2, v^3]
+        #   u = (x_svg - cx)/scale, v = (y_svg - cy)/scale
+        # affine*（deg1）用于 geo->svg 牛顿迭代的初值
+        "coef": {
+            "lon": deg3.c_lon, "lat": deg3.c_lat,
+            "affineLon": aff.c_lon, "affineLat": aff.c_lat,
+        },
+        "residuals": {
+            "n": len(s_all),
+            "rms": round(math.sqrt(sum(v * v for v in tot) / len(tot)), 1),
+            "mean": round(sum(tot) / len(tot), 1),
+            "max": round(max(tot), 1),
+        },
+        "controlLines": [
+            {"sourceLayer": name, "kml": kml_name,
+             "warp": [round(warp_store[name][0], 4), round(warp_store[name][1], 4)]}
+            for name, _, _, _ in matched
+        ],
+        "fitted": datetime.date.today().isoformat(),
+        "note": "svg->lon/lat polynomial; editor basemap & geo derivation; "
+                "refit when more GE control lines are added",
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(calib, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"calibration written: {out_path}  (n={len(s_all)}, "
+          f"rms {calib['residuals']['rms']} m, max {calib['residuals']['max']} m)")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("svg")
     ap.add_argument("kml")
     ap.add_argument("--samples", type=int, default=241)
+    ap.add_argument("--emit", action="store_true",
+                    help="fit global deg3 and write data/calibration.json (fmt/calibration@1)")
     args = ap.parse_args()
 
     svg_paths = load_svg_paths(args.svg)
@@ -274,6 +331,9 @@ def main():
               f"kml_len {geo.arc.length / 1000:.1f} km  kml_orient {tag}")
 
     N = args.samples
+    if not matched:
+        print("no matched lines, nothing to do")
+        return 1
     print(f"\n=== Per-line fits (samples/fit = {N}, global normalization) ===")
     print(f"{'line':>4} {'cfg':<14} {'stats (meters)':>0}")
     warp_store = {}
@@ -311,11 +371,8 @@ def main():
 
     # ---------- 全局模型 ----------
     print("\n=== Global model (all lines, per-line warp applied) ===")
+    s_all = build_all_samples(matched, warp_store, N)
     for deg in (2, 3):
-        s_all = []
-        for name, _, svg, geo in matched:
-            ds, de = warp_store[name]
-            s_all += make_samples(svg, geo, ds, de, 0.02, 0.98, N)
         model = fit_model([p[:4] for p in s_all], deg, gx, gy, gsc)
         tot = []
         for x, y, lon, lat, _ in s_all:
@@ -341,6 +398,11 @@ def main():
         ev_full = make_samples(sg, gg, ds, de, 0.02, 0.98, N)
         r = resid_stats(model, ev_full, gg)
         print(f"    hold {skip_name:>2}: {fmt(r)}")
+
+    if args.emit:
+        out = Path(__file__).resolve().parent.parent / "data" / "calibration.json"
+        emit_calibration(matched, warp_store, N, gx, gy, gsc, Path(args.kml).name, out)
+
     print("\nDone.")
     return 0
 

@@ -150,5 +150,43 @@ let mainNoGroup = mkLine(false);
 mainNoGroup.role = 'main';
 ok(L.lineIssues(mainNoGroup).some((x) => x.includes('线组')), 'main 需线组检查');
 
+// ---------- 标定变换与瓦片数学（fmt/calibration@1，文件存在时） ----------
+console.log('calibration:');
+const calibFile = require('path').join(__dirname, '..', 'data', 'calibration.json');
+if (require('fs').existsSync(calibFile)) {
+  const calib = JSON.parse(require('fs').readFileSync(calibFile, 'utf8'));
+  const uv = calib.uv;
+  const pts = [
+    [uv.cx - uv.scale, uv.cy - uv.scale], [uv.cx + uv.scale, uv.cy - uv.scale],
+    [uv.cx - uv.scale, uv.cy + uv.scale], [uv.cx + uv.scale, uv.cy + uv.scale],
+    [uv.cx, uv.cy],
+  ];
+  for (const [x, y] of pts) {
+    const [lon, lat] = L.calibForward(calib, x, y);
+    ok(lon > 115 && lon < 125 && lat > 28 && lat < 34,
+      `forward 在上海范围（${lon.toFixed(3)}, ${lat.toFixed(3)}）`);
+    const back = L.calibInverse(calib, lon, lat);
+    const err = back ? Math.hypot(back[0] - x, back[1] - y) : Infinity;
+    ok(err < 1e-3, `geo→svg→geo 往返误差 ${err.toExponential(2)} < 1e-3`);
+  }
+  // 仿射初值本身在合理范围内（供牛顿迭代收敛）
+  const affGuess = (() => {
+    const a0 = calib.coef.affineLon, b0 = calib.coef.affineLat;
+    return [a0[0] + a0[1] + a0[2], b0[0] + b0[1] + b0[2]];
+  })();
+  ok(Math.abs(affGuess[0] - 121.5) < 2 && Math.abs(affGuess[1] - 31.2) < 1, 'affine 系数量级合理');
+  // 瓦片数学往返
+  for (const [lon, lat] of [[121.46, 31.18], [121.9, 31.35], [120.85, 30.68]]) {
+    for (const z of [5, 10, 14]) {
+      const x = L.lonToTileX(lon, z), y = L.latToTileY(lat, z);
+      ok(Math.abs(L.tileXToLon(x, z) - lon) < 1e-9, `lon 瓦片往返 z=${z}`);
+      ok(Math.abs(L.tileYToLat(y, z) - lat) < 1e-9, `lat 瓦片往返 z=${z}`);
+    }
+  }
+  ok(L.latToTileY(85.05, 8) < 1 && L.latToTileY(-85.05, 8) > 255, 'lat→tileY 方向（北小南大）');
+} else {
+  console.log('  (data/calibration.json 不存在，跳过标定用例)');
+}
+
 console.log(fails ? `\nFAIL - ${fails} assertion(s)` : '\nPASS - editor logic OK');
 process.exit(fails ? 1 : 0);

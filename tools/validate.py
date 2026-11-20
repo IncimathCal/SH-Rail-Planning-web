@@ -19,7 +19,7 @@ from pathlib import Path
 
 SEG_STATUS = {"existing", "approved", "future"}
 ROLES = {"main", "branch", "connector", "standalone"}
-GROUP_TYPES = {"same-station", "passage", "out-of-station"}
+GROUP_TYPES = {"same-station", "out-of-station"}  # v1.3：passage（通道）已取消
 
 RE_LINE_ID = re.compile(r"^l\d{4}$")
 RE_STOP_ID = re.compile(r"^l\d{4}-s\d{2,}$")

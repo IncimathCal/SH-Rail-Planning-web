@@ -85,8 +85,64 @@
     return issues;
   }
 
+  // ---------- 标定变换与瓦片数学（fmt/calibration@1；node 单测覆盖往返） ----------
+  // 多项式基次序与 tools/georef.py 的 features(deg=3) 一致：1,u,v,u²,uv,v²,u³,u²v,uv²,v³
+  function poly3Basis(u, v) {
+    return [1, u, v, u * u, u * v, v * v, u * u * u, u * u * v, u * v * v, v * v * v];
+  }
+  function calibEval(c, u, v) {
+    const w = poly3Basis(u, v);
+    let s = 0;
+    for (let i = 0; i < c.length; i++) s += c[i] * w[i];
+    return s;
+  }
+  /** SVG 世界坐标 → [lon, lat] */
+  function calibForward(calib, x, y) {
+    const u = (x - calib.uv.cx) / calib.uv.scale;
+    const v = (y - calib.uv.cy) / calib.uv.scale;
+    return [calibEval(calib.coef.lon, u, v), calibEval(calib.coef.lat, u, v)];
+  }
+  /** [lon, lat] → SVG 世界坐标。仿射初值 + 牛顿迭代（数值雅可比）；不收敛返回 null */
+  function calibInverse(calib, lon, lat) {
+    const a0 = calib.coef.affineLon[0], a1 = calib.coef.affineLon[1], a2 = calib.coef.affineLon[2];
+    const b0 = calib.coef.affineLat[0], b1 = calib.coef.affineLat[1], b2 = calib.coef.affineLat[2];
+    const det = a1 * b2 - a2 * b1;
+    if (!isFinite(det) || Math.abs(det) < 1e-12) return null;
+    const gl = lon - a0, gt = lat - b0;
+    let u = (gl * b2 - gt * a2) / det;
+    let v = (gt * a1 - gl * b1) / det;
+    for (let it = 0; it < 30; it++) {
+      const fl = calibEval(calib.coef.lon, u, v) - lon;
+      const ft = calibEval(calib.coef.lat, u, v) - lat;
+      if (Math.hypot(fl, ft) < 1e-11) break;
+      const h = 1e-6, cL = calib.coef.lon, cT = calib.coef.lat;
+      const fl_u = (calibEval(cL, u + h, v) - calibEval(cL, u - h, v)) / (2 * h);
+      const fl_v = (calibEval(cL, u, v + h) - calibEval(cL, u, v - h)) / (2 * h);
+      const ft_u = (calibEval(cT, u + h, v) - calibEval(cT, u - h, v)) / (2 * h);
+      const ft_v = (calibEval(cT, u, v + h) - calibEval(cT, u, v - h)) / (2 * h);
+      const J = fl_u * ft_v - fl_v * ft_u;
+      if (!isFinite(J) || Math.abs(J) < 1e-18) return null;
+      u -= (fl * ft_v - ft * fl_v) / J;
+      v -= (ft * fl_u - fl * ft_u) / J;
+      if (!isFinite(u) || !isFinite(v)) return null;
+    }
+    return [u * calib.uv.scale + calib.uv.cx, v * calib.uv.scale + calib.uv.cy];
+  }
+  // ---- Web Mercator 瓦片数学 ----
+  function lonToTileX(lon, z) { return (lon + 180) / 360 * Math.pow(2, z); }
+  function latToTileY(lat, z) {
+    const r = lat * Math.PI / 180;
+    return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z);
+  }
+  function tileXToLon(x, z) { return x / Math.pow(2, z) * 360 - 180; }
+  function tileYToLat(y, z) {
+    const n = Math.PI - 2 * Math.PI * y / Math.pow(2, z);
+    return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+  }
+
   const SHLogic = { SEG_ORDER, SEG_LABEL, ROLE_LABEL, EPS, segInsert, segRemove,
-    nextStopSeq, fixStatusField, lineIssues };
+    nextStopSeq, fixStatusField, lineIssues,
+    calibForward, calibInverse, lonToTileX, latToTileY, tileXToLon, tileYToLat };
   global.SHEditorLogic = SHLogic;
   if (typeof module !== 'undefined' && module.exports) module.exports = SHLogic;
 
@@ -118,6 +174,8 @@
     groups: null,            // fmt/groups@1 或 null（首份保存时初始化）
     manifest: null,          // fmt/manifest@1 或 null
     imports: [],             // {source, imported, paths:[{sourceLayer,color,path}]}
+    calib: null,             // fmt/calibration@1（svg→经纬度标定；底图与后续 geo 派生用）
+    basemapOn: false,        // OSM 底图开关（偏好存 localStorage）
     arcs: new Map(),         // lid -> SHGeom.ArcPath
     view: null,              // {x,y,w,h}，null = 待适配内容
     mode: 'select',
@@ -270,6 +328,13 @@
     }
     if (obj && obj.schema === 'fmt/groups@1') { S.groups = obj; return; }
     if (obj && obj.schema === 'fmt/manifest@1') { S.manifest = obj; return; }
+    if (obj && obj.schema === 'fmt/calibration@1') {
+      S.calib = obj;
+      $('btnBasemap').classList.toggle('primary', S.basemapOn);
+      renderWorld();
+      setStatus('已载入标定参数，底图可用（georef.py 产物）。');
+      return;
+    }
     throw new Error(fileName + '：无法识别的数据文件（schema 不匹配）');
   }
 
@@ -282,6 +347,8 @@
     if (groups) S.groups = groups;
     const manifest = await get('data/manifest.json');
     if (manifest) S.manifest = manifest;
+    const calib = await get('data/calibration.json');
+    if (calib && calib.schema === 'fmt/calibration@1') S.calib = calib;
     try {
       const r = await fetch('data/lines/');
       if (r.ok) {
@@ -365,6 +432,78 @@
     return [w.x, w.y];
   }
 
+  // ---------- OSM 底图（瓦片垫层，仅本地参考；需 fmt/calibration@1） ----------
+  let basemapG = null;
+  const basemapTiles = new Map();   // "z/x/y" -> <image>
+  let basemapTimer = null;
+  function scheduleBasemap() {
+    clearTimeout(basemapTimer);
+    basemapTimer = setTimeout(updateBasemap, 120);
+  }
+  function updateBasemap() {
+    if (!basemapG) return;
+    if (!S.basemapOn || !S.calib || !S.view) {
+      basemapTiles.clear();
+      basemapG.textContent = '';
+      $('osmAttr').style.display = 'none';
+      return;
+    }
+    $('osmAttr').style.display = 'block';
+    // 视野四角 → 经纬度范围（标定前向）
+    const cs = [[S.view.x, S.view.y], [S.view.x + S.view.w, S.view.y],
+      [S.view.x, S.view.y + S.view.h], [S.view.x + S.view.w, S.view.y + S.view.h]];
+    const geoC = cs.map((p) => calibForward(S.calib, p[0], p[1]));
+    const lonMin = Math.min(...geoC.map((g) => g[0])), lonMax = Math.max(...geoC.map((g) => g[0]));
+    const latMin = Math.min(...geoC.map((g) => g[1])), latMax = Math.max(...geoC.map((g) => g[1]));
+    // zoom：自高向低取首个"中心处单瓦片屏幕宽 ≥140px"的层级（平衡清晰度与瓦片数）
+    const cLon = (lonMin + lonMax) / 2, cLat = (latMin + latMax) / 2;
+    const wpp = worldPerPixel();
+    let z = 3;
+    for (let zz = 19; zz >= 3; zz--) {
+      z = zz;
+      const dlon = 360 / Math.pow(2, zz);
+      const p1 = calibInverse(S.calib, cLon - dlon / 2, cLat);
+      const p2 = calibInverse(S.calib, cLon + dlon / 2, cLat);
+      const px = p1 && p2 ? Math.hypot(p2[0] - p1[0], p2[1] - p1[1]) / wpp : Infinity;
+      if (px >= 140) break;
+    }
+    // 可见瓦片数超过 80 就降层重算
+    let x0, y0, x1, y1;
+    for (let k = 0; k < 5; k++) {
+      x0 = Math.floor(lonToTileX(lonMin, z)); x1 = Math.floor(lonToTileX(lonMax, z));
+      y0 = Math.floor(latToTileY(latMax, z)); y1 = Math.floor(latToTileY(latMin, z));
+      if ((x1 - x0 + 1) * (y1 - y0 + 1) <= 80) break;
+      z--;
+    }
+    const need = new Set();
+    const nT = Math.pow(2, z);
+    for (let tx = x0; tx <= x1; tx++) {
+      for (let ty = Math.max(0, y0); ty <= Math.min(y1, nT - 1); ty++) {
+        const key = `${z}/${tx}/${ty}`;
+        need.add(key);
+        let img = basemapTiles.get(key);
+        if (!img) {
+          img = el('image', { width: 256, height: 256, class: 'basemap-tile' }, basemapG);
+          img.setAttribute('href', `https://tile.openstreetmap.org/${z}/${tx}/${ty}.png`);
+          basemapTiles.set(key, img);
+        }
+        // 瓦片像素 → SVG 世界：三点仿射（(0,0)(256,0)(0,256)），多项式在小范围内近似线性
+        const lonW = tileXToLon(tx, z), lonE = tileXToLon(tx + 1, z);
+        const latN = tileYToLat(ty, z), latS = tileYToLat(ty + 1, z);
+        const p00 = calibInverse(S.calib, lonW, latN);
+        const p10 = calibInverse(S.calib, lonE, latN);
+        const p01 = calibInverse(S.calib, lonW, latS);
+        if (!p00 || !p10 || !p01) continue;
+        const a = (p10[0] - p00[0]) / 256, b = (p01[0] - p00[0]) / 256;
+        const d = (p10[1] - p00[1]) / 256, e2 = (p01[1] - p00[1]) / 256;
+        img.setAttribute('transform', `matrix(${a} ${d} ${b} ${e2} ${p00[0]} ${p00[1]})`);
+      }
+    }
+    for (const [key, img] of basemapTiles) {
+      if (!need.has(key)) { img.remove(); basemapTiles.delete(key); }
+    }
+  }
+
   // ---------- 渲染 ----------
   function segPathString(ap, t1, t2) {
     const pts = ap.polylineBetween(t1, t2);
@@ -373,9 +512,23 @@
   }
 
   function renderWorld() {
+    // 底图组跨渲染持久保留（否则打字等高频重绘会反复清空瓦片造成闪烁）
+    if (basemapG && basemapG.parentNode === world) world.removeChild(basemapG);
     world.textContent = '';
+    if (!basemapG) basemapG = el('g', { id: 'basemap' });
+    world.insertBefore(basemapG, world.firstChild);
+    scheduleBasemap();
     const scale = S.view ? Math.max(svg.clientWidth, 1) / S.view.w : 1;
     const rStop = 5.5 / scale, ringR = 8.5 / scale, hintR = 12 / scale;
+
+    // 换乘组索引：同站组隐藏成员小圈（画合并圈）；出闸组成员圈描黑边
+    const stationGroups = (S.groups && S.groups.stationGroups) || [];
+    const grpOf = new Map();               // sid -> 组对象
+    const mergedHidden = new Set();        // 同站组成员 sid
+    for (const g of stationGroups) {
+      for (const sid of g.stops) grpOf.set(sid, g);
+      if (g.type === 'same-station') for (const sid of g.stops) mergedHidden.add(sid);
+    }
 
     // 未建线的导入 path（灰色虚线）
     const boundPaths = new Set([...S.lines.values()].map((l) => l.path));
@@ -429,19 +582,60 @@
         hit.dataset.lid = lid; hit.dataset.seg = i;
       }
 
-      // 设站
+      // 设站（同站换乘组成员的独立小圈不画，统一画合并圈；出闸换乘描黑边）
       stops.forEach((st, idx) => {
+        if (mergedHidden.has(st.id)) return;
         const [x, y] = ap.pointAt(st.t);
         const isSel = S.selStop === st.id && lid === S.activeLine;
         const isPend = S.pending.includes(st.id);
+        const grp = grpOf.get(st.id);
+        const oos = grp && grp.type === 'out-of-station';
         if (isSel) el('circle', { cx: x, cy: y, r: ringR, class: 'stop-ring',
           'vector-effect': 'non-scaling-stroke' }, gLine);
         const c = el('circle', { cx: x, cy: y, r: rStop, class: 'stop-c' + (isPend ? ' pend' : ''),
-          stroke: line.color, 'stroke-width': 2 / scale }, gLine);
+          stroke: oos ? '#000' : line.color, 'stroke-width': 2 / scale }, gLine);
         c.dataset.lid = lid; c.dataset.sid = st.id;
         const t = el('title', {}, c);
-        t.textContent = `${idx + 1}. ${st.name || '（未命名）'}  t=${st.t.toFixed(4)}`;
+        t.textContent = `${idx + 1}. ${st.name || '（未命名）'}  t=${st.t.toFixed(4)}`
+          + (oos ? `  ${grp.id}（出闸换乘）` : '');
       });
+    }
+
+    // 同站换乘合并圈：位置取距所有成员线路最近点（投影质心迭代收敛）
+    for (const g of stationGroups) {
+      if (g.type !== 'same-station') continue;
+      const members = [];
+      for (const sid of g.stops) {
+        for (const [lid2, line2] of S.lines) {
+          const st = line2.stops.find((x) => x.id === sid);
+          if (st) {
+            const ap2 = arcOf(lid2);
+            if (ap2) members.push({ ap: ap2, st });
+          }
+        }
+      }
+      if (!members.length) continue;
+      let px = 0, py = 0;
+      for (const m of members) { const p = m.ap.pointAt(m.st.t); px += p[0]; py += p[1]; }
+      px /= members.length; py /= members.length;
+      for (let it = 0; it < 12; it++) {
+        let sx = 0, sy = 0;
+        for (const m of members) {
+          const pr = m.ap.project(px, py);
+          sx += pr.p[0]; sy += pr.p[1];
+        }
+        const nx = sx / members.length, ny = sy / members.length;
+        const moved = Math.hypot(nx - px, ny - py);
+        px = nx; py = ny;
+        if (moved < 1e-3) break;
+      }
+      const anyPend = g.stops.some((sid) => S.pending.includes(sid));
+      const c = el('circle', { cx: px, cy: py, r: 7.5 / scale,
+        class: 'stop-merge' + (anyPend ? ' pend' : ''),
+        stroke: '#000', 'stroke-width': 2.2 / scale }, world);
+      c.dataset.grp = g.id;
+      const t = el('title', {}, c);
+      t.textContent = `${g.id} 同站换乘：${g.stops.map((sid) => stopLabel(sid)).join('；')}`;
     }
 
     // 编组就近提示（纯视觉，绝不自动成组）
@@ -557,14 +751,20 @@
       box.innerHTML = '<div style="color:var(--dim)">在「加站」模式下点击线路加站；站名在此录入。</div>';
       return;
     }
-    box.innerHTML = l.stops.map((st, i) => `
+    box.innerHTML = l.stops.map((st, i) => {
+      const prev = i > 0 ? l.stops[i - 1].t : null;
+      const next = i < l.stops.length - 1 ? l.stops[i + 1].t : null;
+      const tBad = st.t < 0 || st.t >= 1 || (prev !== null && st.t <= prev) || (next !== null && st.t >= next);
+      return `
       <div class="stop-row ${S.selStop === st.id ? 'sel' : ''} ${S.pending.includes(st.id) ? 'pend' : ''}" data-sid="${st.id}">
         <span class="idx">${i + 1}</span>
         <input type="text" value="${esc(st.name)}" data-ren="${st.id}"
           class="${st.name ? '' : 'warn'}" placeholder="（站名）">
-        <span class="t">${st.t.toFixed(4)}</span>
+        <input type="text" value="${st.t.toFixed(6)}" data-tedit="${st.id}"
+          class="tin${tBad ? ' warn' : ''}" title="弧长位置 t∈[0,1)，可手改（如起点改 0）">
         <button class="mini danger" data-del="${st.id}" title="删除设站">✕</button>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   }
 
   function stopLabel(sid) {
@@ -592,10 +792,9 @@
         <div class="grp-row" data-gid="${g.id}">
           <b>${g.id}</b>
           <select data-gtype="${g.id}">
-            <option value="">type 未定</option>
             <option value="same-station" ${g.type === 'same-station' ? 'selected' : ''}>同站</option>
-            <option value="passage" ${g.type === 'passage' ? 'selected' : ''}>通道</option>
             <option value="out-of-station" ${g.type === 'out-of-station' ? 'selected' : ''}>出闸</option>
+            <option value="" ${!g.type ? 'selected' : ''}>type 未定</option>
           </select>
           <button class="mini danger" data-gdel="${g.id}">拆组</button>
           <div class="m">${g.stops.map((s2) => esc(stopLabel(s2))).join('；')}</div>
@@ -787,6 +986,7 @@
       S.view.x = panning.view.x - (e.clientX - panning.x) * kx;
       S.view.y = panning.view.y - (e.clientY - panning.y) * kx;
       applyView();
+      scheduleBasemap();   // 平移只改 viewBox 不重绘，底图需单独补瓦片
       return;
     }
     if (drag && drag.type === 'stop') {
@@ -822,6 +1022,18 @@
     }
 
     if (S.mode === 'group') {
+      const mgEl = e.target.closest('.stop-merge');
+      if (mgEl) {
+        const g = S.groups.stationGroups.find((x) => x.id === mgEl.dataset.grp);
+        if (g) {
+          const allIn = g.stops.every((sid) => S.pending.includes(sid));
+          S.pending = allIn ? S.pending.filter((sid) => !g.stops.includes(sid))
+            : [...new Set([...S.pending, ...g.stops])];
+          renderAll();
+          setStatus(allIn ? `已将 ${g.id} 全员移出待编组。` : `已将 ${g.id} 全员加入待编组。`);
+        }
+        return;
+      }
       const stopEl = e.target.closest('.stop-c');
       if (stopEl) {
         const sid = stopEl.dataset.sid;
@@ -832,6 +1044,12 @@
     }
 
     // select 模式的点击
+    const mgSel = e.target.closest('.stop-merge');
+    if (mgSel) {
+      const g = S.groups.stationGroups.find((x) => x.id === mgSel.dataset.grp);
+      if (g) setStatus(`${g.id} 同站换乘组：${g.stops.map((sid) => stopLabel(sid)).join('；')}`);
+      return;
+    }
     const segEl = e.target.closest('.seg-hit');
     if (segEl) {
       const lid = segEl.dataset.lid, i = +segEl.dataset.seg;
@@ -904,7 +1122,14 @@
     const del = e.target.dataset.del;
     if (del) { deleteStop(S.activeLine, del); return; }
     const row = e.target.closest('.stop-row');
-    if (row) { S.selStop = row.dataset.sid; renderStopList(); renderWorld(); }
+    if (!row) return;
+    if (S.selStop === row.dataset.sid) return;   // 已选中：不动，避免打断输入框
+    S.selStop = row.dataset.sid;
+    // 只切换高亮，不重建列表（重建会销毁正在交互的输入框导致失焦）
+    for (const r of $('stopList').querySelectorAll('.stop-row')) {
+      r.classList.toggle('sel', r.dataset.sid === S.selStop);
+    }
+    renderWorld();
   });
   $('stopList').addEventListener('input', (e) => {
     const sid = e.target.dataset.ren;
@@ -917,6 +1142,37 @@
       e.target.classList.toggle('warn', !st.name);
       renderWorld(); autosave();
     }
+  });
+
+  $('stopList').addEventListener('change', (e) => {
+    const sid = e.target.dataset.tedit;
+    if (!sid) return;
+    const line = S.lines.get(S.activeLine);
+    const st = line && line.stops.find((s) => s.id === sid);
+    if (!st) return;
+    const v = parseFloat(e.target.value);
+    if (!isFinite(v) || v < 0 || v >= 1) {
+      e.target.value = st.t.toFixed(6);
+      e.target.classList.add('warn');
+      setStatus('t 需为 [0,1) 内的数字，已还原。', true);
+      return;
+    }
+    const nv = Math.round(v * 1e6) / 1e6;
+    if (nv !== st.t) {
+      snapshot();
+      st.t = nv;
+      line.meta.updated = today();
+      renderWorld(); autosave();
+    }
+    // 与邻站比较给出即时告警（保存仍由 lineIssues/validate 把关）
+    const i = line.stops.indexOf(st);
+    const prev = i > 0 ? line.stops[i - 1].t : null;
+    const next = i < line.stops.length - 1 ? line.stops[i + 1].t : null;
+    const bad = (prev !== null && st.t <= prev) || (next !== null && st.t >= next);
+    e.target.classList.toggle('warn', bad);
+    e.target.value = st.t.toFixed(6);
+    if (bad) setStatus('警告：t 未严格递增（保存线路时会被拦截）。', true);
+    else setStatus(`t 已更新为 ${st.t}。`);
   });
 
   $('lineform').addEventListener('input', (e) => {
@@ -1016,7 +1272,7 @@
     const gid = e.target.dataset.gtype;
     if (!gid) return;
     const g = S.groups.stationGroups.find((x) => x.id === gid);
-    if (g) { g.type = e.target.value || null; autosave(); }
+    if (g) { g.type = e.target.value || null; renderWorld(); autosave(); }
   });
 
   $('pendingBox').addEventListener('click', (e) => {
@@ -1034,10 +1290,10 @@
       }
       snapshot();
       const id = bumpCounter('nextG', 'g', 4);
-      S.groups.stationGroups.push({ id, stops: [...S.pending], type: null, info: {} });
+      S.groups.stationGroups.push({ id, stops: [...S.pending], type: 'same-station', info: {} });
       S.pending = [];
       renderAll();
-      setStatus(`已建换乘节点组 ${id}。`);
+      setStatus(`已建换乘节点组 ${id}（默认同站：合并为一个黑边大圈；可在列表改出闸/未定）。`);
     }
   });
 
@@ -1047,6 +1303,22 @@
   }
 
   // ---------- 模式与撤销 ----------
+  S.basemapOn = localStorage.getItem('shrail.basemap') === '1';
+  $('btnBasemap').addEventListener('click', () => {
+    if (!S.basemapOn && !S.calib) {
+      setStatus('无标定参数：先运行 python tools/georef.py <svg> <kml> --emit 生成 data/calibration.json'
+        + '（或用「数据文件」按钮载入），再开底图。', true);
+      return;
+    }
+    S.basemapOn = !S.basemapOn;
+    localStorage.setItem('shrail.basemap', S.basemapOn ? '1' : '0');
+    $('btnBasemap').classList.toggle('primary', S.basemapOn);
+    renderWorld();
+    setStatus(S.basemapOn
+      ? '底图已开启：© OpenStreetMap contributors（与线路的对位精度≈标定残差 80 m）。'
+      : '底图已关闭。');
+  });
+
   const MODE_HINT = {
     select: '选择：点击设站选中（左侧改名）、拖动设站沿线移动、点击线段循环切换状态、点线路激活、滚轮缩放、拖空白平移。',
     add: '加站：点击线路附近即可加站（自动吸附到最近点，记录弧长 t）；站名在左侧列表录入。',
@@ -1168,6 +1440,7 @@
     loadCounters();
     await bootFetchData();
     syncCountersWithLoaded();
+    $('btnBasemap').classList.toggle('primary', S.basemapOn && !!S.calib);
     offerRestore();
     if (!S.view) fitView();
     setStatus(MODE_HINT.select);
