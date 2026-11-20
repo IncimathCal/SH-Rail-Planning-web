@@ -64,6 +64,7 @@
 - **connects**：仅 `role: "connector"` 使用，列出所联络的线路 id（≥2 个），其余 role 必须为空数组。
 - **info**：扩展槽（起讫、里程、备注、贯通运营关系、未来 wiki 内容等），结构不设防。
 - **meta.archived**：软删除标记；归档线路文件保留在 git 与本地，但发布时剔除。
+- **meta.stopSeq**：编辑器已分配的设站序号水位（v1.2 非破坏性新增，可缺省）。分配下一设站编号取 max(stopSeq, 现有最大后缀) + 1，兑现「编号永不复用」；缺失时按现有最大后缀推断。
 
 ### 1.3 `data/groups.json`
 
@@ -200,3 +201,4 @@
 
 - 2026-11-20 v1：依据讨论记录 01~03 定案首次成文。
 - 2026-11-20 v1.1：按用户决定，schema 枚举与角色等取值全英文化（existing/approved/future；main/branch/connector/standalone；same-station/passage/out-of-station），新增 §1 语言与编码规则与校验规则第 10 条；修正「基準」为「基准」。
+- 2026-11-20 v1.2（非破坏性，不触发迁移）：线路 `meta` 新增可选字段 `stopSeq`（设站编号分配水位）；明确 `import/` 记录格式 `fmt/import@1`（`svg_parse --import` 产物：source/imported/paths[]{sourceLayer,color,path}，作为编辑器的数据桥梁）。

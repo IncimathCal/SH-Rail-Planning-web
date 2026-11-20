@@ -10,13 +10,17 @@
 仅用 Python 标准库；控制台输出用英文（避免 Windows 控制台编码问题）。
 
 用法：
-    python tools/svg_parse.py <file.svg>      # 列出各 path 图层与统计
+    python tools/svg_parse.py <file.svg>              # 列出各 path 图层与统计
+    python tools/svg_parse.py <file.svg> --import     # 产出 import/<文件名>.json 供编辑器载入
 """
 
+import datetime
+import json
 import math
 import re
 import sys
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 FLAT_TOL = 0.05          # 压平容差（SVG 单位）：控制点离弦的最大距离
 ARC_MIN_DEPTH = 3        # 每段曲线强制细分层数（2^3=8 段，保证弧长表平滑）
@@ -254,11 +258,35 @@ def path_from_d(d):
 # ---------- SVG 文件读取 ----------
 
 def load_svg_paths(svg_file):
-    """读取 SVG 文件 → [(id, data_name, stroke_color, ArcPath), ...]。
+    """读取 SVG 文件 → [(id, data_name, stroke_color, ArcPath), ...]（georef.py 等在用）。"""
+    return [t[:4] for t in load_svg_paths_raw(svg_file)]
 
-    依赖 Illustrator 导出约定：每条线路一个 <path>，Object ID = 图层名，
-    描边色在 <style> 类中定义（Presentation Attributes 导出格式）。
-    """
+
+def write_import(svg_file, paths):
+    """产出 import/<文件名>.json（fmt/import@1）：每线路 path 的原始 d、颜色、源图层名。"""
+    out = {
+        "schema": "fmt/import@1",
+        "source": Path(svg_file).name,
+        "imported": datetime.date.today().isoformat(),
+        "paths": [
+            {
+                "sourceLayer": name,
+                "color": (color or "#888888").upper(),
+                # path 字符串规范：压缩内部多余空白（保持语义与数值原样）
+                "path": re.sub(r"\s+", " ", raw_d.strip()),
+            }
+            for _pid, name, color, _ap, raw_d in paths
+        ],
+    }
+    target = Path("import") / (Path(svg_file).stem + ".json")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"import written: {target} ({len(out['paths'])} paths)")
+    return target
+
+
+def load_svg_paths_raw(svg_file):
+    """同 load_svg_paths，但额外携带原始 d 字符串：(id, name, color, ArcPath, d)。"""
     tree = ET.parse(svg_file)
     root = tree.getroot()
     styles = {}
@@ -273,22 +301,27 @@ def load_svg_paths(svg_file):
         d = p.get("d")
         if not d or not d.strip():
             continue
-        name = p.get("data-name") or p.get("id") or ""
-        name = name.lstrip("_")  # Illustrator 导出数字开头 id 会加下划线前缀
+        name = (p.get("data-name") or p.get("id") or "").lstrip("_")
         cls = (p.get("class") or "").split()
         color = next((styles[c] for c in cls if c in styles), None)
-        out.append((p.get("id") or "", name, color, path_from_d(d)))
+        out.append((p.get("id") or "", name, color, path_from_d(d), d))
     return out
 
 
 def main():
-    if len(sys.argv) != 2:
+    args = sys.argv[1:]
+    do_import = "--import" in args
+    args = [a for a in args if a != "--import"]
+    if len(args) != 1:
         print(__doc__)
         return 1
-    paths = load_svg_paths(sys.argv[1])
-    print(f"SVG file: {sys.argv[1]}")
+    svg_file = args[0]
+    paths = load_svg_paths_raw(svg_file)
+    if do_import:
+        write_import(svg_file, paths)
+    print(f"SVG file: {svg_file}")
     print(f"{'name':<8} {'color':<9} {'vertices':>8} {'length':>12}   bbox (x0,y0)-(x1,y1)")
-    for _, name, color, ap in paths:
+    for _, name, color, ap, _d in paths:
         xs = [p[0] for p in ap.pts]
         ys = [p[1] for p in ap.pts]
         print(f"{name:<8} {str(color):<9} {len(ap.pts):>8} {ap.length:>12.1f}   "
