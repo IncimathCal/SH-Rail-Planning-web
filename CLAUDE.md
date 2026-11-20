@@ -2,19 +2,24 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 项目状态（2026-11-20 阶段 1 完成）
+## 项目状态（2026-11-20 阶段 0+1 完成）
 
-**本文件夹已 git 化（分支 main，无远端）**，用户将以 GitHub 客户端发布为 **SH-Rail-Planning-web**。阶段 1（规范与骨架）已完成：目录结构、`tools/validate.py` 校验器、`tools/fixtures/sample` 样例数据（含环线/支线/联络线/换乘组用例）校验通过。
+**本文件夹已 git 化（分支 main，无远端）**，用户将以 GitHub 客户端发布为 **SH-Rail-Planning-web**。阶段 1（规范与骨架）与阶段 0（标定试验）均已完成：
 
-**下一步：阶段 0（标定试验）**——等待用户提供 1~2 条线路的 AI 导出 SVG + 同线 GE 描线 KML，放入 `源资产/`（已 gitignore）。实施基准见 **《架构方案-01-Schema与目录与阶段.md》**（v1.1），讨论历史见《讨论记录-01~03》。
+- 阶段 1：目录结构、`tools/validate.py` 校验器、`tools/fixtures/sample` 样例数据校验通过；
+- 阶段 0：用户已提供 4 条线（6/14/15/23）AI 导出 SVG + GE 描线 KMZ（在 `源资产/`，已 gitignore）；`tools/svg_parse.py`（path 解析/贝塞尔压平/弧长参数化）+ `tools/georef.py`（多项式标定拟合）跑通，单线横向 RMS 15~41 m、全局 RMS 80 m，详见 **《标定试验-01-残差报告.md》**（含验收线建议，待用户确认）。
 
-技术要点：MapLibre GL 地理化渲染；AI 源图仅导出线路 path，设站站名纯手动录入（编辑器仅本地，入口 editor.html）；数据模块化（线路/设站/换乘节点组 + 线组绑定主线支线联络线）；分段状态 `existing/approved/future`；GitHub Pages 从 `/docs` 部署（publish.py 生成）。
+**下一步：阶段 2（编辑器 MVP + 首批录入）**——editor.html 加载源图与标定变换、点选设站（记弧长 t）、手动站名，首批录入这 4 条线产出 `data/lines/*.json`。实施基准见 **《架构方案-01-Schema与目录与阶段.md》**（v1.1），讨论历史见《讨论记录-01~03》。
+
+技术要点：MapLibre GL 地理化渲染；AI 源图仅导出线路 path，设站站名纯手动录入（编辑器仅本地，入口 editor.html）；数据模块化（线路/设站/换乘节点组 + 线组绑定主线支线联络线）；分段状态 `existing/approved/future`；标定头尾失准以 (ds,de) 弧长偏差建模校正；GitHub Pages 从 `/docs` 部署（publish.py 生成）。
 
 ## 常用命令
 
 ```bash
 python tools/validate.py data                      # 数据校验（提交前必跑）
 python tools/validate.py tools/fixtures/sample     # 对样例数据跑校验
+python tools/svg_parse.py "源资产/xxx.svg"          # 查看 SVG 各 path 统计
+python tools/georef.py "源资产/xxx.svg" "源资产/xxx.kmz"   # 标定试验（残差报告）
 ```
 
 ## 硬性约束（用户明令，优先级最高）
