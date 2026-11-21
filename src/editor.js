@@ -100,7 +100,63 @@
     return { pairs, total: clean.length };
   }
 
-  // ---------- 标定变换与瓦片数学（fmt/calibration@1；node 单测覆盖往返） ----------
+  /** 站圆预置批量落站规划（fmt/stations-import@1；node 单测覆盖）。
+   *  preset stops（tools/station_extract.py 产物，t 6 位小数）逐个判定：
+   *  与「原有站」|Δt| < dtEps → 跳过（exists，用户已设过的不动）；
+   *  与「原有站或已接纳预置站」间隔 < eps → 跳过（conflict，如环线自交/共线重叠圆）；
+   *  其余接纳。返回 {inserts:[t...], skippedExist, skippedConflict, total}。
+   *  写入由 applyStopImport 执行（调用方先做整批快照，撤销一次回退整批）。 */
+  function planStopImport(line, stops, dtEps = 0.002, eps = EPS) {
+    const cand = (stops || []).map((s) => Math.round(s.t * 1e6) / 1e6)
+      .filter((t) => t >= 0 && t < 1).sort((a, b) => a - b);
+    const out = { inserts: [], skippedExist: 0, skippedConflict: 0, total: cand.length };
+    const orig = line.stops.map((s) => s.t);          // 原有站（exists 只对照这些）
+    const ts = orig.slice().sort((a, b) => a - b);    // 原有 + 已接纳（conflict 对照）
+    for (const t of cand) {
+      if (orig.some((u) => Math.abs(u - t) < dtEps)) { out.skippedExist++; continue; }
+      let i = 0;
+      while (i < ts.length && ts[i] < t) i++;
+      const prevT = i > 0 ? ts[i - 1] : null;
+      const nextT = i < ts.length ? ts[i] : null;
+      if ((prevT !== null && t - prevT < eps) || (nextT !== null && nextT - t < eps)) {
+        out.skippedConflict++;
+        continue;
+      }
+      ts.splice(i, 0, t);
+      out.inserts.push(t);
+    }
+    return out;
+  }
+
+  /** 执行批量落站（plan 来自 planStopImport）。name 一律留空——预置站名建议绝不自动写入。 */
+  function applyStopImport(line, plan) {
+    const added = [];
+    for (const t of plan.inserts) {
+      let i = 0;
+      while (i < line.stops.length && line.stops[i].t < t) i++;
+      const seq = nextStopSeq(line);
+      const st = { id: `${line.id}-s${String(seq).padStart(2, '0')}`, name: '', t, geo: null };
+      line.stops.splice(i, 0, st);
+      segInsert(line, i);
+      added.push(st);
+    }
+    fixStatusField(line);
+    return added;
+  }
+
+  /** 站点 t 就近取预置站名建议（|Δt| ≤ dtEps）；返回 {name, dist} 或 null。仅展示用，点选才写入。 */
+  function suggestForStop(item, t, dtEps = 0.002) {
+    if (!item) return null;
+    let best = null;
+    for (const s of item.stops || []) {
+      if (!s.nameSuggestion) continue;
+      const d = Math.abs(s.t - t);
+      if (d <= dtEps && (!best || d < best.d)) best = { name: s.nameSuggestion, dist: s.suggestDist, d };
+    }
+    return best;
+  }
+
+  // ---------- 标定变换与瓦片数学（fmt/calibration@1 deg3 / fmt/calibration@2 tps；node 单测覆盖往返与 Python 对拍） ----------
   // 多项式基次序与 tools/georef.py 的 features(deg=3) 一致：1,u,v,u²,uv,v²,u³,u²v,uv²,v³
   function poly3Basis(u, v) {
     return [1, u, v, u * u, u * v, v * v, u * u * u, u * u * v, u * v * v, v * v * v];
@@ -111,14 +167,14 @@
     for (let i = 0; i < c.length; i++) s += c[i] * w[i];
     return s;
   }
-  /** SVG 世界坐标 → [lon, lat] */
-  function calibForward(calib, x, y) {
+  /** deg3 正向：SVG 世界坐标 → [lon, lat] */
+  function poly3Forward(calib, x, y) {
     const u = (x - calib.uv.cx) / calib.uv.scale;
     const v = (y - calib.uv.cy) / calib.uv.scale;
     return [calibEval(calib.coef.lon, u, v), calibEval(calib.coef.lat, u, v)];
   }
-  /** [lon, lat] → SVG 世界坐标。仿射初值 + 牛顿迭代（数值雅可比）；不收敛返回 null */
-  function calibInverse(calib, lon, lat) {
+  /** deg3 反向：[lon, lat] → SVG。仿射初值 + 牛顿迭代（数值雅可比）；不收敛返回 null */
+  function poly3Inverse(calib, lon, lat) {
     const a0 = calib.coef.affineLon[0], a1 = calib.coef.affineLon[1], a2 = calib.coef.affineLon[2];
     const b0 = calib.coef.affineLat[0], b1 = calib.coef.affineLat[1], b2 = calib.coef.affineLat[2];
     const det = a1 * b2 - a2 * b1;
@@ -143,6 +199,78 @@
     }
     return [u * calib.uv.scale + calib.uv.cx, v * calib.uv.scale + calib.uv.cy];
   }
+  // ---- TPS（fmt/calibration@2，tools/calib2_fit.py 产物；与 零散/calib2_lib.py 同式）----
+  // f(x,y) = affine(uk,vk) + Σ w_i·U(d2)，U(r2)=r2·ln r2（d2 为 km² 坐标距离，km = svg×scaleToKm）
+  const TPS_CACHE = new WeakMap();   // calib 对象 → 展平缓存（不随 JSON 序列化）
+  function tpsCache(calib) {
+    let c = TPS_CACHE.get(calib);
+    if (!c) {
+      const cps = calib.controlPoints || [];
+      const n = cps.length;
+      const kx = new Float64Array(n), ky = new Float64Array(n);
+      const wl = new Float64Array(n), wt = new Float64Array(n);
+      const k = (calib.kernel && calib.kernel.scaleToKm) || 0.00972;
+      for (let i = 0; i < n; i++) {
+        kx[i] = cps[i][0] * k; ky[i] = cps[i][1] * k;
+        wl[i] = cps[i][2]; wt[i] = cps[i][3];
+      }
+      c = { n, kx, ky, wl, wt, k, aL: calib.affine.lon, aT: calib.affine.lat };
+      TPS_CACHE.set(calib, c);
+    }
+    return c;
+  }
+  /** TPS 正向：SVG 世界坐标 → [lon, lat] */
+  function tpsForward(calib, x, y) {
+    const c = tpsCache(calib);
+    const uk = x * c.k, vk = y * c.k;
+    let lon = c.aL[0] + c.aL[1] * uk + c.aL[2] * vk;
+    let lat = c.aT[0] + c.aT[1] * uk + c.aT[2] * vk;
+    for (let i = 0; i < c.n; i++) {
+      const dx = uk - c.kx[i], dy = vk - c.ky[i];
+      const d2 = dx * dx + dy * dy;
+      if (d2 > 1e-12) { const U = d2 * Math.log(d2); lon += c.wl[i] * U; lat += c.wt[i] * U; }
+    }
+    return [lon, lat];
+  }
+  /** TPS 反向：[lon, lat] → SVG。affine 初值 + 牛顿迭代（解析雅可比，dU/dd2 = ln d2 + 1）；不收敛返回 null */
+  function tpsInverse(calib, lon, lat) {
+    const c = tpsCache(calib);
+    const det = c.aL[1] * c.aT[2] - c.aL[2] * c.aT[1];
+    if (!isFinite(det) || Math.abs(det) < 1e-15) return null;
+    const gl = lon - c.aL[0], gt = lat - c.aT[0];
+    let uk = (gl * c.aT[2] - gt * c.aL[2]) / det;
+    let vk = (gt * c.aL[1] - gl * c.aT[1]) / det;
+    for (let it = 0; it < 50; it++) {
+      let fl = c.aL[0] + c.aL[1] * uk + c.aL[2] * vk - lon;
+      let ft = c.aT[0] + c.aT[1] * uk + c.aT[2] * vk - lat;
+      let fl_u = c.aL[1], fl_v = c.aL[2], ft_u = c.aT[1], ft_v = c.aT[2];
+      for (let i = 0; i < c.n; i++) {
+        const dx = uk - c.kx[i], dy = vk - c.ky[i];
+        const d2 = dx * dx + dy * dy;
+        if (d2 > 1e-12) {
+          const lg = Math.log(d2), U = d2 * lg, g = 2 * (lg + 1);
+          fl += c.wl[i] * U; ft += c.wt[i] * U;
+          fl_u += c.wl[i] * g * dx; fl_v += c.wl[i] * g * dy;
+          ft_u += c.wt[i] * g * dx; ft_v += c.wt[i] * g * dy;
+        }
+      }
+      if (Math.hypot(fl, ft) < 1e-12) break;
+      const J = fl_u * ft_v - fl_v * ft_u;
+      if (!isFinite(J) || Math.abs(J) < 1e-18) return null;
+      uk -= (fl * ft_v - ft * fl_v) / J;
+      vk -= (ft * fl_u - fl * ft_u) / J;
+      if (!isFinite(uk) || !isFinite(vk)) return null;
+    }
+    return [uk / c.k, vk / c.k];
+  }
+  /** 标定正向（按 model 分派）：SVG 世界坐标 → [lon, lat] */
+  function calibForward(calib, x, y) {
+    return calib.model === 'tps' ? tpsForward(calib, x, y) : poly3Forward(calib, x, y);
+  }
+  /** 标定反向（按 model 分派）：[lon, lat] → SVG 世界坐标；不收敛返回 null */
+  function calibInverse(calib, lon, lat) {
+    return calib.model === 'tps' ? tpsInverse(calib, lon, lat) : poly3Inverse(calib, lon, lat);
+  }
   // ---- Web Mercator 瓦片数学 ----
   function lonToTileX(lon, z) { return (lon + 180) / 360 * Math.pow(2, z); }
   function latToTileY(lat, z) {
@@ -157,7 +285,9 @@
 
   const SHLogic = { SEG_ORDER, SEG_LABEL, ROLE_LABEL, EPS, segInsert, segRemove,
     nextStopSeq, fixStatusField, lineIssues, planBulkFill,
-    calibForward, calibInverse, lonToTileX, latToTileY, tileXToLon, tileYToLat };
+    planStopImport, applyStopImport, suggestForStop,
+    calibForward, calibInverse, tpsForward, tpsInverse, poly3Forward, poly3Inverse,
+    lonToTileX, latToTileY, tileXToLon, tileYToLat };
   global.SHEditorLogic = SHLogic;
   if (typeof module !== 'undefined' && module.exports) module.exports = SHLogic;
 
@@ -189,7 +319,11 @@
     groups: null,            // fmt/groups@1 或 null（首份保存时初始化）
     manifest: null,          // fmt/manifest@1 或 null
     imports: [],             // {source, imported, paths:[{sourceLayer,color,path}]}
-    calib: null,             // fmt/calibration@1（svg→经纬度标定；底图与后续 geo 派生用）
+    stationPresets: [],      // fmt/stations-import@1 的 items（站圆预置，只读参考数据，不进撤销/暂存）
+    calibTps: null,          // fmt/calibration@2（model:"tps"；svg→经纬度，边缘标定 v2）
+    calibDeg3: null,         // fmt/calibration@1（旧全局 deg3；data/calibration-deg3-backup.json）
+    calibChoice: 'tps',      // 当前标定方案 'tps' | 'deg3'（偏好存 localStorage）
+    get calib() { return this.calibChoice === 'deg3' ? this.calibDeg3 : this.calibTps; },
     basemapOn: false,        // OSM 底图开关（偏好存 localStorage）
     arcs: new Map(),         // lid -> SHGeom.ArcPath
     view: null,              // {x,y,w,h}，null = 待适配内容
@@ -309,6 +443,17 @@
     S.imports.push(rec);
   }
 
+  /** 站圆预置（fmt/stations-import@1）载入：items 并入 S.stationPresets，同源替换。只读参考数据。
+   *  去重键用 obj.source（内容级标识）——boot 自动拉取与手动载入同一文件不会重复堆积。 */
+  function addStationPreset(obj, fileName) {
+    const src = obj.source || fileName || '（未知来源）';
+    S.stationPresets = S.stationPresets.filter((it) => it.presetSource !== src);
+    for (const it of obj.items || []) {
+      S.stationPresets.push(Object.assign({}, it, { presetSource: src }));
+    }
+    return (obj.items || []).length;
+  }
+
   function parseSvgText(text, fileName) {
     // 浏览器内直接解析 SVG（与 tools/svg_parse.py --import 等效）
     const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
@@ -333,8 +478,33 @@
     return { schema: 'fmt/import@1', source: fileName, imported: today(), paths };
   }
 
+  /** 标定文件归槽：@2/model:"tps" → calibTps，@1(deg3) → calibDeg3。
+   *  当前所选方案仍缺文件时自动切到已有方案（首次启动/备份缺失场景）。 */
+  function takeCalibration(obj) {
+    if (obj && obj.model === 'tps' && obj.schema === 'fmt/calibration@2') {
+      S.calibTps = obj;
+    } else if (obj && obj.schema === 'fmt/calibration@1') {
+      S.calibDeg3 = obj;
+    } else {
+      return false;
+    }
+    if (!S.calib) S.calibChoice = S.calibTps ? 'tps' : 'deg3';
+    basemapEpoch++;
+    if (typeof refreshCalibBtn === 'function') refreshCalibBtn();
+    return true;
+  }
+  function calibLabel(obj) {
+    return obj && obj.model === 'tps' ? 'TPS 边缘标定 v2' : 'deg3 旧全局三阶';
+  }
+
   function loadDataObject(obj, fileName) {
     if (obj && obj.schema === 'fmt/import@1') { addImportRecord(obj); return; }
+    if (obj && obj.schema === 'fmt/stations-import@1') {
+      const n = addStationPreset(obj, fileName);
+      renderLineForm(); renderStopList();
+      setStatus(`已载入站圆预置 ${n} 条（${fileName || obj.source}）——在线路属性面板「从预置导入车站」。`);
+      return;
+    }
     if (obj && obj.schema === 'fmt/line@1' && /^l\d{4}$/.test(obj.id || '')) {
       S.lines.set(obj.id, obj);
       S.arcs.delete(obj.id);
@@ -343,11 +513,11 @@
     }
     if (obj && obj.schema === 'fmt/groups@1') { S.groups = obj; return; }
     if (obj && obj.schema === 'fmt/manifest@1') { S.manifest = obj; return; }
-    if (obj && obj.schema === 'fmt/calibration@1') {
-      S.calib = obj;
+    if (obj && (obj.schema === 'fmt/calibration@1' || obj.schema === 'fmt/calibration@2')) {
+      takeCalibration(obj);
       $('btnBasemap').classList.toggle('primary', S.basemapOn);
       renderWorld();
-      setStatus('已载入标定参数，底图可用（georef.py 产物）。');
+      setStatus('已载入标定参数（' + calibLabel(obj) + '），底图可用。');
       return;
     }
     throw new Error(fileName + '：无法识别的数据文件（schema 不匹配）');
@@ -362,8 +532,13 @@
     if (groups) S.groups = groups;
     const manifest = await get('data/manifest.json');
     if (manifest) S.manifest = manifest;
+    // 标定两方案都拉取（新 TPS 主用 + 旧 deg3 备份，供「标定方案」切换/回退）
     const calib = await get('data/calibration.json');
-    if (calib && calib.schema === 'fmt/calibration@1') S.calib = calib;
+    if (calib && (calib.schema === 'fmt/calibration@1' || calib.schema === 'fmt/calibration@2')) {
+      takeCalibration(calib);
+    }
+    const calibOld = await get('data/calibration-deg3-backup.json');
+    if (calibOld && calibOld.schema === 'fmt/calibration@1') takeCalibration(calibOld);
     try {
       const r = await fetch('data/lines/');
       if (r.ok) {
@@ -388,6 +563,7 @@
         for (const h of new Set(hrefs)) {
           const obj = await get('import/' + h);
           if (obj && obj.schema === 'fmt/import@1') addImportRecord(obj);
+          else if (obj && obj.schema === 'fmt/stations-import@1') addStationPreset(obj);
         }
       }
     } catch (e) { /* file:// 等，忽略 */ }
@@ -447,9 +623,10 @@
     return [w.x, w.y];
   }
 
-  // ---------- OSM 底图（瓦片垫层，仅本地参考；需 fmt/calibration@1） ----------
+  // ---------- OSM 底图（瓦片垫层，仅本地参考；需标定 fmt/calibration@1/@2） ----------
   let basemapG = null;
   const basemapTiles = new Map();   // "z/x/y" -> <image>
+  let basemapEpoch = 0;             // 标定方案/参数变化计数：瓦片 transform 只在跨 epoch 重算
   let basemapTimer = null;
   function scheduleBasemap() {
     clearTimeout(basemapTimer);
@@ -502,16 +679,20 @@
           img.setAttribute('href', `https://tile.openstreetmap.org/${z}/${tx}/${ty}.png`);
           basemapTiles.set(key, img);
         }
-        // 瓦片像素 → SVG 世界：三点仿射（(0,0)(256,0)(0,256)），多项式在小范围内近似线性
-        const lonW = tileXToLon(tx, z), lonE = tileXToLon(tx + 1, z);
-        const latN = tileYToLat(ty, z), latS = tileYToLat(ty + 1, z);
-        const p00 = calibInverse(S.calib, lonW, latN);
-        const p10 = calibInverse(S.calib, lonE, latN);
-        const p01 = calibInverse(S.calib, lonW, latS);
-        if (!p00 || !p10 || !p01) continue;
-        const a = (p10[0] - p00[0]) / 256, b = (p01[0] - p00[0]) / 256;
-        const d = (p10[1] - p00[1]) / 256, e2 = (p01[1] - p00[1]) / 256;
-        img.setAttribute('transform', `matrix(${a} ${d} ${b} ${e2} ${p00[0]} ${p00[1]})`);
+        // 瓦片像素 → SVG 世界：三点仿射（(0,0)(256,0)(0,256)），标定在小范围内近似线性；
+        // transform 只在标定方案变化（跨 epoch）时重算（TPS 反演较贵，避免平移高频重算）
+        if (img.dataset.epoch !== String(basemapEpoch)) {
+          const lonW = tileXToLon(tx, z), lonE = tileXToLon(tx + 1, z);
+          const latN = tileYToLat(ty, z), latS = tileYToLat(ty + 1, z);
+          const p00 = calibInverse(S.calib, lonW, latN);
+          const p10 = calibInverse(S.calib, lonE, latN);
+          const p01 = calibInverse(S.calib, lonW, latS);
+          if (!p00 || !p10 || !p01) continue;
+          const a = (p10[0] - p00[0]) / 256, b = (p01[0] - p00[0]) / 256;
+          const d = (p10[1] - p00[1]) / 256, e2 = (p01[1] - p00[1]) / 256;
+          img.setAttribute('transform', `matrix(${a} ${d} ${b} ${e2} ${p00[0]} ${p00[1]})`);
+          img.dataset.epoch = String(basemapEpoch);
+        }
       }
     }
     for (const [key, img] of basemapTiles) {
@@ -734,6 +915,35 @@
     return [];
   }
 
+  /** 线路 → 匹配的站圆预置项（fmt/stations-import@1）。
+   *  绑定优先级：① path 字符串精确命中导入记录 → 按 sourceLayer 对名（W1 真名期）；
+   *  ② 几何签名（首点/bbox/弧长，容差 0.5pt/2pt/0.5%——补 Z 等不改变几何的重导不受影响）。
+   *  预置项 signature 由 tools/station_extract.py 从 import path 计算，与 path-NN 命名无关。 */
+  function matchPresetForLine(l) {
+    if (!l || !l.path || !S.stationPresets.length) return null;
+    for (const imp of S.imports) {
+      const p = imp.paths.find((x) => x.path === l.path);
+      if (p) {
+        const byName = S.stationPresets.find((it) => it.sourceLayer === p.sourceLayer);
+        if (byName) return byName;
+        break;   // path 已精确命中但预置无同名项（旧预置×新导入混用）→ 落到几何签名
+      }
+    }
+    const ap = arcOf(l.id);
+    if (!ap || !ap.pts.length) return null;
+    const bb = ap.bbox();
+    for (const it of S.stationPresets) {
+      const sg = it.signature;
+      if (!sg || !sg.first || !sg.bbox) continue;
+      if (Math.hypot(sg.first[0] - ap.pts[0][0], sg.first[1] - ap.pts[0][1]) > 0.5) continue;
+      if (Math.abs(sg.bbox[0] - bb[0]) > 2 || Math.abs(sg.bbox[1] - bb[1]) > 2 ||
+        Math.abs(sg.bbox[2] - bb[2]) > 2 || Math.abs(sg.bbox[3] - bb[3]) > 2) continue;
+      if (Math.abs(sg.length - ap.length) > Math.max(2, 0.005 * ap.length)) continue;
+      return it;
+    }
+    return null;
+  }
+
   function renderLineForm() {
     const box = $('lineform');
     const l = S.lines.get(S.activeLine);
@@ -769,6 +979,15 @@
         ${SEG_ORDER.map((s2) => `<option value="${s2}" ${l.status === s2 ? 'selected' : ''}>${SEG_LABEL[s2]}</option>`).join('')}
         </select><span style="color:var(--dim);font-size:11px">（站数&lt;2 时必填）</span></div>
       <div class="fld"><label>源图层</label><input type="text" value="${esc((l.meta && l.meta.sourceLayer) || '')}" disabled></div>
+      ${(() => {
+        const it = matchPresetForLine(l);
+        if (!it) return `<div class="fld"><label>站圆预置</label><span style="flex:1;color:var(--dim);font-size:11px">（无匹配${S.stationPresets.length ? '' : '——未载入预置文件'}）</span></div>`;
+        const ns = it.stops.filter((s) => s.nameSuggestion).length;
+        return `<div class="fld"><label>站圆预置</label><span style="flex:1" class="preset-line">
+          <button class="mini primary" id="lfImportStops" title="按站圆圆心的弧长投影 t 批量落站；已有站 |Δt|<0.002 跳过；撤销一次回退整批">从预置导入车站</button>
+          <span style="color:var(--dim);font-size:11px">${esc(it.stationGroup)} · ${it.stops.length} 圆${ns ? ` · ${ns} 带站名建议` : ''}</span>
+        </span></div>`;
+      })()}
       <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
         <button class="mini" id="lfUpdatePath" ${S.selImport ? '' : 'disabled'}
           title="用当前选中的导入 path 替换本线 path（设站按弧长 t 保留）">更新path</button>
@@ -784,15 +1003,20 @@
       box.innerHTML = '<div style="color:var(--dim)">在「加站」模式下点击线路加站；站名在此录入。</div>';
       return;
     }
+    const preset = matchPresetForLine(l);   // 站名建议来源（无匹配则无 chips）
     box.innerHTML = l.stops.map((st, i) => {
       const prev = i > 0 ? l.stops[i - 1].t : null;
       const next = i < l.stops.length - 1 ? l.stops[i + 1].t : null;
       const tBad = st.t < 0 || st.t >= 1 || (prev !== null && st.t <= prev) || (next !== null && st.t >= next);
+      // 站名建议 chip：仅空名站展示（源图就近文字，点选才写入；绝不自动命名）
+      const sug = preset && !(st.name && st.name.trim()) ? suggestForStop(preset, st.t) : null;
       return `
       <div class="stop-row ${S.selStop === st.id ? 'sel' : ''} ${S.pending.includes(st.id) ? 'pend' : ''}" data-sid="${st.id}">
         <span class="idx">${i + 1}</span>
         <input type="text" value="${esc(st.name)}" data-ren="${st.id}"
           class="${st.name ? '' : 'warn'}" placeholder="（站名）">
+        ${sug ? `<span class="namehint stop-suggest" data-sugsid="${st.id}" data-sugname="${esc(sug.name)}"
+          title="源图就近文字（距站圆 ${sug.dist}pt），仅供参考、不保证正确；点击采用">${esc(sug.name)}</span>` : ''}
         <input type="text" value="${st.t.toFixed(6)}" data-tedit="${st.id}"
           class="tin${tBad ? ' warn' : ''}" title="弧长位置 t∈[0,1)，可手改（如起点改 0）">
         <button class="mini danger" data-del="${st.id}" title="删除设站">✕</button>
@@ -901,6 +1125,29 @@
     S.arcs.delete(l.id);
     renderAll();
     setStatus(`已更新 ${l.id} 的 path（${l.stops.length} 站按弧长 t 保留，请目视核查站点位置）。`);
+  }
+
+  /** 站圆预置批量落站：一次快照、整批插入、撤销一次回退整批。
+   *  站名一律不写入（预置 nameSuggestion 仅作 chips 建议点选采用）；不自动建换乘编组。 */
+  function importStopsFromPreset() {
+    const l = S.lines.get(S.activeLine);
+    if (!l) return;
+    const item = matchPresetForLine(l);
+    if (!item) { setStatus('当前线路没有匹配的站圆预置（预置按几何签名绑定，与 path-NN 命名无关）。', true); return; }
+    const plan = planStopImport(l, item.stops);
+    if (!plan.total) { setStatus('该预置项没有站圆。', true); return; }
+    if (!plan.inserts.length) {
+      setStatus(`预置 ${plan.total} 圆位置均已有站（|Δt|<0.002），本次未导入。`);
+      return;
+    }
+    snapshot();
+    const added = applyStopImport(l, plan);
+    l.meta.updated = today();
+    renderAll();
+    setStatus(`站圆预置导入「${item.stationGroup}」：新增 ${added.length} 站`
+      + `、跳过 ${plan.skippedExist}（已有站在位）`
+      + (plan.skippedConflict ? `、${plan.skippedConflict}（位置过近冲突）` : '')
+      + `、预置共 ${plan.total} 圆。站名未写入——空名站旁的建议 chips 点选采用；撤销一次回退整批。`);
   }
 
   // ---------- 设站操作 ----------
@@ -1235,6 +1482,19 @@
   $('stopList').addEventListener('click', (e) => {
     const del = e.target.dataset.del;
     if (del) { deleteStop(S.activeLine, del); return; }
+    const sugEl = e.target.closest('[data-sugsid]');   // 站名建议 chip：点选采用（人工确认写入）
+    if (sugEl) {
+      const line = S.lines.get(S.activeLine);
+      const st = line && line.stops.find((s) => s.id === sugEl.dataset.sugsid);
+      if (st) {
+        snapshot();
+        st.name = sugEl.dataset.sugname;
+        line.meta.updated = today();
+        renderAll();
+        setStatus(`已采用建议站名「${st.name}」（可继续修改）。`);
+      }
+      return;
+    }
     const row = e.target.closest('.stop-row');
     if (!row) return;
     if (S.selStop === row.dataset.sid) return;   // 已选中：不动，避免打断输入框
@@ -1355,6 +1615,7 @@
       return;
     }
     if (e.target.id === 'lfUpdatePath') updatePathFromImport();
+    if (e.target.id === 'lfImportStops') importStopsFromPreset();
     if (e.target.id === 'lfArchive') {
       const l = S.lines.get(S.activeLine);
       if (!l) return;
@@ -1450,8 +1711,8 @@
   S.basemapOn = localStorage.getItem('shrail.basemap') === '1';
   $('btnBasemap').addEventListener('click', () => {
     if (!S.basemapOn && !S.calib) {
-      setStatus('无标定参数：先运行 python tools/georef.py <svg> <kml> --emit 生成 data/calibration.json'
-        + '（或用「数据文件」按钮载入），再开底图。', true);
+      setStatus('无标定参数：先运行 python tools/calib2_fit.py（TPS）或 python tools/georef.py <svg> <kml> --emit'
+        + ' 生成 data/calibration.json（或用「数据文件」按钮载入），再开底图。', true);
       return;
     }
     S.basemapOn = !S.basemapOn;
@@ -1459,9 +1720,38 @@
     $('btnBasemap').classList.toggle('primary', S.basemapOn);
     renderWorld();
     setStatus(S.basemapOn
-      ? '底图已开启：© OpenStreetMap contributors（与线路的对位精度≈标定残差 80 m）。'
+      ? `底图已开启：© OpenStreetMap contributors（${calibLabel(S.calib)}；对位精度≈标定残差`
+        + (S.calib && S.calib.model === 'tps' ? '：全图 133 m / 郊区明显改善）' : ' 80 m，仅中4线控区）') + '。'
       : '底图已关闭。');
   });
+
+  // 标定方案切换（TPS v2 ↔ 旧 deg3）：可视化 A/B 与回退通道；偏好记 localStorage
+  S.calibChoice = localStorage.getItem('shrail.calib') === 'deg3' ? 'deg3' : 'tps';
+  function refreshCalibBtn() {
+    $('btnCalib').textContent = S.calibChoice === 'deg3' ? '标定 deg3' : '标定 TPS';
+    $('btnCalib').classList.toggle('primary', S.calibChoice === 'tps');
+    $('btnCalib').disabled = !S.calibTps && !S.calibDeg3;   // 两方案都缺才禁用
+  }
+  $('btnCalib').addEventListener('click', () => {
+    const other = S.calibChoice === 'tps' ? 'deg3' : 'tps';
+    const target = other === 'deg3' ? S.calibDeg3 : S.calibTps;
+    if (!target) {
+      setStatus(`标定方案「${other === 'tps' ? 'TPS' : 'deg3'}」的文件未载入`
+        + (other === 'deg3' ? '（data/calibration-deg3-backup.json 缺失？用「数据文件」载入或 git 历史找回）'
+          : '（data/calibration.json 不是 fmt/calibration@2？运行 python tools/calib2_fit.py 重生成）'), true);
+      return;
+    }
+    S.calibChoice = other;
+    localStorage.setItem('shrail.calib', other);
+    basemapEpoch++;
+    basemapTiles.clear();
+    if (basemapG) basemapG.textContent = '';   // 旧方案瓦片全部作废（epoch 已变）
+    refreshCalibBtn();
+    renderWorld();
+    setStatus(`标定方案已切换为「${calibLabel(target)}」` + (S.basemapOn ? '，底图已按新方案重摆。' : '。')
+      + (other === 'deg3' ? '（回退通道：旧模型仅中4线控区准，郊区漂移 km 级）' : '（边缘标定 v2：郊区大幅改善，中4线 33~105 m）'));
+  });
+  refreshCalibBtn();
 
   const MODE_HINT = {
     select: '选择：点击设站选中（左侧改名）、拖动设站沿线移动、点击线段循环切换状态；左键拖动平移、滚轮缩放。',
@@ -1498,8 +1788,12 @@
     for (const f of e.target.files) {
       try {
         const obj = await readJsonFile(f);
-        if (obj.schema !== 'fmt/import@1') throw new Error('不是 fmt/import@1');
-        addImportRecord(obj);
+        if (obj.schema === 'fmt/import@1') addImportRecord(obj);
+        else if (obj.schema === 'fmt/stations-import@1') {
+          const n = addStationPreset(obj, f.name);
+          setStatus(`已载入站圆预置 ${n} 条（${f.name}）。`);
+        }
+        else throw new Error('不是 fmt/import@1 或 fmt/stations-import@1');
       } catch (err) { setStatus(`${f.name}：${err.message}`, true); }
     }
     e.target.value = '';
@@ -1585,6 +1879,7 @@
     await bootFetchData();
     syncCountersWithLoaded();
     $('btnBasemap').classList.toggle('primary', S.basemapOn && !!S.calib);
+    refreshCalibBtn();
     offerRestore();
     if (!S.view) fitView();
     setStatus(MODE_HINT.select);

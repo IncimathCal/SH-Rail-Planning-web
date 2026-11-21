@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// editor.js 纯逻辑层单测：分段簿记（加站/删站/环线环绕）、stopSeq 水位、status 修正、lineIssues、批量命名。
+// editor.js 纯逻辑层单测：分段簿记（加站/删站/环线环绕）、stopSeq 水位、status 修正、lineIssues、批量命名、
+// 站圆预置批量落站（planStopImport/applyStopImport/suggestForStop）。
 // 用法：node tools/test_editor_logic.js
 
 const L = require(path_join('src', 'editor.js'));
@@ -171,17 +172,88 @@ let bl2 = mkLine(false);
 bl2.stops = [{ id: 'l0001-s01', name: '', t: 0 }, { id: 'l0001-s02', name: '', t: 0.5 }];
 eq(L.planBulkFill(bl2, ['一', '二']).pairs.length, 2, '全部空名时可全填');
 
-// ---------- 标定变换与瓦片数学（fmt/calibration@1，文件存在时） ----------
+// ---------- 站圆预置批量落站（fmt/stations-import@1） ----------
+console.log('station preset import:');
+// 1) 空线全插入
+let pi = mkLine(false);
+let plan = L.planStopImport(pi, [{ t: 0.1 }, { t: 0.5 }, { t: 0.9 }]);
+eq(plan.inserts, [0.1, 0.5, 0.9], '空线：全部接纳、按 t 升序');
+eq([plan.skippedExist, plan.skippedConflict, plan.total], [0, 0, 3], '空线：无跳过');
+// 2) 已有站 Δt<0.002 跳过（exists 只对照原有站）
+let pe = mkLine(false);
+pe.stops = [{ id: 'l0001-s01', name: '已在', t: 0.5 }];
+plan = L.planStopImport(pe, [{ t: 0.5005 }, { t: 0.51 }, { t: 0.3 }]);
+eq(plan.inserts, [0.3, 0.51], '已有站近旁跳过、其余接纳');
+eq(plan.skippedExist, 1, '|Δt|<0.002 计 exists');
+// 3) 预置彼此过近（环线自交/共线圆）→ conflict
+plan = L.planStopImport(mkLine(false), [{ t: 0.3 }, { t: 0.30008 }, { t: 0.30004 }]);
+eq(plan.inserts, [0.3], '过近预置圆只落一个');
+eq(plan.skippedConflict, 2, '其余计 conflict');
+// 4) 越界 t 不计
+plan = L.planStopImport(mkLine(false), [{ t: -0.1 }, { t: 1.0 }, { t: 0.5 }]);
+eq([plan.total, plan.inserts.length], [1, 1], 't∈[0,1) 之外不计');
+// 5) apply：簿记 + 编号 + 空名（建议绝不自动写入）
+let pa = mkLine(false);
+pa.stops = [{ id: 'l0001-s09', name: '已有名', t: 0.5 }];   // 水位外的既有编号
+pa.segments = [];
+pa.status = null;
+const plan2 = L.planStopImport(pa, [{ t: 0.2, nameSuggestion: '甲' }, { t: 0.7, nameSuggestion: '乙' }]);
+const added = L.applyStopImport(pa, plan2);
+eq(pa.stops.map((s) => s.t), [0.2, 0.5, 0.7], '插入后 t 严格递增');
+eq(pa.segments, ['existing', 'existing'], '段数 = 站数-1');
+eq(pa.status, null, '站数≥2 status=null');
+eq(added.map((s) => s.id), ['l0001-s10', 'l0001-s11'], '编号从 max(水位,最大后缀)+1 递增');
+ok(added.every((s) => s.name === '' && s.geo === null), '新站一律空名（建议不写入）');
+ok(pa.stops[1].name === '已有名', '已有站名不被覆盖');
+ok(!L.lineIssues({ ...pa, segments: pa.segments }).some((x) => x.includes('t 未递增')), 't 合法');
+// 6) 环线：段数 = 站数
+let pl = mkLine(true);
+L.applyStopImport(pl, L.planStopImport(pl, [{ t: 0.1 }, { t: 0.4 }, { t: 0.8 }]));
+eq(pl.segments.length, pl.stops.length, '环线预置落站后段数=站数');
+eq(pl.status, null, '环线 status=null');
+// 7) 幂等：再跑全 exists
+plan = L.planStopImport(pa, [{ t: 0.2 }, { t: 0.7 }]);
+eq([plan.inserts.length, plan.skippedExist], [0, 2], '重复导入全部跳过');
+// 8) 删一站后簿记仍成立（与 segRemove 联动）
+del(pa, pa.stops.findIndex((s) => s.t === 0.5));
+eq(pa.segments.length, pa.stops.length - 1, '预置站+删站后段数不变量');
+// 9) 整批撤销等价（快照字符串往返）
+let pu = mkLine(false);
+pu.stops = [{ id: 'l0001-s01', name: '旧站', t: 0.3 }];
+pu.segments = [];
+const snap = JSON.stringify({ lines: [pu] });
+L.applyStopImport(pu, L.planStopImport(pu, [{ t: 0.1 }, { t: 0.6 }, { t: 0.8 }]));
+ok(pu.stops.length === 4, '撤销前：已批量落站');
+const restored = JSON.parse(snap).lines[0];
+eq(restored.stops.length, 1, '撤销（快照还原）后回到 1 站');
+eq(restored.stops[0].name, '旧站', '撤销后原站原样');
+// 10) 站名建议 suggestForStop
+const item = { stops: [
+  { t: 0.2, nameSuggestion: '乙站', suggestDist: 20.1 },
+  { t: 0.5, nameSuggestion: '甲站', suggestDist: 12.3 },
+] };
+eq(L.suggestForStop(item, 0.5005).name, '甲站', 't 就近匹配建议');
+eq(L.suggestForStop(item, 0.2).name, '乙站', '精确匹配建议');
+ok(L.suggestForStop(item, 0.7) === null, '超出 dtEps 无建议');
+ok(L.suggestForStop({ stops: [{ t: 0.5 }] }, 0.5) === null, '无 nameSuggestion 不建议');
+ok(L.suggestForStop(null, 0.5) === null, '无预置项不崩');
+
+// ---------- 标定变换与瓦片数学（fmt/calibration@1 deg3 / @2 tps，文件存在时） ----------
 console.log('calibration:');
 const calibFile = require('path').join(__dirname, '..', 'data', 'calibration.json');
 if (require('fs').existsSync(calibFile)) {
   const calib = JSON.parse(require('fs').readFileSync(calibFile, 'utf8'));
-  const uv = calib.uv;
-  const pts = [
-    [uv.cx - uv.scale, uv.cy - uv.scale], [uv.cx + uv.scale, uv.cy - uv.scale],
-    [uv.cx - uv.scale, uv.cy + uv.scale], [uv.cx + uv.scale, uv.cy + uv.scale],
-    [uv.cx, uv.cy],
-  ];
+  const isTps = calib.model === 'tps';
+  const pts = isTps
+    ? [[1000, 1000], [11000, 1000], [1000, 11000], [11000, 11000], [6000, 6000]]
+    : (() => {
+      const uv = calib.uv;
+      return [
+        [uv.cx - uv.scale, uv.cy - uv.scale], [uv.cx + uv.scale, uv.cy - uv.scale],
+        [uv.cx - uv.scale, uv.cy + uv.scale], [uv.cx + uv.scale, uv.cy + uv.scale],
+        [uv.cx, uv.cy],
+      ];
+    })();
   for (const [x, y] of pts) {
     const [lon, lat] = L.calibForward(calib, x, y);
     ok(lon > 115 && lon < 125 && lat > 28 && lat < 34,
@@ -191,10 +263,12 @@ if (require('fs').existsSync(calibFile)) {
     ok(err < 1e-3, `geo→svg→geo 往返误差 ${err.toExponential(2)} < 1e-3`);
   }
   // 仿射初值本身在合理范围内（供牛顿迭代收敛）
-  const affGuess = (() => {
-    const a0 = calib.coef.affineLon, b0 = calib.coef.affineLat;
-    return [a0[0] + a0[1] + a0[2], b0[0] + b0[1] + b0[2]];
-  })();
+  const affGuess = isTps
+    ? [calib.affine.lon[0], calib.affine.lat[0]]
+    : (() => {
+      const a0 = calib.coef.affineLon, b0 = calib.coef.affineLat;
+      return [a0[0] + a0[1] + a0[2], b0[0] + b0[1] + b0[2]];
+    })();
   ok(Math.abs(affGuess[0] - 121.5) < 2 && Math.abs(affGuess[1] - 31.2) < 1, 'affine 系数量级合理');
   // 外部真值（6/14/15/23 号线 SVG 弧长点 ↔ GE 描线 KML 对应点，2026-11-21 提取；
   // 2026-11-21 起坐标为 .ai 页面基准——旧框选导出基准 + (4684.9, 4040.53) 平移，

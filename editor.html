@@ -92,6 +92,8 @@
   .namehint { display: inline-block; font-size: 11px; padding: 0 5px; margin: 1px 3px 1px 0;
     border: 1px solid var(--acc); border-radius: 3px; color: var(--acc); cursor: pointer; }
   .namehint:hover { background: var(--acc); color: #fff; }
+  .stop-row .namehint.stop-suggest { flex: none; padding: 1px 5px; }
+  #lineform .preset-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 
   .stop-row { display: flex; align-items: center; gap: 4px; padding: 1px 2px; }
   .stop-row .idx { color: var(--dim); width: 22px; text-align: right; flex: none; font-size: 11px; }
@@ -147,7 +149,8 @@
   </div>
   <div class="tb-group">
     <button id="btnUndo" title="Ctrl+Z">撤销</button>
-    <button id="btnBasemap" title="下垫 OpenStreetMap 瓦片底图（需 data/calibration.json 与网络；仅本地对位参考）">底图 OSM</button>
+    <button id="btnBasemap" title="下垫 OpenStreetMap 瓦片底图（需 data/calibration*.json 与网络；仅本地对位参考）">底图 OSM</button>
+    <button id="btnCalib" title="切换标定方案：TPS（边缘标定 v2，data/calibration.json）↔ deg3（旧全局三阶，data/calibration-deg3-backup.json）；影响底图摆位与地理派生，偏好记入浏览器">标定 TPS</button>
   </div>
   <div class="tb-group">
     <div class="seg-legend">
