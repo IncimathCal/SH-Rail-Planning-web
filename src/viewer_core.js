@@ -13,7 +13,9 @@
   'use strict';
 
   // ---------- 常量（结构字段与枚举全英文；中文仅显示文案） ----------
-  const SEG_STATUS_OPACITY = { existing: 1.0, approved: 0.75, future: 0.45 };
+  // 三档透明度＝编辑器画布同值（2026-11-22 用户裁定：查看器风格未定前复用编辑器画布参数；
+  // editor.html .seg-existing/.seg-approved/.seg-future），地图层与 KML 导出 alpha 同源
+  const SEG_STATUS_OPACITY = { existing: 1.0, approved: 0.5, future: 0.85 };
   const DEFAULT_LINE_COLOR = '#888888';
   const GROUP_TYPE_ZH = { 'same-station': '同站换乘', 'out-of-station': '出闸换乘', junction: '接轨站' };
   const ROLE_ZH = { main: '主线', branch: '支线', connector: '联络线', standalone: '独立线' };
@@ -439,7 +441,9 @@
   // 单层 match 版（备用/文档语义；查看器现行按 segStatus 拆三层渲染，走 buildSegLayerOpacity）。
   function buildLineOpacity(selectedIds, emphasizeExisting) {
     const statusExpr = emphasizeExisting
-      ? ['match', ['get', 'segStatus'], 'existing', 1.0, 'approved', 0.75, 'future', 0.45, 0.9]
+      ? ['match', ['get', 'segStatus'],
+        'existing', SEG_STATUS_OPACITY.existing, 'approved', SEG_STATUS_OPACITY.approved,
+        'future', SEG_STATUS_OPACITY.future, 0.9]
       : 1.0;
     const sel = Array.isArray(selectedIds) ? [...new Set(selectedIds.filter(Boolean).map(String))] : [];
     if (!sel.length) return statusExpr;

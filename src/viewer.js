@@ -206,27 +206,31 @@
   }
 
   // ---------- 地图 ----------
-  // 分段线层：按 segStatus 拆三份（绘制序 future → approved → existing，既有压顶）。
-  // line-dasharray 不支持数据驱动，远期虚线只能整层设；透明度走 buildSegLayerOpacity。
+  // 画布视觉参数＝编辑器同值常量（2026-11-22 用户裁定：查看器风格未定前复用编辑器画布，
+  // 不自创「成品地图」的随 zoom 缩细——那会让深色系线色在初始视野下糊成黑底）：
+  // 线宽 7px 圆帽、远期虚线 10/7（MapLibre dasharray 单位＝线宽倍数，10/7÷7 → [1.4286, 1]）、
+  // 药丸厚度 15（＝2×大圈半径 7.5）＋黑边 2.2、箭头 icon-size 1.0（glyph 24px 画布 ≈ 编辑器
+  // 18×12 三角）。透明度走 buildSegLayerOpacity（编辑器三档 1/.5/.85 同源）。
+  // 站名标签分级保留（2026-11-22 用户裁定「拉近再显示的设计非常好」），本段不涉及。
   const LINE_LAYER_IDS = ['lines-future', 'lines-approved', 'lines-existing'];
   function lineLayerDef(id) {
     const status = id.replace(/^lines-/, '');
     const paint = {
       'line-color': ['get', 'color'],
       'line-opacity': V.buildSegLayerOpacity([], status, S.emphasize),
-      'line-width': ['interpolate', ['linear'], ['zoom'], 8, 1.2, 13, 4, 16, 8],
+      'line-width': 7,
+      'line-cap': 'round',
     };
-    if (status === 'future') paint['line-dasharray'] = [2, 2];
+    if (status === 'future') paint['line-dasharray'] = [1.4286, 1];
     return { id, type: 'line', source: 'lines', filter: ['==', ['get', 'segStatus'], status], paint };
   }
-  // 药丸厚度与双线换乘大圈直径视觉等宽：大圈半径 z8/13/16＝3.2/7/11、黑边 1.4/2.4/3.0，
-  // 外层黑宽＝2×半径＋黑边，内层白宽＝2×半径；line-cap round 端帽即得胶囊形。
+  // 药丸：外黑宽＝2×7.5＋2×2.2＝19.4、内白宽 15（编辑器 grp-pill thick/border 同值）；圆帽即胶囊。
   const PILL_LAYER_DEFS = [
     {
       id: 'pills-outer', type: 'line', source: 'pills',
       paint: {
         'line-color': '#000000',
-        'line-width': ['interpolate', ['linear'], ['zoom'], 8, 7.8, 13, 16.4, 16, 25],
+        'line-width': 19.4,
         'line-cap': 'round',
       },
     },
@@ -234,7 +238,7 @@
       id: 'pills-inner', type: 'line', source: 'pills',
       paint: {
         'line-color': '#ffffff',
-        'line-width': ['interpolate', ['linear'], ['zoom'], 8, 6.4, 13, 14, 16, 22],
+        'line-width': 15,
         'line-cap': 'round',
       },
     },
@@ -246,7 +250,7 @@
     layout: {
       'icon-image': ['get', 'icon'],
       'icon-rotate': ['get', 'angle'],
-      'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.55, 13, 0.8, 16, 1.0],
+      'icon-size': 1.0,
       'icon-allow-overlap': true,
       'icon-ignore-placement': true,
     },
@@ -297,15 +301,11 @@
           {
             id: 'stops', type: 'circle', source: 'stops',
             paint: {
+              // 编辑器同值常量：普通站圈 r 5.5/描边 2，换乘大圈 r 7.5/黑边 2.2（.stop-c/.stop-merge）
               'circle-color': '#ffffff',
-              'circle-radius': ['interpolate', ['linear'], ['zoom'],
-                8, ['case', ['get', 'big'], 3.2, 2.0],
-                13, ['case', ['get', 'big'], 7.0, 4.5],
-                16, ['case', ['get', 'big'], 11.0, 7.5]],
+              'circle-radius': ['case', ['get', 'big'], 7.5, 5.5],
               'circle-stroke-color': ['get', 'stroke'],
-              'circle-stroke-width': ['interpolate', ['linear'], ['zoom'],
-                8, ['case', ['get', 'dark'], 1.4, 1.0],
-                16, ['case', ['get', 'dark'], 3.0, 2.0]],
+              'circle-stroke-width': ['case', ['get', 'dark'], 2.2, 2],
             },
           },
           ARROWS_LAYER_DEF,            // 箭头压顶（线端标志，盖过站圈不被遮挡）
@@ -400,8 +400,10 @@
         'https://webrd0' + n + '.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}'),
     });
     const before = map.getLayer(LINE_LAYER_IDS[0]) ? LINE_LAYER_IDS[0] : undefined;
-    map.addLayer({ id: 'basemap-osm', type: 'raster', source: 'basemap-osm', layout: { visibility: 'none' } }, before);
-    map.addLayer({ id: 'basemap-gaode', type: 'raster', source: 'basemap-gaode', layout: { visibility: 'none' } }, before);
+    map.addLayer({ id: 'basemap-osm', type: 'raster', source: 'basemap-osm',
+      layout: { visibility: 'none' }, paint: { 'raster-opacity': 0.45 } }, before);
+    map.addLayer({ id: 'basemap-gaode', type: 'raster', source: 'basemap-gaode',
+      layout: { visibility: 'none' }, paint: { 'raster-opacity': 0.45 } }, before);
   }
   // 应用到地图：层可见性＋显示坐标变换＋四个 source 全量 setData 重渲染＋标签重排
   //（复用既有 render 函数，mode 变了自然产出变换后坐标）。箭头 icon-rotate 角度是 WGS84

@@ -205,7 +205,7 @@ eq(V.filterLabels(bigLabels, 12), V.filterLabels(bigLabels, 12, V.LABEL_CAP), '�
 
 // ---------- buildLineOpacity ----------
 console.log('buildLineOpacity:');
-const statusExpr = ['match', ['get', 'segStatus'], 'existing', 1.0, 'approved', 0.75, 'future', 0.45, 0.9];
+const statusExpr = ['match', ['get', 'segStatus'], 'existing', 1.0, 'approved', 0.5, 'future', 0.85, 0.9];
 eq(V.buildLineOpacity([], true), statusExpr, '未选＋开关开 → 状态三档');
 eq(V.buildLineOpacity([], false), 1.0, '未选＋开关关 → 全 1.0');
 eq(V.buildLineOpacity(['la', 'lb'], true),
@@ -218,14 +218,14 @@ eq(V.buildLineOpacity(null, true), statusExpr, 'null 选中集不崩');
 // ---------- statusOpacity / buildSegLayerOpacity（按 segStatus 拆层版） ----------
 console.log('statusOpacity / buildSegLayerOpacity:');
 eq(V.statusOpacity('existing', true), 1.0, '既有全不透明');
-eq(V.statusOpacity('approved', true), 0.75, '已批复 0.75');
-eq(V.statusOpacity('future', true), 0.45, '远期 0.45');
+eq(V.statusOpacity('approved', true), 0.5, '已批复 0.5（编辑器同值）');
+eq(V.statusOpacity('future', true), 0.85, '远期 0.85（编辑器同值——远期反而比批复亮）');
 eq(V.statusOpacity('weird', true), 0.9, '未知状态兜 0.9（与 match 版默认一致）');
 eq(V.statusOpacity('future', false), 1.0, '开关关＝全 1.0');
-eq(V.buildSegLayerOpacity([], 'future', true), 0.45, '无选中 → 常量透明度');
+eq(V.buildSegLayerOpacity([], 'future', true), 0.85, '无选中 → 常量透明度');
 eq(V.buildSegLayerOpacity(null, 'approved', false), 1.0, 'null 选中集不崩');
 eq(V.buildSegLayerOpacity(['la', 'la'], 'future', true),
-  ['case', ['in', ['get', 'lineId'], ['literal', ['la']]], 0.45, 0.08], '选中集去重＋未选淡化 0.08');
+  ['case', ['in', ['get', 'lineId'], ['literal', ['la']]], 0.85, 0.08], '选中集去重＋未选淡化 0.08');
 eq(V.buildSegLayerOpacity(['lb'], 'existing', false),
   ['case', ['in', ['get', 'lineId'], ['literal', ['lb']]], 1.0, 0.08], '开关关＋选中 → 选中线 1.0');
 
@@ -273,7 +273,7 @@ ok(kml.includes('0.200000,0.300000,0'), '站坐标 6 位小数');
 ok(kml.includes('0.000000,0.000000,0 1.000000,0.000000,0'), '段坐标逐点一致');
 ok(kml.includes('<color>ff0000ff</color>'), 'existing 段全不透明（#ff0000 → ff0000ff）');
 const kmlFut = V.buildLineKML('lc', lm, []);
-ok(kmlFut.includes('<color>73'), 'lc（未知状态退 future）alpha 0x73');
+ok(kmlFut.includes('<color>d9'), 'lc（未知状态退 future）alpha 0xd9（0.85）');
 const kmlFlat = V.buildLineKML('lc', lm, [], { emphasizeExisting: false });
 ok(kmlFlat.includes('<color>ff'), '关闭突出既有时 KML 全不透明');
 ok(!kmlFlat.includes('<color>73'), '不再含半透明色');
