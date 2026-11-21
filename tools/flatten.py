@@ -9,13 +9,21 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
   <out>/lines.geojson  线路×分段，每 feature 一条 LineString
                         properties: lineId / name / aliases / color / role /
                         layer / loop / segIndex / segStatus / sectionName
-                        （sectionName＝所属分段名，空名段省略该键）
+                        （sectionName＝所属分段名，空名段省略该键；
+                        layer＝线路 meta.layer，中文值合法，查看器左栏
+                        类别过滤用）
   <out>/stops.geojson  设站，每 feature 一个 Point
                         properties: sid / name / lineId / lineName / t /
                         groupId / groupType；出省箭头（v1.5 kind:"arrow"，
                         非真正站点）保留输出并额外带 kind:"arrow" 键，
                         普通站不写该键（geo 定位与其他站同口径）；
                         kind:"block"（线路所）整条剔除——正式网页隐藏。
+  <out>/index.json     查看器左栏线路显示顺序索引（net-index@1）：
+                        {"fmt":"net-index@1","lineOrder":[线id,...]}。
+                        顺序来源＝<data>/manifest.json 可选字段 lineOrder
+                        （编辑器顶栏「排序」面板维护）：列出的线在前（按其
+                        顺序），未列出的按现有顺序排后；数组为实际输出线
+                        （归档线剔除后）的完整顺序。feature 产出顺序同此序。
 
 复用（绝不重推导）：
   - tools/svg_parse.py  path_from_d（= parse_path + flatten + ArcPath）：
@@ -112,6 +120,18 @@ def collect_line_files(data_dir):
     else:
         files = sorted((data / "lines").glob("*.json"))
     return files
+
+
+def read_manifest_order(data_dir):
+    """读 manifest.json 可选字段 lineOrder（查看器左栏显示顺序；线 id 数组）。
+    缺失/非数组/无 manifest 返回 None（＝无自定义顺序，按现有顺序输出）。"""
+    mf = Path(data_dir) / "manifest.json"
+    if not mf.is_file():
+        return None
+    lo = json.loads(mf.read_text(encoding="utf-8")).get("lineOrder")
+    if not isinstance(lo, list):
+        return None
+    return [x for x in lo if isinstance(x, str)]
 
 
 def load_groups(data_dir):
@@ -264,7 +284,8 @@ def main():
     ap = argparse.ArgumentParser(
         prog="flatten.py",
         description="录入数据（SVG 画板坐标贝塞尔 path）→ 经标定 TPS 正变换 → "
-                    "WGS84 GeoJSON（lines.geojson + stops.geojson），供阶段 3 查看器渲染。")
+                    "WGS84 GeoJSON（lines.geojson + stops.geojson）＋显示顺序索引 index.json，"
+                    "供阶段 3 查看器渲染。")
     ap.add_argument("--data", default="data", help="权威数据目录（默认 data）")
     ap.add_argument("--calib", default=None,
                     help="标定 JSON 路径（默认 <data>/calibration.json，"
@@ -281,6 +302,9 @@ def main():
     files = collect_line_files(args.data)
     if not files:
         sys.exit(f"错误：{args.data} 下未找到任何线路文件")
+    # 先整体读入（含 schema/归档过滤），再按显示顺序排列——顺序影响 feature
+    # 产出次序与 index.json，须在读入全部线 id 之后才能定序
+    loaded = []   # [(Path, line)]
     for lf in files:
         line = json.loads(lf.read_text(encoding="utf-8"))
         if (line.get("meta") or {}).get("archived"):
@@ -293,6 +317,18 @@ def main():
             sys.exit(f"错误：{lf.name} 为 line@1，请先在编辑器载入重存为 @2（v1.5 分段一等实体）")
         if schema != "fmt/line@2":
             sys.exit(f"错误：{lf.name} 的 schema {schema!r} 不是 fmt/line@2，拒绝处理")
+        loaded.append((lf, line))
+
+    # 显示顺序（查看器左栏序）：manifest.lineOrder 列出的线在前（按其顺序），
+    # 未列出的按现有顺序排后（稳定排序保持 manifest 清单序/文件名序不变）
+    manifest_order = read_manifest_order(args.data)
+    if manifest_order:
+        rank = {lid: i for i, lid in enumerate(manifest_order)}
+        n_rank = len(rank)
+        loaded.sort(key=lambda it: rank.get(it[1].get("id"), n_rank))
+
+    emitted_order = []   # 实际输出线的 id 顺序（index.json 内容）
+    for lf, line in loaded:
         # 空白规范化：svg_parse 的词法把空格误当命令字符（真实 AI 导出 d 串为
         # 压缩格式无空格，仅手写样张含空格），此处统一换成逗号——SVG path 语法
         # 中空白与逗号同为分隔符，语义等价且与 src/geom.js（忽略空白）口径一致
@@ -301,10 +337,18 @@ def main():
         lf_, sf_ = flatten_line(line, arc, tps, group_color, stop_group)
         line_feats += lf_
         stop_feats += sf_
+        emitted_order.append(line.get("id"))
 
     out = Path(args.out)
     sz1 = write_geojson(out / "lines.geojson", line_feats)
     sz2 = write_geojson(out / "stops.geojson", stop_feats)
+    # 顺序索引（结构字段全英文；线 id 本身为英文）——查看器左栏排序数据源
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "index.json").write_text(
+        json.dumps({"fmt": "net-index@1", "lineOrder": emitted_order},
+                   ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8")
+    sz3 = (out / "index.json").stat().st_size
 
     # 汇总（含有限性抽检：任一坐标非有限数即报错；兼容 LineString/Point 两层结构）
     n_pts = sum(len(f["geometry"]["coordinates"]) for f in line_feats)
@@ -318,6 +362,8 @@ def main():
           f"（线路所已剔除）")
     print(f"written: {out / 'lines.geojson'}（{sz1 / 1024:.0f} KB）")
     print(f"written: {out / 'stops.geojson'}（{sz2 / 1024:.0f} KB）")
+    print(f"written: {out / 'index.json'}（{sz3} B，lineOrder {len(emitted_order)} 线"
+          + (f"，自定义序前 {len(set(manifest_order or []))} 列" if manifest_order else "，无自定义顺序") + "）")
     return 0
 
 

@@ -110,8 +110,12 @@
   /** fmt/line@1 → @2 迁移：segments 由状态字符串数组改为分段索引数组，
    *  按连续同状态块生成 sections（name 一律 ""——先建后补，绝不自动起名；status 取块状态），
    *  schema 写 @2。就地修改并返回生成分段数；非 @1 形态（schema 已 @2 且无字符串元素）返回 0 不动。
-   *  注：环线环绕两端同状态的块按线性扫描仍生成两个分段（合法，可一键并段），不自动跨环绕合并。 */
+   *  注：环线环绕两端同状态的块按线性扫描仍生成两个分段（合法，可一键并段），不自动跨环绕合并。
+   *  另兼任「站数<2 缺线路级 status」的兜底（2026-11-22 属性面板删状态字段后 UI 不再有录入口，
+   *  而 validate 对 <2 站仍必填）：任何形态的 line 在此统一补 'future'——载入五路径
+   *  （拖入/工作区/自动拉取/暂存恢复/撤销还原）都过本函数，缺则补（结构枚举缺省，非起名）。 */
   function migrateLineToV2(line) {
+    if (line && line.stops && line.stops.length < 2 && !SEG_ORDER.includes(line.status)) line.status = 'future';
     if (!line || !Array.isArray(line.segments)) {
       if (line && line.schema === 'fmt/line@1') { line.schema = 'fmt/line@2'; if (!line.sections) line.sections = []; }
       return 0;
@@ -274,6 +278,23 @@
     return i === 0 || i === (line.stops || []).length;
   }
 
+  /** 站类型循环切换（设站列表 kind-tgl 按钮；2026-11-22）：按位置约束返回下一个类型。
+   *  kind＝当前类型（null/缺省＝普通车站，'block'＝线路所，'arrow'＝出省箭头）；
+   *  opts.isLoop＝环线；opts.isEnd＝该站位于头/尾（下标 0 或最末，与 validate.py 的 arrow 端点规则一致）。
+   *    非环线首/尾：null→'block'→'arrow'→null（三种都合法——arrow 可循环改回站，免删了重放）；
+   *    非环线中途：null→'block'→null（arrow 只许首尾）；
+   *    环线任意位置：null→'block'→null（环线无 arrow）。
+   *  返回 null 表示普通车站（数据不写 kind 字段）；对异常输入（中途/环线的 arrow 起点）同样给出
+   *  定义良好的出路（一律回 null），按钮永远可点、一键修复非法状态。 */
+  function nextStopKind(kind, opts) {
+    const cur = (kind === 'block' || kind === 'arrow') ? kind : null;
+    const o = opts || {};
+    if (o.isLoop || !o.isEnd) return cur === null ? 'block' : null;
+    if (cur === null) return 'block';
+    if (cur === 'block') return 'arrow';
+    return null;
+  }
+
   /** 保存前客户端自检（与 validate.py 规则对应的子集） */
   function lineIssues(l) {
     const issues = [];
@@ -386,6 +407,28 @@
       .sort((a, b) => a.localeCompare(b, 'zh'));
     if (byLayer.has(null)) names.push(null);
     return names.map((k) => ({ layer: k, lines: byLayer.get(k).sort((a, b) => (a.id < b.id ? -1 : 1)) }));
+  }
+
+  /** 线路显示顺序（查看器左栏序，2026-11-22 需求 5）规范化（纯逻辑，node 单测覆盖）。
+   *  order＝manifest.lineOrder 存的原始数组（可缺失/含已删线 id/杂物），lineIds＝当前全部线 id；
+   *  返回完整覆盖 lineIds 的新数组：先按 order 中出现的合法 id（去重、保序）排列，
+   *  未列出的线按 id 升序补到末尾（新建线即此路径自然落末尾）。
+   *  order 非数组/为空＝全部按 id 升序（缺省回退，与现状顺序一致）。
+   *  编辑器侧 S.lineOrder 只存原始值、用时经本函数取生效顺序——按文件零散载入
+   *  （manifest 先于线路文件到达）不会误清尚未载入的线 id。 */
+  function normalizeLineOrder(order, lineIds) {
+    const ids = [...(lineIds || [])];
+    const known = new Set(ids);
+    const out = [];
+    if (Array.isArray(order)) {
+      for (const x of order) {
+        if (typeof x === 'string' && known.has(x) && !out.includes(x)) out.push(x);
+      }
+    }
+    for (const id of ids.slice().sort()) {   // id 定长 lNNNN，字典序＝升序
+      if (!out.includes(id)) out.push(id);
+    }
+    return out;
   }
 
   /** 接轨站（stationGroups type:'junction'）合并圈描边色：按成员线角色优先级取色，
@@ -588,10 +631,11 @@
 
   const SHLogic = { SEG_ORDER, SEG_LABEL, ROLE_LABEL, EPS, segInsert, segRemove,
     pruneSections, migrateLineToV2, planSectionSplit, applySectionMerge, sectionSpanOf, sectionIssuesOf,
-    canPlaceArrow, planGroupPillChain,
+    canPlaceArrow, planGroupPillChain, nextStopKind,
     nextStopSeq, fixStatusField, lineIssues, planBulkFill,
     planStopImport, applyStopImport, suggestForStop,
     layerGroupsOf, junctionStroke, planStationGroup,
+    normalizeLineOrder,
     calibForward, calibInverse, tpsForward, tpsInverse, poly3Forward, poly3Inverse,
     lonToTileX, latToTileY, tileXToLon, tileYToLat };
   global.SHEditorLogic = SHLogic;
@@ -624,6 +668,9 @@
     lines: new Map(),        // lid -> line 对象（fmt/line@1，可直接序列化）
     groups: null,            // fmt/groups@1 或 null（首份保存时初始化）
     manifest: null,          // fmt/manifest@1 或 null
+    lineOrder: null,         // 线路显示顺序（查看器左栏序）：线 id 原始数组或 null（缺省）。
+                             // 只存原始值，生效顺序经 normalizeLineOrder 现算（清失效 id、补缺线到末尾）；
+                             // 随 manifest.lineOrder 存取，不参与编号水位（stopSeq 等不受影响）
     imports: [],             // {source, imported, paths:[{sourceLayer,color,path}]}
     stationPresets: [],      // fmt/stations-import@1 的 items（站圆预置，只读参考数据，不进撤销/暂存）
     calib: null,             // fmt/calibration@2（model:"tps"，手动标定 TPS v2；svg→经纬度）。渲染恒用现行 calibration.json
@@ -685,7 +732,7 @@
   function snapshot() {
     const s = JSON.stringify({
       lines: [...S.lines.values()],
-      groups: S.groups, imports: S.imports,
+      groups: S.groups, imports: S.imports, lineOrder: S.lineOrder,
     });
     if (S.undo.length && S.undo[S.undo.length - 1] === s) return;   // 与栈顶相同不压栈（防空转膨胀）
     S.undo.push(s);
@@ -699,6 +746,7 @@
     for (const l of d.lines) migrateLineToV2(l);
     S.lines = new Map(d.lines.map((l) => [l.id, l]));
     S.groups = d.groups; S.imports = d.imports;
+    S.lineOrder = Array.isArray(d.lineOrder) ? d.lineOrder : null;   // 旧快照无此键＝null（回退 id 升序）
     S.arcs = new Map();
     if (S.selImport && !S.imports.some((im) => im.source === S.selImport.source)) S.selImport = null;
     if (!S.lines.has(S.activeLine)) S.activeLine = null;
@@ -717,6 +765,7 @@
           savedAt: Date.now(),
           lines: [...S.lines.values()],
           groups: S.groups, imports: S.imports, activeLine: S.activeLine,
+          lineOrder: S.lineOrder,
         }));
         lsFailed = false;
       } catch (e) {
@@ -740,6 +789,8 @@
       });
       S.lines = new Map(snap.lines.map((l) => [l.id, l]));
       S.groups = snap.groups;
+      // 暂存里的显示顺序较新则采用；旧暂存（功能上线前）无此键则保留 boot 时读到的 manifest 顺序
+      if (Array.isArray(snap.lineOrder)) S.lineOrder = snap.lineOrder;
       // 导入记录：同名来源以刚从 import/ 磁盘载入的为准（可能比暂存新），其余保留暂存里的
       const diskSources = new Set(S.imports.map((i) => i.source));
       S.imports = (snap.imports || []).filter((i) => !diskSources.has(i.source)).concat(S.imports);
@@ -845,7 +896,12 @@
       return;
     }
     if (obj && obj.schema === 'fmt/groups@1') { snapshot(); S.groups = obj; return; }
-    if (obj && obj.schema === 'fmt/manifest@1') { S.manifest = obj; return; }
+    if (obj && obj.schema === 'fmt/manifest@1') {
+      S.manifest = obj;
+      // 单独载入 manifest：带有显示顺序则采用（缺失不清洗当前顺序——线路文件可能尚未到齐）
+      if (Array.isArray(obj.lineOrder)) S.lineOrder = obj.lineOrder;
+      return;
+    }
     if (obj && obj.schema === 'fmt/calibration@1') {
       setStatus('旧 deg3 标定已停用：渲染恒用手动标定 TPS v2（data/calibration.json）。'
         + '备份文件仍保留在 data/，回滚请走 git 或直接替换 calibration.json。', true);
@@ -871,6 +927,8 @@
     if (groups) S.groups = groups;
     const manifest = await get('data/manifest.json');
     if (manifest) S.manifest = manifest;
+    // 显示顺序原始值直接存（生效顺序用时经 normalizeLineOrder 现算，见 S.lineOrder 注释）
+    if (manifest && Array.isArray(manifest.lineOrder)) S.lineOrder = manifest.lineOrder;
     // 标定：恒用现行 data/calibration.json（手动标定 TPS v2；旧 deg3 备份文件保留但不再载入，回滚走 git）
     const calib = await get('data/calibration.json');
     if (calib) takeCalibration(calib);
@@ -1354,6 +1412,33 @@
   }
 
   // ---------- 侧栏渲染 ----------
+  // 导入源/线路列表的筛选与翻页是**临时 UI 状态**（2026-11-22）：不进快照、不进撤销、不进自动暂存，
+  // 重载后回默认（全部/第 1 页）——翻页/筛选不触碰数据，与编辑操作（先 snapshot 再改）彻底分离。
+  const IMP_PAGE_SIZE = 10;                       // 导入源模块每页条数
+  const impListUi = new Map();                    // 导入源 source -> {filter:'all'|'unbound'|'bound', page}
+  function impUiOf(source) {
+    let st = impListUi.get(source);
+    if (!st) { st = { filter: 'all', page: 1 }; impListUi.set(source, st); }
+    return st;
+  }
+  /** 导入源条目的显示序（sourceLayer 拼音序；已建/未建混排同一序列）——分页与定位共用同一口径 */
+  function impRowsOf(imp) {
+    return [...imp.paths].sort((a, b) => a.sourceLayer.localeCompare(b.sourceLayer, 'zh'));
+  }
+  /** 画布点选/双击未建线后的左栏定位辅助：全部/未建线筛选下把该模块翻到目标行所在页
+   *  （筛选为「已建线」时画布上的未建线行本就不可见，尊重筛选不强行翻页） */
+  function pageImportIntoView(source, sourceLayer) {
+    const imp = S.imports.find((i) => i.source === source);
+    if (!imp) return;
+    const ui = impUiOf(source);
+    if (ui.filter === 'bound') return;
+    const bound = new Set([...S.lines.values()].map((l) => l.path));
+    const rows = ui.filter === 'unbound'
+      ? impRowsOf(imp).filter((p) => !bound.has(p.path)) : impRowsOf(imp);
+    const idx = rows.findIndex((p) => p.sourceLayer === sourceLayer);
+    if (idx >= 0) ui.page = Math.floor(idx / IMP_PAGE_SIZE) + 1;
+  }
+
   function renderImportList() {
     const box = $('impList');
     if (!S.imports.length) {
@@ -1363,11 +1448,23 @@
     const bound = new Set([...S.lines.values()].map((l) => l.path));
     let html = '';
     for (const imp of S.imports) {
-      html += `<div class="imp-src">${esc(imp.source)}（${imp.imported}）</div>`;
       // 渲染用副本按 sourceLayer 拼音序排列（已建线与未建线混排同一序列）；
-      // S.imports 本身顺序不动——其载入顺序被 path 精确匹配（importHintsFor/matchPresetForLine）等逻辑遍历依赖。
-      const rows = [...imp.paths].sort((a, b) => a.sourceLayer.localeCompare(b.sourceLayer, 'zh'));
-      for (const p of rows) {
+      // S.imports 本身顺序不动——其载入顺序被 path 精确匹配（matchPresetForLine）等逻辑遍历依赖。
+      const rows = impRowsOf(imp);
+      const ui = impUiOf(imp.source);
+      const filtered = ui.filter === 'all'
+        ? rows
+        : rows.filter((p) => (ui.filter === 'bound') === bound.has(p.path));
+      const pages = Math.max(1, Math.ceil(filtered.length / IMP_PAGE_SIZE));
+      if (ui.page > pages) ui.page = pages;   // 建线/切筛选后结果变短：页码回正（临时状态，无快照）
+      const fltBtn = (v, lab) =>
+        `<button class="mini${ui.filter === v ? ' primary' : ''}" data-impfilter="${v}">${lab}</button>`;
+      html += `<div class="imp-group" data-igsrc="${esc(imp.source)}">
+        <div class="imp-src">${esc(imp.source)}（${imp.imported}）</div>
+        <div class="imp-filter">${fltBtn('all', '全部')}${fltBtn('unbound', '未建线')}${fltBtn('bound', '已建线')}
+          <span class="imp-count">${ui.filter === 'all' ? `${rows.length} 条` : `${filtered.length}/${rows.length} 条`}</span></div>`;
+      const slice = filtered.slice((ui.page - 1) * IMP_PAGE_SIZE, ui.page * IMP_PAGE_SIZE);
+      for (const p of slice) {
         const isBound = bound.has(p.path);
         const sel = S.selImport && S.selImport.source === imp.source
           && S.selImport.sourceLayer === p.sourceLayer;
@@ -1381,6 +1478,12 @@
             : `<button class="mini" data-mk="1">建线</button>`}
         </div>`;
       }
+      if (pages > 1) html += `<div class="imp-foot">
+        <button class="mini" data-imppg="prev" ${ui.page <= 1 ? 'disabled' : ''}>上一页</button>
+        <span>${ui.page} / ${pages} 页</span>
+        <button class="mini" data-imppg="next" ${ui.page >= pages ? 'disabled' : ''}>下一页</button>
+      </div>`;
+      html += '</div>';
     }
     box.innerHTML = html;
   }
@@ -1964,7 +2067,7 @@
       drag = { type: 'stop', lid, sid, moved: false,
         el: world.querySelector(`.stop-c[data-sid="${CSS.escape(sid)}"]`),
         ring: world.querySelector('.stop-ring'),
-        pre: JSON.stringify({ lines: [...S.lines.values()], groups: S.groups, imports: S.imports }) };
+        pre: JSON.stringify({ lines: [...S.lines.values()], groups: S.groups, imports: S.imports, lineOrder: S.lineOrder }) };
       svg.setPointerCapture(e.pointerId);
       regCanvasDbl(`stop:${sid}`, () => locateStopInList(sid, lid));   // 双击站圈：左栏定位
       return;
@@ -2750,6 +2853,70 @@
     if (e.key === 'Escape') { S.selStop = null; S.pending = []; renderAll(); }
   });
 
+  // ---------- 线路显示顺序面板（查看器左栏序；2026-11-22 需求 5） ----------
+  // 顶栏「排序」打开对话框：平铺全部线路（类别＋线名，排列＝当前自定义顺序），
+  // 每行置顶/上移/下移/置底；「确定」一次快照写入 S.lineOrder（可撤销），
+  // 随「保存工作区」进 manifest.lineOrder → flatten 产出 net/index.json 供查看器消费。
+  // 编辑器左栏主列表保持现状（分类分组）不动。
+  const orderMenu = $('orderMenu');
+  let orderDraft = [];   // 面板工作副本（确定才写回）
+  /** 当前生效的线路顺序：S.lineOrder 原始值经 normalize 现算（清失效 id、补缺线到末尾） */
+  function effectiveLineOrder() {
+    return normalizeLineOrder(S.lineOrder, [...S.lines.keys()]);
+  }
+  $('btnOrder').addEventListener('click', () => {
+    if (!S.lines.size) { setStatus('暂无线路，无显示顺序可调。', true); return; }
+    orderDraft = effectiveLineOrder();
+    renderOrderPanel();
+    orderMenu.showModal();
+  });
+  $('orderCancel').onclick = () => orderMenu.close();
+  $('orderOk').onclick = () => {
+    orderMenu.close();
+    if (JSON.stringify(orderDraft) === JSON.stringify(effectiveLineOrder())) {
+      setStatus('线路显示顺序未变化。');
+      return;
+    }
+    snapshot();   // 排序可撤销（一次回退整批）
+    S.lineOrder = orderDraft.slice();   // draft 由 normalize 而来，恒为全量显式顺序
+    renderAll();
+    setStatus('已更新线路显示顺序（「保存工作区」时随 manifest 的 lineOrder 写出，'
+      + '经 flatten 产出 net/index.json 供查看器左栏排序）。');
+  };
+  function renderOrderPanel() {
+    const box = $('orderList');
+    const n = orderDraft.length;
+    box.innerHTML = orderDraft.map((lid, i) => {
+      const l = S.lines.get(lid);
+      if (!l) return '';
+      const layer = (l.meta && typeof l.meta.layer === 'string' && l.meta.layer) || '未分类';
+      return `
+      <div class="ord-row" data-i="${i}">
+        <span class="idx">${i + 1}</span>
+        <span class="chip" style="background:${esc(l.color)}"></span>
+        <span class="nm" title="${esc(l.id)} ${esc(l.name)}">${esc(l.name || '（未命名）')}</span>
+        <span class="lyr">${esc(layer)}</span>
+        <span class="lyr">${l.id} · ${l.stops.length}站${l.meta && l.meta.archived ? ' · 归档' : ''}</span>
+        <button class="mini" data-ordop="top" ${i === 0 ? 'disabled' : ''} title="移到最前">置顶</button>
+        <button class="mini" data-ordop="up" ${i === 0 ? 'disabled' : ''} title="上移一格">↑</button>
+        <button class="mini" data-ordop="down" ${i === n - 1 ? 'disabled' : ''} title="下移一格">↓</button>
+        <button class="mini" data-ordop="bottom" ${i === n - 1 ? 'disabled' : ''} title="移到最后">置底</button>
+      </div>`;
+    }).join('');
+  }
+  $('orderList').addEventListener('click', (e) => {
+    const op = e.target.dataset.ordop;
+    if (!op) return;
+    const row = e.target.closest('.ord-row');
+    if (!row) return;
+    const i = +row.dataset.i;
+    const j = op === 'top' ? 0 : op === 'up' ? i - 1 : op === 'down' ? i + 1 : orderDraft.length - 1;
+    if (i < 0 || i >= orderDraft.length || j < 0 || j >= orderDraft.length) return;
+    const [id] = orderDraft.splice(i, 1);
+    orderDraft.splice(j, 0, id);
+    renderOrderPanel();   // 只重排面板行，不动主界面
+  });
+
   // ---------- 工作区（载入/新建/保存） ----------
   // 工作区文件夹与 data/ 同构：lines/*.json＋groups.json＋manifest.json，复制进 data/ 即为提交。
   // 打开走 File System Access（Chrome/Edge，可直写；可直接打开 data/ 本体，保存即落盘）；
@@ -2782,6 +2949,8 @@
     // 否则旧组的 stationGroups 会悬挂引用新工作区不存在的线路/站 id
     S.groups = groups || { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
     S.manifest = manifest || null;
+    // 工作区整体替换：显示顺序随 manifest.lineOrder（缺失＝null 回退 id 升序）
+    S.lineOrder = (manifest && Array.isArray(manifest.lineOrder)) ? manifest.lineOrder : null;
     if (calib) takeCalibration(calib);
     S.arcs = new Map();
     if (!S.lines.has(S.activeLine)) S.activeLine = lineFiles.size ? [...lineFiles.keys()][0] : null;
@@ -2981,6 +3150,9 @@
       updated: today(),
       lines: active.map((l) => ({ id: l.id, file: `lines/${l.id}.json`, name: l.name, stops: l.stops.length })),
       archived: [...archivedIds].sort(),
+      // 显示顺序（可选字段，2026-11-22 需求 5）：写出全量显式顺序——normalize 已清失效 id、
+      // 补齐全部线（含归档线，flatten/查看器侧自会忽略归档）；flatten 据此产出 net/index.json
+      lineOrder: effectiveLineOrder(),
     };
     return S.manifest;
   }

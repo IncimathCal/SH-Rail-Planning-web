@@ -392,6 +392,26 @@ def main():
                     actual = len(lines[lid].get("stops") or [])
                     if e["stops"] != actual:
                         warn("manifest.json", f"line {lid}: manifest stop count {e['stops']} != actual {actual}")
+            # 可选字段 lineOrder（v1.5 增补，2026-11-22 需求 5）：查看器左栏显示顺序，
+            # 线 id 数组；缺失＝回退 id 升序。结构校验（存在才查，不影响既有数据）：
+            # 元素须为合法线 id 格式、不得重复；不在线路表/归档表中的 id 仅 WARN
+            # （编辑器/flatten 侧自会忽略，防手改残留阻断发布链）
+            lo = mf.get("lineOrder")
+            if lo is not None:
+                if not isinstance(lo, list):
+                    err("manifest.json", "lineOrder must be a list of line ids")
+                else:
+                    arch_ids = {a for a in (mf.get("archived") or []) if isinstance(a, str)}
+                    seen_lo = set()
+                    for x in lo:
+                        if not isinstance(x, str) or not RE_LINE_ID.match(x):
+                            err("manifest.json", f"bad lineOrder entry: {x!r}")
+                        elif x in seen_lo:
+                            err("manifest.json", f"duplicate lineOrder entry: {x!r}")
+                        else:
+                            seen_lo.add(x)
+                            if x not in lines and x not in arch_ids:
+                                warn("manifest.json", f"lineOrder id {x} not found among lines (ignored)")
         except Exception as e:
             err("manifest.json", f"cannot parse JSON: {e}")
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // editor.js 纯逻辑层单测：分段实体（fmt/line@2：加删站索引簿记、切分/并段/区间/约束检测、@1→@2 迁移）、
 // stopSeq 水位、status 修正、lineIssues、批量命名、站圆预置批量落站（planStopImport/applyStopImport/suggestForStop）、
-// 出省箭头（kind:'arrow' 落位/编组/命名/校验）、多线换乘药丸串法（planGroupPillChain 确定性）。
+// 出省箭头（kind:'arrow' 落位/编组/命名/校验）、多线换乘药丸串法（planGroupPillChain 确定性）、
+// 线路显示顺序（normalizeLineOrder：缺省回退/序列化补全/新建追加/失效清理/删除移除）。
 // 用法：node tools/test_editor_logic.js
 
 const L = require(path_join('src', 'editor.js'));
@@ -477,6 +478,27 @@ eq(lgr[1].lines.map((l) => l.id), ['l0001', 'l0004'], '组内按 id 升序');
 eq(lgr[2].lines.map((l) => l.id), ['l0002', 'l0005', 'l0006'], '缺失/空串/非字符串都归未分类');
 eq(L.layerGroupsOf([mkL('l0001', '市区线')]).map((x) => x.layer), ['市区线'], '仅一类也照常返回组（组头一致显示）');
 eq(L.layerGroupsOf([]), [], '空列表返回空');
+
+// ---------- 线路显示顺序 normalizeLineOrder（manifest.lineOrder；2026-11-22 需求 5） ----------
+console.log('lineOrder:');
+// 读缺省回退：order 缺失/非数组/空 → 全部按 id 升序（现状顺序）
+eq(L.normalizeLineOrder(undefined, ['l0003', 'l0001', 'l0002']), ['l0001', 'l0002', 'l0003'], '缺省回退 id 升序');
+eq(L.normalizeLineOrder(null, ['l0002', 'l0001']), ['l0001', 'l0002'], 'null 回退');
+eq(L.normalizeLineOrder('garbage', ['l0002', 'l0001']), ['l0001', 'l0002'], '非数组回退');
+eq(L.normalizeLineOrder([], ['l0002', 'l0001']), ['l0001', 'l0002'], '空数组回退');
+eq(L.normalizeLineOrder(undefined, []), [], '无线线返回空');
+// 保存序列化（buildManifest 写出的全量显式顺序）：自定义序在前、未列出线按 id 升序补末
+eq(L.normalizeLineOrder(['l0002', 'l0003'], ['l0001', 'l0002', 'l0003']), ['l0002', 'l0003', 'l0001'], '自定义序＋缺线补末');
+eq(L.normalizeLineOrder(['l0009', 'l0002'], ['l0002', 'l0009']), ['l0009', 'l0002'], '全列出时按 order 原样（含逆序）');
+// 新建追加：新线 id 不在 order → 按 id 升序补到末尾
+eq(L.normalizeLineOrder(['l0002', 'l0001'], ['l0001', 'l0002', 'l0007']), ['l0002', 'l0001', 'l0007'], '新建线追加到末尾');
+// 清理失效 id：已删/未载入的线 id 被滤掉（编辑器载入路径的清理语义）
+eq(L.normalizeLineOrder(['l0009', 'l0001'], ['l0001', 'l0002']), ['l0001', 'l0002'], '失效 id 清理＋缺线补齐');
+// 删除线路移除：线删除后其 id 不再出现在生效顺序中
+eq(L.normalizeLineOrder(['l0001', 'l0002', 'l0003'], ['l0001', 'l0003']), ['l0001', 'l0003'], '删除线后顺序中无该 id');
+// 去重保序＋非字符串杂物跳过（对手改 manifest 的防御）
+eq(L.normalizeLineOrder(['l0001', 'l0001', 7, null, 'l0002'], ['l0001', 'l0002']), ['l0001', 'l0002'], '重复去重、杂物跳过');
+eq(L.normalizeLineOrder(['l0002', 'l0001', 'l0002'], ['l0001', 'l0002']), ['l0002', 'l0001'], '重复 id 只保留首次出现');
 
 // ---------- 接轨站描边色 junctionStroke（stationGroups type:'junction'；2026-11-21） ----------
 console.log('junctionStroke:');

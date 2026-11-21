@@ -20,7 +20,9 @@
   header#toolbar { grid-area: tb; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
     padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }
   aside#side { grid-area: side; overflow-y: auto; background: var(--panel);
-    border-right: 1px solid var(--border); padding: 8px; }
+    border-right: 1px solid var(--border); padding: 8px;
+    scrollbar-width: none; }   /* 左侧面板隐藏滚动条但保留滚动（2026-11-22 用户反馈） */
+  aside#side::-webkit-scrollbar { display: none; }   /* Chromium 系双保险（Firefox 走 scrollbar-width） */
   main#canvas { grid-area: canvas; position: relative; overflow: hidden; }
   svg#view { width: 100%; height: 100%; display: block; background: #101216; cursor: grab; }
   svg#view.panning { cursor: grabbing; }
@@ -78,6 +80,12 @@
   .imp-src { color: var(--dim); font-size: 11px; margin: 4px 0 2px; }
   .imp-row .imp-hint { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; font-size: 10px; color: var(--dim); font-style: italic; }
+  /* 导入源模块筛选行（全部/未建线/已建线三选；2026-11-22 分页＋筛选） */
+  .imp-filter { display: flex; align-items: center; gap: 4px; margin: 2px 0 3px; }
+  .imp-filter .imp-count { color: var(--dim); font-size: 11px; margin-left: 3px; }
+  /* 导入源模块页脚 / 线路分类组页脚（上一页/下一页＋页码/总页数；翻页为临时 UI 状态不进撤销） */
+  .imp-foot, .ll-foot { display: flex; align-items: center; gap: 6px; padding: 3px 2px;
+    color: var(--dim); font-size: 11px; }
 
   .line-row { display: flex; align-items: center; gap: 6px; padding: 3px 4px;
     border-radius: 4px; cursor: pointer; }
@@ -90,6 +98,14 @@
     color: var(--dim); font-size: 11px; margin: 6px 0 2px; padding: 0 4px 2px;
     border-bottom: 1px dashed var(--border); }
   #lineList .layer-head:first-child { margin-top: 0; }
+
+  /* 线路显示顺序面板（顶栏「排序」对话框；行内 mini 按钮沿用全局样式） */
+  .ord-row { display: flex; align-items: center; gap: 5px; padding: 2px 4px; border-radius: 4px; }
+  .ord-row:hover { background: #2a2e35; }
+  .ord-row .chip { width: 12px; height: 12px; border-radius: 3px; flex: none; border: 1px solid #000; }
+  .ord-row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ord-row .lyr { color: var(--dim); font-size: 11px; flex: none; }
+  .ord-row .idx { color: var(--dim); font-size: 11px; width: 26px; text-align: right; flex: none; }
   .badge { font-size: 10px; padding: 0 4px; border-radius: 3px; background: #444;
     color: #ddd; vertical-align: 1px; }
   .badge.arch { background: #5f2a2a; color: #ffb0b0; }
@@ -169,6 +185,8 @@
   </div>
   <div class="tb-group">
     <button id="btnUndo" title="Ctrl+Z">撤销</button>
+    <button id="btnOrder"
+      title="线路显示顺序（查看器左栏自上而下的排列）：上移/下移/置顶/置底自定义，确定后随「保存工作区」写入 manifest 的 lineOrder，经 flatten 产出 net/index.json；编辑器左栏主列表不受影响">排序</button>
     <button id="btnBasemap" title="底图三态循环：关→OSM→高德→关（需 data/calibration*.json 与网络；高德为 GCJ02 逐瓦片偏移对齐；仅本地对位参考）">底图：关</button>
   </div>
   <div class="tb-group">
@@ -273,6 +291,19 @@
     <button id="wsOpen" class="primary">打开工作区文件夹…</button>
     <button id="wsNew" class="danger">新建空工作区（清空暂存与编号水位，页面刷新）</button>
     <button id="wsCancel">取消</button>
+  </div>
+</dialog>
+
+<dialog id="orderMenu">
+  <b style="display:block;margin-bottom:6px">线路显示顺序（查看器左栏）</b>
+  <p style="color:var(--dim);margin:0 0 8px;font-size:12px;max-width:380px">
+    自上而下＝查看器左栏的显示顺序（顶在前）。调整后「确定」写入编辑器数据（Ctrl+Z 可撤销），
+    随「保存工作区」存入 manifest 的 lineOrder，经 flatten 产出 net/index.json；
+    编辑器左栏主列表仍按分类分组，不受影响。</p>
+  <div id="orderList" style="max-height:60vh;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px;min-width:420px"></div>
+  <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:10px">
+    <button id="orderCancel">取消</button>
+    <button id="orderOk" class="primary">确定</button>
   </div>
 </dialog>
 

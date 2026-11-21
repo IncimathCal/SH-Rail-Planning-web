@@ -8,7 +8,8 @@
 
 流程：
   1. validate.py 校验 <data>（不过即中止）；
-  2. flatten.py 把 <data> 经 data/calibration.json 变换为 GeoJSON → <out>/net/；
+  2. flatten.py 把 <data> 经 data/calibration.json 变换为 GeoJSON → <out>/net/
+     （lines.geojson / stops.geojson / index.json＝线路显示顺序索引，随 net/ 整体产出）；
   3. 白名单拷贝：index.html、src/viewer*.js、assets/vendor/（vendored MapLibre）。
 
 白名单恒定——editor.html、编辑器代码、过程文档、源资产、import/ 永不进入部署目录
@@ -58,6 +59,11 @@ def main():
         shutil.rmtree(out_dir)
     run([sys.executable, "-X", "utf8", TOOLS / "flatten.py",
          "--data", data_dir, "--out", out_dir / "net"])
+    # flatten 产物自检：线路显示顺序索引（net/index.json，查看器左栏序）必须随 net/ 整体产出
+    # （防未来重构改逐文件白名单时漏带）
+    if not (out_dir / "net" / "index.json").is_file():
+        print("错误：net/index.json 缺失（flatten 未输出线路顺序索引）", file=sys.stderr)
+        sys.exit(1)
 
     # 3. 白名单拷贝
     copied = []
