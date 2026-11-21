@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 实施基准见 **《架构方案-01-Schema与目录与阶段.md》**（v1.3），讨论历史见《讨论记录-01~03》，进度快照见《进度状态-01-阶段总览.md》。
 
-支线任务（2026-11-21）：`源资产/远期.ai`（1.86 GB，PDF 兼容层）提取评估完成——Line/Station/Name 三个语义图层全部结构化可读：136 条线路子路径（58 种 CMYK 色、虚线 [36,48]×120/实线×15）、454 个站位圆（fill+stroke 成对双画、两种半径）、约 770 站名文本+坐标、线路名 72pt 标签；结论=线路几何/命名/状态初值/线组四类可自动化（拟 `tools/ai_parse.py`），站名底稿与站圆位置仅作建议层（铁律不破），设站归属与换乘编组必人工。详见《源资产分析-01-远期ai提取评估.md》；扫描脚本与 TSV 产物在 `零散/`（gitignore，仅本地）。另：`零散/` 新增两个 KMZ（上海全部建设规划、深化线网优化方案），为全图尺度标定候选素材。
+支线任务（2026-11-21 完成）：`源资产/远期.ai` 提取评估 + **A 类自动化已实装**——`tools/ai_parse.py` 从 .ai 一次导出全量线路（`import/远期图-全量.json`：75 条描边路径、58 色、虚实标注、59 条线路名建议 hintNames）。**坐标基准已切换为 .ai 页面基准（12000×12000、SVG 朝向）**：旧框选导出基准与之为等比 1:1 平移 (+4684.9, +4040.53)；`data/calibration.json` 已在新基准重拟合（全局 deg3 RMS 80.0 m，与旧基准一字不差）；旧 `import/6、14、15、23号线.json` 已挪 `零散/` 防混基准。标定 SVG 必须用「旧子段 path 平移」生成（.ai 全线含远期延伸，直接标定会劣化到 8 km 级）。坑与细节见《源资产分析-01-远期ai提取评估.md》§4（ICC CMYK 借色、隐式重复参数组、f 装饰剔除、24pt 线路名标签绑定）。B 类（站名底稿/站圆位置）维持只提示不写入；`零散/` 两个 KMZ（上海全部建设规划、深化线网优化方案）与 .ai 是**不同版本规划**——只能作既有/批复段真值。
 
 技术要点：MapLibre GL 地理化渲染；AI 源图仅导出线路 path（`svg_parse.py --import` 产出 `import/*.json` 即 fmt/import@1），设站站名纯手动录入（编辑器仅本地，入口 editor.html）；数据模块化（线路/设站/换乘节点组 + 线组绑定）；分段状态 `existing/approved/future`；标定头尾失准以 (ds,de) 弧长偏差建模校正；设站编号水位 `meta.stopSeq` 防复用；GitHub Pages 从 `/docs` 部署（publish.py 生成）。
 
@@ -21,6 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 python tools/validate.py data                      # 数据校验（提交前必跑）
 python tools/validate.py tools/fixtures/sample     # 对样例数据跑校验
+python tools/ai_parse.py "源资产/远期.ai" --out "import/远期图-全量.json" --verify "源资产/6、14、15、23号线.svg" --calib "6,14,15,23" --svg-out "源资产/远期图-标定4线.svg"   # .ai 全量提取线路（对拍+平移版标定 SVG；依赖 PyMuPDF）
 python tools/svg_parse.py "源资产/xxx.svg" --import # 产出 import/xxx.json 供编辑器载入
 python tools/georef.py "源资产/xxx.svg" "源资产/xxx.kmz"   # 标定试验（残差报告）
 python tools/georef.py "源资产/xxx.svg" "源资产/xxx.kmz" --emit   # 并重拟合导出 data/calibration.json
