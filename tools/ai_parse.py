@@ -4,7 +4,7 @@
 
 坐标基准：.ai 页面（本图 12000×12000）、SVG 朝向（y 向下）。线路 path、颜色
 （CMYK→RGB 近似）、虚实样式一次全量导出为 fmt/import@1 兼容记录；paths[] 增补
-非破坏性可选字段 dash / cmyk / width / category / hintNames。
+非破坏性可选字段 layer / dash / cmyk / width / category / hintNames。
 
 sourceLayer 语义（原生权威化，讨论记录-04 用户裁定）：
 - 无支线的线 = 命名的路径对象 → **路径对象名**（用户自己的命名，非杜撰）；
@@ -12,6 +12,11 @@ sourceLayer 语义（原生权威化，讨论记录-04 用户裁定）：
 - 预控通道/他省/联络线内命名对象 → 对象名（通道名等）；
 - 拿不到真实名（作者未命名的描边）→ 保持中性提取序号 path-NN，绝不造名；
 - 层内多条 path 同名时附 #k 序号后缀（编辑器按 sourceLayer 寻址建线，须可区分）。
+
+layer 语义（2026-11-21 新增）：＝顶层 Line 图层的**直属子图层名**（市区线/市域线/联络线/
+预控通道/他省……用户源图命名原样转写），供编辑器线路分类；取层链去掉 Line/ 前缀后的
+第一段（Line/市域线/示范区线 → 市域线）。渐变网格线体（render:"mesh"）同样处理；
+拿不到直属子层（理论上不会）报错退出，绝不静默空值。
 
 category 可选枚举：预控通道层 → "reserved"；他省层 → "interprovincial"。
 闭合（原生 h/s）→ d 尾追加 Z（环线识别 /z/i 测试用）；字节级相同的重复描边去重。
@@ -519,6 +524,20 @@ def source_layer_of(st):
     return None, None, cat
 
 
+def direct_layer_of(st, label=''):
+    """原生 stroke → Line 图层直属子图层名（线路分类词汇＝Line 的直属子层，用户源图
+    命名原样转写）：Line/市域线/示范区线 → 市域线；Line/他省 → 他省。
+    主流程抽取已保证 stroke 的 layer 以 Line/ 开头；拿不到直属子层（含 st 未匹配，
+    理论上不会）则报错退出，绝不静默空值。"""
+    if st is None:
+        sys.exit('%s 未匹配到原生 stroke，拿不到直属子层，拒绝导出空值' % label)
+    parts = st.layer.split('/')
+    if len(parts) < 2 or parts[0] != 'Line' or not parts[1]:
+        sys.exit('%s 原生层链 %r 非 Line/<直属子层>/… 形式，拿不到直属子层'
+                 % (label, st.layer))
+    return parts[1]
+
+
 def station_circle_hints(nat, paths):
     """原生 Station 子层站圆组证据名：组内 ≥3 圆且 ≥60% 圆心距 path <25pt。
     距离基准 = d 全部控制点 + 弧长 25pt 密集采样（稀疏采样会漏长线中段）。
@@ -928,7 +947,8 @@ def main():
         p = e['p']
         hn = ([e['nhint']] if e['nhint'] and e['nhint'] not in e['src'] else []) \
             + hints.get(e['i'], [])
-        row = dict(sourceLayer=e['src'], color=p['color'], path=p['d'],
+        row = dict(sourceLayer=e['src'], layer=direct_layer_of(e['st'], e['label']),
+                   color=p['color'], path=p['d'],
                    dash=p['dash'], cmyk=p['cmyk'], width=p['width'])
         if e['mode'] == 'mesh':
             row['render'] = 'mesh'
