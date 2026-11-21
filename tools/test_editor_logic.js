@@ -81,6 +81,63 @@ eq(lo2.segments.length, 1, '环线 2→1 站段数');
 del(lo2, 0);
 eq(lo2.segments, [], '环线 1→0 站段数');
 
+// ---------- 分段状态区间设定 applySegRange / 区间汇总 segRangeSummary（2026-11-21 撤点段循环改左栏区间） ----------
+console.log('applySegRange:');
+// 非环线站数 = 段数+1；环线站数 = 段数
+function mkSegLine(loop, segs) {
+  const nStops = loop ? segs.length : segs.length + 1;
+  const l = mkLine(loop);
+  l.stops = Array.from({ length: nStops }, (_, k) =>
+    ({ id: `l0001-s${String(k + 1).padStart(2, '0')}`, name: 'x', t: k / nStops, geo: null }));
+  l.segments = segs.slice();
+  l.status = null;
+  return l;
+}
+// 非环线普通区间：站 2→4 覆盖 seg[1..2]
+let sr = mkSegLine(false, ['existing', 'existing', 'existing', 'existing']);
+ok(L.applySegRange(sr, 2, 4, 'approved') === true, '非环线普通区间成功');
+eq(sr.segments, ['existing', 'approved', 'approved', 'existing'], '站 2→4 只改中间两段');
+// 非环线 a>=b 拒绝（反向与 a===b），拒绝时数据不动
+sr = mkSegLine(false, ['existing', 'existing', 'existing']);
+ok(L.applySegRange(sr, 3, 2, 'future') === false, '非环线 a>b 拒绝');
+ok(L.applySegRange(sr, 2, 2, 'future') === false, '非环线 a===b 拒绝');
+eq(sr.segments, ['existing', 'existing', 'existing'], '拒绝时数据不动');
+// 环线 a>b＝跨环绕段方向：n=5，站 5→2 覆盖 seg[4]（环绕段）与 seg[0]
+let sl = mkSegLine(true, ['existing', 'existing', 'existing', 'existing', 'existing']);
+ok(L.applySegRange(sl, 5, 2, 'future') === true, '环线 a>b 跨环绕成功');
+eq(sl.segments, ['future', 'existing', 'existing', 'existing', 'future'], '5→2 恰覆盖环绕段＋首段');
+ok(L.applySegRange(sl, 3, 3, 'approved') === false, '环线 a===b 拒绝');
+// 环线 a<b 不跨环绕段
+sl = mkSegLine(true, ['existing', 'existing', 'existing']);
+ok(L.applySegRange(sl, 1, 3, 'approved') === true, '环线 a<b 成功');
+eq(sl.segments, ['approved', 'approved', 'existing'], '环线 1→3 不动环绕段 seg[2]');
+// 越界拒绝（0 / n+1；环线与非环线各一）
+ok(L.applySegRange(mkSegLine(false, ['existing']), 0, 2, 'future') === false, '非环线 a=0 越界拒绝');
+ok(L.applySegRange(mkSegLine(false, ['existing']), 1, 3, 'future') === false, '非环线 b=n+1 越界拒绝');
+ok(L.applySegRange(mkSegLine(true, ['existing', 'existing']), 6, 1, 'future') === false, '环线 a=n+1 越界拒绝');
+// 端点全区间
+sr = mkSegLine(false, ['existing', 'approved', 'future']);
+ok(L.applySegRange(sr, 1, 4, 'future') === true, '非环线端点全区间成功');
+eq(sr.segments, ['future', 'future', 'future'], '站 1→末站覆盖全部段');
+sl = mkSegLine(true, ['existing', 'approved', 'future']);
+ok(L.applySegRange(sl, 2, 1, 'approved') === true, '环线跨环绕端点区间成功（2→1）');
+eq(sl.segments, ['existing', 'approved', 'approved'], '环线 2→1 覆盖 seg[1]＋环绕段（任意 a≠b 至多 n-1 段）');
+// 其余非法：枚举 / 非整数 / 0 站 / 段表长度不符
+ok(L.applySegRange(mkSegLine(false, ['existing']), 1, 2, 'weird') === false, '非法枚举拒绝');
+ok(L.applySegRange(mkSegLine(false, ['existing']), 1.5, 2, 'future') === false, '非整数站序拒绝');
+ok(L.applySegRange(mkLine(false), 1, 2, 'future') === false, '0 站拒绝');
+let sBad = mkSegLine(false, ['existing', 'existing', 'existing']);
+sBad.segments = ['existing'];
+ok(L.applySegRange(sBad, 1, 2, 'future') === false, '段表长度与站数不符拒绝');
+
+console.log('segRangeSummary:');
+eq(L.segRangeSummary(mkSegLine(false, ['existing', 'approved', 'approved', 'future'])),
+  '1–2 既有；2–4 已批复；4–5 远期', '非环线相邻同状态段合并为区间');
+eq(L.segRangeSummary(mkSegLine(true, ['approved', 'future', 'future', 'existing'])),
+  '2–4 远期；4–1 既有（含环绕段）；1–2 已批复', '环线跨环绕合并并标注环绕段');
+eq(L.segRangeSummary(mkSegLine(true, ['existing', 'existing'])), '全线 既有（含环绕段）', '环线全线同状态');
+ok(L.segRangeSummary(mkSegLine(false, [])) === null, '站数<2 返回 null');
+
 // ---------- 随机不变量 ----------
 console.log('randomized invariant:');
 for (const loop of [false, true]) {

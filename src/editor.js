@@ -51,6 +51,62 @@
     }
   }
 
+  /** 按站序区间批量设定分段状态（左栏「分段状态」面板；2026-11-21 撤画布点段循环改区间设定）。
+   *  a/b 为 1-based 站序（含两端）：设定 a 站→b 站之间沿线路走向的全部段（seg[i] 连接站 i+1 与站 i+2）。
+   *  非环线要求 a<b；环线允许 a>b＝正向跨环绕段（如 n=5 时 5→2 覆盖 seg[4]（环绕段）与 seg[0]，即 5→1→2）；
+   *  a===b、越界、非整数、站数<2、非法枚举、段表长度与站数不符，一律返回 false 不改数据。 */
+  function applySegRange(line, a, b, status) {
+    const n = line.stops.length;
+    if (!Number.isInteger(a) || !Number.isInteger(b)) return false;
+    if (a < 1 || b < 1 || a > n || b > n) return false;
+    if (a === b) return false;
+    if (SEG_ORDER.indexOf(status) < 0) return false;
+    if (!line.loop && a > b) return false;
+    const want = line.loop ? n : n - 1;
+    if (n < 2 || (line.segments || []).length !== want) return false;
+    if (line.loop && a > b) {              // 环绕方向：seg[a-1..n-1] ＋ seg[0..b-2]
+      for (let i = a - 1; i <= n - 1; i++) line.segments[i] = status;
+      for (let i = 0; i <= b - 2; i++) line.segments[i] = status;
+    } else {                               // a<b：seg[a-1..b-2]（环线不跨环绕段）
+      for (let i = a - 1; i <= b - 2; i++) line.segments[i] = status;
+    }
+    return true;
+  }
+
+  /** 分段状态区间汇总（面板展示用，纯逻辑可单测）：相邻同状态段合并为一个区间、按站序显示
+   *  （如「1–3 既有；3–7 已批复」——区间指站序）；环线含环绕段（seg[n-1]，站 n→1）的区间
+   *  标注「含环绕段」，跨环绕的同状态段合并为一个区间（如「4–1 既有（含环绕段）」），
+   *  全线同状态显示「全线 X」。缺失段按 'existing' 兜底（与画布渲染一致）；站数<2 返回 null。 */
+  function segRangeSummary(line) {
+    const n = line.stops.length;
+    if (n < 2) return null;
+    const segs = line.segments || [];
+    const segCount = line.loop ? n : n - 1;
+    const segAt = (i) => segs[i] || 'existing';
+    // 环线：扫描起点挪到第一个状态变化点，跨环绕两端的同状态段才能并成一个区间
+    let start = 0;
+    if (line.loop) {
+      for (let k = 1; k < segCount; k++) { if (segAt(k) !== segAt(0)) { start = k; break; } }
+    }
+    const runs = [];
+    let k = 0;
+    while (k < segCount) {
+      const s = segAt((start + k) % segCount);
+      let len = 1;
+      while (k + len < segCount && segAt((start + k + len) % segCount) === s) len++;
+      runs.push({ i0: (start + k) % segCount, len, s });
+      k += len;
+    }
+    return runs.map((r) => {
+      const i0 = r.i0, i1 = (i0 + r.len - 1) % segCount;
+      if (r.len === segCount && line.loop) return `全线 ${SEG_LABEL[r.s]}（含环绕段）`;
+      const st1 = i0 + 1;                       // 起始站（1-based）
+      const st2 = ((i1 + 1) % n) + 1;           // 终止站：末段环绕时（i1=n-1）回到站 1
+      const wrap = line.loop && ((segCount - 1 - i0 + segCount) % segCount) < r.len;
+      return `${st1}–${st2} ${SEG_LABEL[r.s]}${wrap ? '（含环绕段）' : ''}`;
+    }).join('；');
+  }
+
   /** 分配下一个设站序号（水位 = max(meta.stopSeq, 现有最大后缀) + 1，编号永不复用） */
   function nextStopSeq(line) {
     let m = line.meta.stopSeq || 0;
@@ -334,6 +390,7 @@
   }
 
   const SHLogic = { SEG_ORDER, SEG_LABEL, ROLE_LABEL, EPS, segInsert, segRemove,
+    applySegRange, segRangeSummary,
     nextStopSeq, fixStatusField, lineIssues, planBulkFill,
     planStopImport, applyStopImport, suggestForStop,
     layerGroupsOf, junctionStroke, planStationGroup,
@@ -1116,7 +1173,7 @@
         <label>状态</label><select id="lfStatus" style="flex:1">
         ${SEG_ORDER.map((s2) => `<option value="${s2}" ${l.status === s2 ? 'selected' : ''}>${SEG_LABEL[s2]}</option>`).join('')}
         </select><span style="color:var(--dim);font-size:11px">（站数&lt;2 时必填）</span></div>` : `
-      <div class="fld" id="lfStatusRow"><label>状态</label><span style="flex:1;color:var(--dim);font-size:11px">≥2 站后整线状态停用——状态按分段设置：点击画布分段循环 既有→已批复→远期</span></div>`}
+      <div class="fld" id="lfStatusRow"><label>状态</label><span style="flex:1;color:var(--dim);font-size:11px">≥2 站后整线状态停用——状态按分段设置：在左侧「设站」面板按站区间设定（如 1 到 2 已批复）</span></div>`}
       <div class="fld"><label>分类</label><select id="lfLayer" style="flex:1"
         title="＝源图 Line 直属子图层名（如 市区线/市域线/联络线）；建线时自动带入，可改">${layerOpts.join('')}</select></div>
       <div class="fld"><label>源图层</label><input type="text" value="${esc((l.meta && l.meta.sourceLayer) || '')}" disabled></div>
@@ -1144,6 +1201,7 @@
     const l = S.lines.get(S.activeLine);
     if (!l || !l.stops.length) {
       box.innerHTML = '<div style="color:var(--dim)">在「加站」模式下点击线路加站；站名在此录入。加站类型（车站/线路所）用上方按钮切换。</div>';
+      renderSegRange();
       return;
     }
     const preset = matchPresetForLine(l);   // 站名建议来源（无匹配则无 chips）
@@ -1168,6 +1226,38 @@
         <button class="mini danger" data-del="${st.id}" title="删除设站">✕</button>
       </div>`;
     }).join('');
+    renderSegRange();
+  }
+
+  /** 左栏「分段状态（按站区间设定）」面板：站序下拉＋应用按钮＋区间汇总。
+   *  随 renderStopList 一并刷新——renderStopList 只在加/删站、选线等低频路径上调用
+   *  （改名逐键只更新站圈 title，不进来），此处重建下拉无焦点冲突。 */
+  function renderSegRange() {
+    const fromSel = $('segFrom'), toSel = $('segTo'), stSel = $('segStatus'), btn = $('btnSegApply');
+    const line = S.lines.get(S.activeLine);
+    const n = line ? line.stops.length : 0;
+    if (!line || n < 2) {
+      fromSel.innerHTML = ''; toSel.innerHTML = '';
+      fromSel.disabled = toSel.disabled = stSel.disabled = btn.disabled = true;
+      $('segSummary').textContent = n === 1
+        ? '设站 ≥2 后可用（当前仅 1 站，用属性面板线路级「状态」字段）。'
+        : '设站 ≥2 后可用。';
+      return;
+    }
+    fromSel.disabled = toSel.disabled = stSel.disabled = btn.disabled = false;
+    const label = (st) => {
+      if (st.kind === 'block') return st.name && st.name.trim() ? `（线路所）${st.name.trim()}` : '（线路所）';
+      return st.name && st.name.trim() ? st.name.trim() : '（未命名）';
+    };
+    const opts = line.stops.map((st, i) => `<option value="${i + 1}">${i + 1} ${esc(label(st))}</option>`).join('');
+    const keep = (sel, dflt) => {
+      const old = sel.value;
+      sel.innerHTML = opts;
+      sel.value = [...sel.options].some((o) => o.value === old) ? old : dflt;
+    };
+    keep(fromSel, '1');
+    keep(toSel, '2');
+    $('segSummary').textContent = segRangeSummary(line) || '';
   }
 
   function stopLabel(sid) {
@@ -1635,22 +1725,15 @@
     }
     const segEl = hitEl.closest('.seg-hit');
     if (segEl) {
-      const lid = segEl.dataset.lid, i = +segEl.dataset.seg;
-      const line = S.lines.get(lid);
-      if (line) {
-        snapshot();
-        line.segments[i] = SEG_ORDER[(SEG_ORDER.indexOf(line.segments[i]) + 1) % 3];
-        line.meta.updated = today();
-        S.activeLine = lid;
-        setStatus(`${lid} 段 ${i + 1} → ${SEG_LABEL[line.segments[i]]}`);
-        renderAll();
-        // 双击段＝定位线路而非连改两次状态：回退本次循环（连同上一次共两次→净零），滚到左栏
-        regCanvasDbl(`line:${lid}`, () => {
-          line.segments[i] = SEG_ORDER[(SEG_ORDER.indexOf(line.segments[i]) + 1) % 3];
-          locateLineInList(lid);
-          setStatus(`已在左栏定位 ${lid}（段状态保持 ${SEG_LABEL[line.segments[i]]}）。`);
-        });
-      }
+      // 2026-11-21 撤点段循环：分段状态改在左栏「设站」面板按站区间设定；
+      // 段命中与底 path 命中同语义＝选中该线（双击＝左栏定位线路行，保持可用）
+      const lid = segEl.dataset.lid;
+      S.activeLine = lid; S.selStop = null;
+      renderLineList(); renderLineForm(); renderStopList(); renderWorld();
+      regCanvasDbl(`line:${lid}`, () => {
+        locateLineInList(lid);
+        setStatus(`已在左栏定位 ${lid}。`);
+      });
       return;
     }
     if (hitEl.closest('.stop-c')) return;  // 已在 pointerdown 处理
@@ -1942,6 +2025,30 @@
       + (stillEmpty ? `；仍有 ${stillEmpty} 站未命名。` : '；当前线全部站已命名。'));
   });
 
+  // 分段状态按站区间设定（2026-11-21：撤画布点段循环，改左栏「分段状态」面板批量设定）
+  $('btnSegApply').addEventListener('click', () => {
+    const line = S.lines.get(S.activeLine);
+    if (!line) { setStatus('没有当前线路，无法设定分段状态。', true); return; }
+    const a = parseInt($('segFrom').value, 10), b = parseInt($('segTo').value, 10);
+    const s = $('segStatus').value;
+    // 先验后快照：非法区间不压撤销栈（applySegRange 内还会再验一遍兜底）
+    const n = line.stops.length;
+    const bad = !(Number.isInteger(a) && Number.isInteger(b) && a >= 1 && b >= 1 && a <= n && b <= n)
+      || a === b || (!line.loop && a > b);
+    if (bad) {
+      setStatus('区间无效：从站/到站须为两个不同的站序（非环线须正向）。', true);
+      return;
+    }
+    snapshot();
+    if (!applySegRange(line, a, b, s)) {   // 段表长度与站数不符等（校验把门的数据不会触发）
+      setStatus('分段表与站数不符，请先修正数据（保存校验会拦截）。', true);
+      return;
+    }
+    line.meta.updated = today();
+    renderAll();
+    setStatus(`${line.id} 段 ${a}–${b} → ${SEG_LABEL[s]}` + (line.loop && a > b ? '（经环绕段）' : ''));
+  });
+
   // 属性面板逐键渲染合帧（每帧至多一次；名称等不影响画布的字段跳过 renderWorld）——满规模防逐键全量重绘卡顿
   let formRaf = 0, formNeedsWorld = false;
   function scheduleFormRender(needsWorld) {
@@ -2140,7 +2247,7 @@
   });
 
   const MODE_HINT = {
-    select: '选择：点击设站选中（左侧改名）、点击线段循环切换状态；左键拖动平移、滚轮缩放；拖动改站位置请切加站模式。',
+    select: '选择：点击设站选中（左侧改名）、点击线路选中；分段状态在左侧「设站」面板按站区间设定（如 1 到 2 已批复）；左键拖动平移、滚轮缩放；拖动改站位置请切加站模式。',
     add: '加站：点击线路附近即可加站（吸附半径 40px，自动记弧长 t）；按住已有站圈可直接拖动改位置（没按到则照常拖画布）。加站类型（车站/线路所）用左侧设站面板顶部按钮切换；可以先一路点完，再展开「批量命名」一次贴入站名（线路所跳过）。',
     group: '编组：任意处拉框直接建组（框内 ≥2 站即建，已在其他组的跳过）；也可点选站圈攒待编组后点「编组」；中键拖动平移。',
   };
