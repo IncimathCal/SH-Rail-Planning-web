@@ -1,23 +1,38 @@
 # -*- coding: utf-8 -*-
-"""ai_parse.py — 从 Illustrator 源文件（PDF 兼容层）批量提取 Line 图层线路 path。
+"""ai_parse.py — 从 Illustrator 源文件提取 Line 图层线路 path（几何走 PDF 兼容层，
+命名与可见性走原生私有数据，2026-11-21 二轮重构）。
 
 坐标基准：.ai 页面（本图 12000×12000）、SVG 朝向（y 向下）。线路 path、颜色
 （CMYK→RGB 近似）、虚实样式一次全量导出为 fmt/import@1 兼容记录；paths[] 增补
-非破坏性可选字段 dash / cmyk / width / hintNames（72pt 线路名标签就近绑定，仅为
-建议值，不自动应用——铁律不破）。
+非破坏性可选字段 dash / cmyk / width / category / hintNames。
+
+sourceLayer 语义（原生权威化，讨论记录-04 用户裁定）：
+- 无支线的线 = 命名的路径对象 → **路径对象名**（用户自己的命名，非杜撰）；
+- 有支线的线（示范区线/机场联络线/南汇线/11/10）= 子图层 → **层链**（如 市域线/示范区线）；
+- 预控通道/他省/联络线内命名对象 → 对象名（通道名等）；
+- 拿不到真实名（作者未命名的描边）→ 保持中性提取序号 path-NN，绝不造名；
+- 层内多条 path 同名时附 #k 序号后缀（编辑器按 sourceLayer 寻址建线，须可区分）。
+
+category 可选枚举：预控通道层 → "reserved"；他省层 → "interprovincial"。
+闭合（原生 h/s）→ d 尾追加 Z（环线识别 /z/i 测试用）；字节级相同的重复描边去重。
+hintNames 为站圆组证据名（原生 Station 子层圆心 ≥60% 距线 <25pt 且 ≥3 圆），
+仅「建议」展示、人工点选采用，绝不自动写入正式名称（铁律）。
+可见性：隐藏层（Lb 位1=0）不进 PDF 兼容层，本工具天然不提取；原生侧如实报告。
 
 用法：
-  python tools/ai_parse.py "源资产/远期.ai" --out "import/远期图-全量.json"
+  python -X utf8 tools/ai_parse.py "源资产/远期.ai" --out "import/远期图-全量.json"
+      [--native-cache "零散/ai_native_tail.bin"]               # 原生矢量尾部缓存
       [--verify "源资产/6、14、15、23号线.svg"]               # 与既有 SVG 导出对拍
       [--calib "6,14,15,23" --svg-out "源资产/远期图-标定4线.svg"]
                                                               # 生成 georf 用标定 SVG（新基准）
 
-依赖 PyMuPDF（fitz）；.ai 只读。输出 UTF-8 无 BOM。
+依赖 PyMuPDF（fitz）+ zstandard（仅缓存缺失重提取时）；.ai 只读。输出 UTF-8 无 BOM。
 """
 import argparse
 import collections
 import datetime
 import json
+import os
 import re
 import sys
 
@@ -217,36 +232,155 @@ def emit(p, H):
                 dash=list(p['dash']) if p['dash'] else None, width=p['width'])
 
 
-# ---------------------------------------------------------------- 线路名建议
+# ---------------------------------------------------------------- 原生对拍与命名
 
-def label_hints(page, eps, radius=600.0):
-    """图上线路名标签（与站名同为 24pt，靠文本模式区分：X号线 / 以 线·通道·铁路 结尾 /
-    含「往」）就近绑定 path 端点 → {idx: [名称...]}。图例带文本离线端点远，自然不绑。"""
-    pat = re.compile(r'^\d+号线$|(线|通道|铁路)$|往')
-    words = []
-    seen = set()
-    for w in page.get_text('words'):
-        t = w[4].strip()
-        if not t or not pat.search(t):
+def d_points(d):
+    """绝对大写 d 串（emit 产物）→ 坐标点列表（含贝塞尔控制点）。"""
+    pts = []
+    for m in re.finditer(r'([MLC])([^MLCZ]*)', d):
+        nums = [float(x) for x in re.findall(r'-?\d+\.?\d*', m.group(2))]
+        for i in range(0, len(nums) - 1, 2):
+            pts.append((nums[i], nums[i + 1]))
+    return pts
+
+
+def stroke_grid(ops):
+    """原生 stroke 坐标点 → 0.1 网格索引 {(gx,gy): [(x,y)...]}，供容差点匹配。"""
+    g = collections.defaultdict(list)
+    for _op, w in ops:
+        for i in range(0, len(w) - 1, 2):
+            g[(round(w[i] * 10), round(w[i + 1] * 10))].append((w[i], w[i + 1]))
+    return g
+
+
+def grid_hit(grid, pt, tol=0.05):
+    """点是否落在网格容差内（PDF %.2f 与原生全精度差 ≤0.005）。"""
+    gx, gy = round(pt[0] * 10), round(pt[1] * 10)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for q in grid.get((gx + dx, gy + dy), ()):
+                if abs(q[0] - pt[0]) <= tol and abs(q[1] - pt[1]) <= tol:
+                    return True
+    return False
+
+
+def match_native(paths, nat, log=print):
+    """PDF 侧 path（emit 后）↔ 原生描边（ai_native.Stroke，仅 Line 子树可见描边）
+    点集对拍。返回 matches {pdf_idx: (stroke, mode)}，mode ∈ exact / partial。
+    exact = 双向 ≥98% 点重合（同一对象）；partial = PDF 条 ⊆ 原生复合对象（拆分）。"""
+    grids = {id(st): stroke_grid(st.ops) for st in nat}
+    matches = {}
+    used_cnt = collections.Counter()
+    for i, p in enumerate(paths):
+        ppts = d_points(p['d'])
+        if not ppts:
             continue
-        key = (t, round(w[0]), round(w[1]))
-        if key in seen:
-            continue
-        seen.add(key)
-        words.append((t, (w[0] + w[2]) / 2, (w[1] + w[3]) / 2))
-    hits = collections.defaultdict(list)
-    for t, lx, ly in words:
-        best = None
-        bd = radius
-        for i, ep in eps.items():
-            for px, py in ep:
-                d = ((px - lx) ** 2 + (py - ly) ** 2) ** .5
-                if d < bd:
-                    bd = d
-                    best = i
-        if best is not None and t not in hits[best]:
-            hits[best].append(t)
-    return hits, len(words)
+        pb = p['bbox']
+        best, bkey = None, None
+        for st in nat:
+            if not (st.cmyk and p['cmyk'] and
+                    all(abs(a - b) < 0.02 for a, b in zip(st.cmyk, p['cmyk']))):
+                continue
+            nb = st_bbox(st)
+            if nb[0] > pb[0] + 80 or nb[1] > pb[1] + 80 or nb[2] < pb[2] - 80 or nb[3] < pb[3] - 80:
+                continue                                   # 原生应 ⊇ PDF（复合可偏大）
+            g = grids[id(st)]
+            fwd = sum(1 for q in ppts if grid_hit(g, q)) / len(ppts)
+            if fwd < 0.5:
+                continue
+            npts = [q for pts in g.values() for q in pts]
+            # 反向：原生点距任一 PDF 点 <tol（PDF 点建 0.1 网格）
+            pg = collections.defaultdict(list)
+            for q in ppts:
+                pg[(round(q[0] * 10), round(q[1] * 10))].append(q)
+            back = sum(1 for q in npts if _hit_pts(pg, q)) / len(npts)
+            # 平局（如 27 号线两份字节级相同的几何）优先未被占用的原生对象
+            key = (round(fwd, 3), round(back, 3), -used_cnt[id(st)])
+            if bkey is None or key > bkey:
+                bkey, best = key, (st, fwd, back)
+        if best is not None:
+            st, fwd, back = best
+            used_cnt[id(st)] += 1
+            matches[i] = (st, 'exact' if (fwd >= 0.98 and back >= 0.98) else 'partial')
+    log('对拍：%d/%d 条 PDF path 匹配到原生描边（exact %d / partial %d）'
+        % (len(matches), len(paths),
+           sum(1 for _, m in matches.values() if m == 'exact'),
+           sum(1 for _, m in matches.values() if m == 'partial')))
+    return matches
+
+
+def _hit_pts(pg, q, tol=0.05):
+    gx, gy = round(q[0] * 10), round(q[1] * 10)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for t in pg.get((gx + dx, gy + dy), ()):
+                if abs(t[0] - q[0]) <= tol and abs(t[1] - q[1]) <= tol:
+                    return True
+    return False
+
+
+_STROKE_BBOX = {}
+
+
+def st_bbox(st):
+    if id(st) not in _STROKE_BBOX:
+        xs, ys = [], []
+        for _op, w in st.ops:
+            for i in range(0, len(w) - 1, 2):
+                xs.append(w[i]); ys.append(w[i + 1])
+        _STROKE_BBOX[id(st)] = (min(xs), min(ys), max(xs), max(ys)) if xs else (0, 0, 0, 0)
+    return _STROKE_BBOX[id(st)]
+
+
+# 有支线的线（用户裁定）＝子图层：sourceLayer 用层链
+BRANCH_LAYERS = {
+    'Line/市域线/示范区线', 'Line/市域线/机场联络线', 'Line/市域线/南汇线',
+    'Line/市区线/11', 'Line/市区线/10',
+}
+
+
+def source_layer_of(st):
+    """原生 stroke → (sourceLayer 或 None（中性）, hint 对象名或 None, category 或 None)。"""
+    layer = st.layer
+    cat = 'reserved' if layer == 'Line/预控通道' else (
+          'interprovincial' if layer == 'Line/他省' else None)
+    if layer in BRANCH_LAYERS:
+        return layer[len('Line/'):], (st.name if st.name else None), cat
+    if st.name:
+        return st.name, None, cat
+    return None, None, cat
+
+
+def station_circle_hints(nat, paths):
+    """原生 Station 子层站圆组证据名：组内 ≥3 圆且 ≥60% 圆心距 path <25pt。
+    距离基准 = d 全部控制点 + 弧长 25pt 密集采样（稀疏采样会漏长线中段）。
+    返回 {pdf_idx: ['名(k/n)', ...]}（换乘标记子层 Trans/Line 除外）。"""
+    from svg_parse import path_from_d
+    groups = collections.defaultdict(list)
+    for st in nat:
+        parts = st.layer.split('/')
+        if (len(parts) == 2 and parts[0] == 'Station' and st.paint in ('b', 'f', 'B')
+                and parts[1] not in ('Trans', 'Line')):
+            b = st_bbox(st)
+            if b[2] - b[0] <= 40 and b[3] - b[1] <= 40:      # 站圆量级（非大复合）
+                groups[parts[1]].append(((b[0] + b[2]) / 2, (b[1] + b[3]) / 2))
+    hints = collections.defaultdict(list)
+    for i, p in enumerate(paths):
+        pts = d_points(p['d'])
+        try:
+            ap = path_from_d(p['d'])
+            k = max(8, int(ap.length // 25))
+            pts = pts + [ap.point_at(t / k) for t in range(k + 1)]
+        except Exception:
+            pass
+        for nm, centers in sorted(groups.items()):
+            if len(centers) < 3:
+                continue
+            ok = sum(1 for (cx, cy) in centers
+                     if min((cx - x) ** 2 + (cy - y) ** 2 for x, y in pts) < 25 ** 2)
+            if ok >= max(3, int(len(centers) * 0.6)):
+                hints[i].append('%s(%d/%d)' % (nm, ok, len(centers)))
+    return hints
 
 
 # ---------------------------------------------------------------- 旧 SVG 对拍
@@ -393,6 +527,8 @@ def main():
     ap.add_argument('--verify')
     ap.add_argument('--calib')
     ap.add_argument('--svg-out')
+    ap.add_argument('--native-cache', default='零散/ai_native_tail.bin',
+                    help='原生矢量尾部缓存（缺失时自动从 .ai 重提取）')
     args = ap.parse_args()
 
     doc = fitz.open(args.ai)
@@ -409,9 +545,36 @@ def main():
     fitz_color_fix(page, paths)
     print('Line 图层：描边路径 %d 条（fill 装饰已剔除）' % len(paths))
 
-    eps = {i: p['endpoints'] for i, p in enumerate(paths)}
-    hints, nlab = label_hints(page, eps)
-    print('72pt 级标签 %d 个；绑定到 %d 条路径' % (nlab, len(hints)))
+    # ---- 原生权威化：命名 / 可见性 / 闭合 / 去重 / 站圆组建议 ----
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import ai_native
+    buf = ai_native.ensure_tail(args.ai, args.native_cache)
+    _layers, all_strokes = ai_native.parse_tail(buf)
+    line_st = [s for s in all_strokes if s.layer.split('/')[0] == 'Line' and s.paint in ('S', 's')]
+    nat = [s for s in line_st if s.layer_visible]
+    hid = [s for s in line_st if not s.layer_visible]
+    hid_names = collections.Counter(s.layer for s in hid)
+    print('\n原生侧：Line 子树描边 %d 条（可见 %d / 隐藏 %d；隐藏层 %s）'
+          % (len(line_st), len(nat), len(hid),
+             '、'.join('%s×%d条' % (k, v) for k, v in sorted(hid_names.items()))))
+    matches = match_native(paths, nat)
+
+    # 字节级相同描边去重（保留先出现者）
+    seen_d = {}
+    dups = []
+    keep_idx = []
+    for i, p in enumerate(paths):
+        if p['d'] in seen_d:
+            dups.append((seen_d[p['d']], i))
+        else:
+            seen_d[p['d']] = i
+            keep_idx.append(i)
+    if dups:
+        print('去重：%d 组字节级相同（%s）' % (len(dups), '；'.join(
+            'path-%02d ≡ path-%02d' % (a + 1, b + 1) for a, b in dups)))
+
+    hints = station_circle_hints(all_strokes, paths)
+    print('站圆组建议：命中 %d 条 path（组证据名，仅为建议）' % len(hints))
 
     # 对拍：先精确锚定（宽高一致 → 位移），其余按「旧为子段」包含匹配
     trans = {}
@@ -495,27 +658,97 @@ def main():
         open(args.svg_out, 'w', encoding='utf-8', newline='\n').write(svg)
         print('已生成标定 SVG（旧 path 平移 %.1f,%.1f 到 .ai 基准）：%s' % (tx, ty, args.svg_out))
 
-    # 导出 import 记录
+    # 导出 import 记录（sourceLayer：对象名/层链优先，无名保持 path-NN；去重后仅保留组）
     rec = dict(schema='fmt/import@1', source='远期.ai',
                imported=datetime.date.today().isoformat(),
-               note='ai_parse 提取：坐标为 .ai 页面基准 %.0f×%.0f、SVG 朝向；sourceLayer 为提取'
-                    '序号（path-NN，不带语义）；dash/cmyk/width/hintNames 为非破坏性扩展字段'
-                    '（hintNames 仅就近匹配的建议值，需人工确认）' % (W, H),
+               note='ai_parse 原生权威化提取：坐标为 .ai 页面基准 %.0f×%.0f、SVG 朝向（几何自 PDF '
+                    '兼容层，命名/可见性/闭合自原生私有数据对拍）。sourceLayer 为用户在源图的命名'
+                    '（无支线线＝路径对象名，有支线线＝层链，同名多条附 #k）；作者未命名者保持中性'
+                    'path-NN。category: reserved=预控通道 / interprovincial=他省。dash/cmyk/width/'
+                    'hintNames 为非破坏性扩展字段（hintNames 为站圆组证据建议，需人工点选采用）' % (W, H),
                paths=[])
-    for i, p in enumerate(paths):
-        # sourceLayer 一律中性提取序号（用户明令 2026-11-21：不得擅自起名）；
-        # 自动绑定的线路名只进 hintNames，由编辑器以「建议」形式展示、人工点选采用
-        rec['paths'].append(dict(sourceLayer='path-%02d' % (i + 1), color=p['color'], path=p['d'],
-                                 dash=p['dash'], cmyk=p['cmyk'], width=p['width'],
-                                 hintNames=hints.get(i, [])))
-    with open(args.out, 'w', encoding='utf-8', newline='\n') as f:
+    entries = []
+    for i in keep_idx:
+        p = paths[i]
+        st, mode = matches.get(i, (None, None))
+        src, nhint, cat = source_layer_of(st) if st is not None else (None, None, None)
+        if st is not None and st.closed and not p['d'].rstrip().endswith('Z'):
+            p['d'] += 'Z'
+            print('闭合补 Z：path-%02d（原生 h/s 闭合，%s）' % (i + 1, st.layer))
+        entries.append(dict(i=i, src=src, nhint=nhint, cat=cat, st=st, mode=mode))
+    # 同名多条 → #k 后缀（编辑器按 sourceLayer 寻址，须可区分；名字本身照抄用户命名）
+    grp = collections.Counter(e['src'] for e in entries if e['src'])
+    seq = collections.Counter()
+    for e in entries:
+        if e['src'] and grp[e['src']] > 1:
+            seq[e['src']] += 1
+            e['src'] = '%s#%d' % (e['src'], seq[e['src']])
+        elif not e['src']:
+            e['src'] = 'path-%02d' % (e['i'] + 1)
+    for e in entries:
+        p = paths[e['i']]
+        hn = ([e['nhint']] if e['nhint'] and e['nhint'] not in e['src'] else []) \
+            + hints.get(e['i'], [])
+        row = dict(sourceLayer=e['src'], color=p['color'], path=p['d'],
+                   dash=p['dash'], cmyk=p['cmyk'], width=p['width'])
+        if e['cat']:
+            row['category'] = e['cat']
+        if hn:
+            row['hintNames'] = hn
+        rec['paths'].append(row)
+    with open(args.out, 'w', encoding='utf8' if False else 'utf-8', newline='\n') as f:
         json.dump(rec, f, ensure_ascii=False, separators=(',', ':'))
-    dashed = sum(1 for p in paths if p['dash'])
-    named = sum(1 for i in range(len(paths)) if hints.get(i))
-    print('\n已导出 %s：%d 条 path（虚线 %d / 实线 %d），带线路名建议 %d 条'
-          % (args.out, len(paths), dashed, len(paths) - dashed, named))
-    print('颜色 %d 种；建议名样例：%s' % (len(set(p['color'] for p in paths)),
-          [(rec['paths'][i]['sourceLayer'], hints[i][:2]) for i in list(hints)[:6]]))
+
+    # 报告
+    named_n = sum(1 for e in entries if e['src'] and not e['src'].startswith('path-'))
+    branch_n = sum(1 for e in entries if e['st'] is not None and e['st'].layer in BRANCH_LAYERS)
+    cat_res = sum(1 for e in entries if e['cat'] == 'reserved')
+    cat_int = sum(1 for e in entries if e['cat'] == 'interprovincial')
+    dashed = sum(1 for e in entries if paths[e['i']]['dash'])
+    print('\n已导出 %s：%d 条 path（虚线 %d / 实线 %d）' % (args.out, len(entries), dashed, len(entries) - dashed))
+    print('sourceLayer：用户命名 %d 条（其中层链 %d 条、对象名 %d 条）；中性 path-NN %d 条'
+          % (named_n, branch_n, named_n - branch_n, len(entries) - named_n))
+    print('category：reserved %d 条 / interprovincial %d 条；站圆组建议 %d 条；带 hintNames %d 条'
+          % (cat_res, cat_int, len(hints), sum(1 for r in rec['paths'] if r.get('hintNames'))))
+    print('颜色 %d 种' % len(set(p['color'] for p in paths)))
+
+    # 交叉验证清单（用户自行裁定，不代裁）
+    print('\n=== 交叉验证：命名/层归属 与 站圆组证据 不一致 ===')
+    branch_tails = {l.split('/')[-1] for l in BRANCH_LAYERS}
+    mism = 0
+    for e in entries:
+        if e['st'] is None:
+            continue
+        gnames = [h.split('(')[0] for h in hints.get(e['i'], [])]
+        base = e['src'].split('#')[0]
+        tail = e['st'].layer.split('/')[-1]
+        obj_nm = e['st'].name
+        prob = []
+        # 站圆组与名字冲突（层链含组名 / 组名含层链尾段均算一致；中性条目无名字不算）
+        segs = base.split('/')
+        if (gnames and not base.startswith('path-')
+                and not any(g in segs or g == base for g in gnames)):
+            prob.append('站圆组 %s ≠ %s' % ('|'.join(gnames), base))
+        # 分支层内对象名恰为另一分支层的名（如 南汇线层里的「机场联络线」）
+        if e['st'].layer in BRANCH_LAYERS and obj_nm in branch_tails and obj_nm != tail:
+            prob.append('对象名「%s」在层「%s」（另一分支层同名）' % (obj_nm, e['st'].layer))
+        if prob:
+            mism += 1
+            print('  path-%02d → %s：%s' % (e['i'] + 1, e['src'] or '(中性)', '；'.join(prob)))
+    if not mism:
+        print('  （无）')
+    print('共 %d 条，请用户裁定' % mism)
+    # 原生侧未被 PDF 覆盖的可见描边（含被去重者）
+    used = {id(e['st']) for e in entries if e['st'] is not None}
+    orphan = [st for st in nat if id(st) not in used]
+    if orphan:
+        print('\n=== 原生可见描边未入导出：%d 条 ===' % len(orphan))
+        for st in orphan:
+            why = ('对象级隐藏（头标志 1 Xw，不进 PDF 兼容层）' if st.xw == '1'
+                   else 'PDF 兼容层无对应（原因未明，几何未入图）' if st.name != '27'
+                   else '与 path-50 字节级相同（去重保留一份）')
+            print('  %s %s nseg=%d bbox=%s — %s' % (st.layer, st.name or '(无名)',
+                  len(st.ops), tuple(round(v) for v in st_bbox(st)), why))
 
 
 if __name__ == '__main__':
