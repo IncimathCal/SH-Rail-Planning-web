@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""数据校验器 —— 执行《架构方案-01》§1.7 的校验规则（v1.4）。
+"""数据校验器 —— 执行《架构方案-01》§1.7 的校验规则（v1.5）。
 
 用法：
     python tools/validate.py [目标目录]     # 默认 data
 
 退出码：0 = 通过；1 = 存在 ERROR。
-输出为英文，避免 Windows 控制台编码差异问题。
+输出文案：存量规则为英文；v1.5 分段（fmt/line@2）相关新文案为中文。
+stdout 已 reconfigure 为 UTF-8（同 flatten.py 手法），Windows 管道/
+重定向下中文输出不再受 ANSI 代码页影响。
 仅用 Python 标准库。
 """
 
@@ -80,7 +82,127 @@ def check_path_syntax(path_str, fname, loop):
         err(fname, "loop line path is not closed (missing Z/z)")
 
 
+def check_segmentation(d, fname, stops, loop):
+    """规则 2：分段与状态（v1.5 起 sections 为一等实体）。
+
+    fmt/line@2（schema v1.5）：
+      sections: [{name: str（可空）, status: existing/approved/future}]，
+                name 空字符串＝无名段，status 挂整段；
+      segments: 整数数组，元素＝站间段 i（站 i→站 i+1；环线环绕段＝最后
+                一个）所属 section 的 0-based 索引；
+      约束（逐条校验）：
+        - 长度公式：站数>=2 时非环线=站数-1、环线=站数（环绕段在末位）；
+          站数<2 时 sections=[]/segments=[]、状态挂线路级 status；
+        - 索引均为整数且不越界 [0, sections.length)；
+        - 每段至少被 1 个 segment 引用（无空段）；
+        - 同一 section 的 segments 沿站序连续成块；环线允许从 seg[n-1]
+          绕回 seg[0] 成块（首尾同索引的两块视为一块）。
+    fmt/line@1（旧版，segments 为状态字符串数组）：旧有规则（长度公式、
+      枚举）照旧检查不误报，另加 WARN 提示在编辑器重存转换。
+    线路级 status 规则两版一致：仅站数<2 时必填，站数>=2 必须为 null。
+    """
+    schema = d.get("schema")
+    segs = d.get("segments")
+    if not isinstance(segs, list):
+        err(fname, "segments must be a list")
+        segs = []
+
+    if schema not in ("fmt/line@1", "fmt/line@2"):
+        err(fname, f"unknown schema {schema!r} (want fmt/line@1 or fmt/line@2)")
+        # 已有 ERROR 兜底，按元素类型尽力继续：整数索引按 @2 查、字符串按 @1 查
+        schema = ("fmt/line@2"
+                  if any(isinstance(v, int) and not isinstance(v, bool) for v in segs)
+                  else "fmt/line@1")
+
+    # 长度公式：@2 站数<2 一律空数组（状态挂线路级）；@1 维持旧公式
+    # （环线=站数，含 1 站环线的旧账），不改旧格式文件的判定
+    if schema == "fmt/line@1" or len(stops) >= 2:
+        expect = len(stops) if loop else max(len(stops) - 1, 0)
+    else:
+        expect = 0
+    if len(segs) != expect:
+        err(fname, f"segments length {len(segs)} != expected {expect} (stops={len(stops)}, loop={loop})")
+
+    if schema == "fmt/line@1":
+        warn(fname, "旧版 line@1：请在编辑器载入并重存转换为 @2")
+        for i, sv in enumerate(segs):
+            if sv not in SEG_STATUS:
+                err(fname, f"segments[{i}] bad status: {sv!r} (want one of {sorted(SEG_STATUS)})")
+    else:
+        # ---- fmt/line@2：sections 结构 ----
+        sections = d.get("sections")
+        if sections is None:
+            sections = []
+        elif not isinstance(sections, list):
+            err(fname, "sections must be a list")
+            sections = []
+        for k, sec in enumerate(sections):
+            if not isinstance(sec, dict):
+                err(fname, f"sections[{k}] must be an object")
+                continue
+            if not isinstance(sec.get("name", ""), str):
+                err(fname, f"sections[{k}]: name must be a string (empty allowed), got {sec.get('name')!r}")
+            if sec.get("status") not in SEG_STATUS:
+                err(fname, f"sections[{k}]: bad status: {sec.get('status')!r} (want one of {sorted(SEG_STATUS)})")
+
+        # ---- 索引整数性与越界 ----
+        nsec = len(sections)
+        for i, sv in enumerate(segs):
+            if not isinstance(sv, int) or isinstance(sv, bool):
+                err(fname, f"segments[{i}] must be an integer section index, got {sv!r}")
+            elif not (0 <= sv < nsec):
+                err(fname, f"segments[{i}]: section index {sv} out of range [0,{nsec})")
+
+        # ---- 空段 / 空表约束 ----
+        if len(stops) >= 2:
+            if nsec == 0:
+                err(fname, "line with >=2 stops must have >=1 section (sections is empty)")
+        elif nsec:
+            err(fname, "line with <2 stops must have empty sections (status belongs to line level)")
+        used = {sv for sv in segs if isinstance(sv, int) and not isinstance(sv, bool)}
+        for k in range(nsec):
+            if k not in used:
+                nm = sections[k].get("name") if isinstance(sections[k], dict) else None
+                err(fname, f"section {k} ({nm!r}) 未被任何 segment 引用（空段）")
+
+        # ---- 分离块：同一 section 的占有须沿站序连续 ----
+        # 实现：segments 游程编码（RLE）后每个索引至多一个游程；
+        # 环线先把首尾同索引的两个游程合并（seg[n-1] 绕回 seg[0] 成块），
+        # 再查重复——例如环线 [1,0,1] 合法（1 占环绕弧）、非环线 [0,1,0] 非法。
+        if segs and all(isinstance(sv, int) and not isinstance(sv, bool) for sv in segs):
+            runs = []  # [sectionIndex, 起始 segment 位序, 游程长]
+            for i, sv in enumerate(segs):
+                if runs and runs[-1][0] == sv:
+                    runs[-1][2] += 1
+                else:
+                    runs.append([sv, i, 1])
+            if loop and len(runs) >= 2 and runs[0][0] == runs[-1][0]:
+                runs[0][1] = runs[-1][1]   # 合并块起点取环绕段一侧
+                runs[0][2] += runs[-1][2]
+                runs.pop()
+            blocks = {}  # sectionIndex -> [(起始, 长度)]
+            for v, s, c in runs:
+                blocks.setdefault(v, []).append((s, c))
+            for v, spans in blocks.items():
+                if len(spans) > 1:
+                    desc = "、".join(f"[{s}..{s + c - 1}]" for s, c in spans)
+                    err(fname, f"section {v} 的 segments 分离成 {len(spans)} 块（{desc}），须沿站序连续成块")
+
+    # ---- 线路级 status（两版一致，规则不变）----
+    status = d.get("status")
+    if len(stops) < 2:
+        if status not in SEG_STATUS:
+            err(fname, f"line with <2 stops must set line-level status, got {status!r}")
+    elif status is not None:
+        err(fname, f"line-level status must be null when stops >= 2, got {status!r}")
+
+
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        # v1.5 起新增中文文案：统一 UTF-8 输出，避免 Windows 管道/重定向下
+        # 落到 ANSI 代码页（同 flatten.py 的处理）
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data")
     if not target.is_dir():
         print(f"FAIL: target directory not found: {target}")
@@ -177,24 +299,8 @@ def main():
             if geo is not None and (not isinstance(geo, list) or len(geo) != 2):
                 err(fname, f"stop {sid}: geo must be null or [lon, lat]")
 
-        # 规则 2：segments / status
-        segs = d.get("segments")
-        loop = bool(d.get("loop"))
-        if not isinstance(segs, list):
-            err(fname, "segments must be a list")
-            segs = []
-        expect = len(stops) if loop else max(len(stops) - 1, 0)
-        if len(segs) != expect:
-            err(fname, f"segments length {len(segs)} != expected {expect} (stops={len(stops)}, loop={loop})")
-        for i, sv in enumerate(segs):
-            if sv not in SEG_STATUS:
-                err(fname, f"segments[{i}] bad status: {sv!r} (want one of {sorted(SEG_STATUS)})")
-        status = d.get("status")
-        if len(stops) < 2:
-            if status not in SEG_STATUS:
-                err(fname, f"line with <2 stops must set line-level status, got {status!r}")
-        elif status is not None:
-            err(fname, f"line-level status must be null when stops >= 2, got {status!r}")
+        # 规则 2：sections / segments / status（v1.5 分段一等实体；@1 兼容 WARN）
+        check_segmentation(d, fname, stops, bool(d.get("loop")))
 
         # meta
         meta = d.get("meta")

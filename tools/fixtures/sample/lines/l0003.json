@@ -1,5 +1,5 @@
 {
-  "schema": "fmt/line@1",
+  "schema": "fmt/line@2",
   "id": "l0003",
   "name": "1号线支线",
   "groupId": "lg01",
@@ -13,8 +13,12 @@
     { "id": "l0003-s02", "name": "汶水路", "t": 0.52, "geo": null },
     { "id": "l0003-s03", "name": "彭浦新村", "t": 0.9, "geo": null }
   ],
-  "segments": ["approved", "future"],
+  "sections": [
+    { "name": "", "status": "approved" },
+    { "name": "", "status": "future" }
+  ],
+  "segments": [0, 1],
   "status": null,
-  "info": { "note": "样例数据：支线，与主线同线组 lg01" },
-  "meta": { "created": "2026-11-20", "updated": "2026-11-20", "archived": false, "aliases": [], "sourceLayer": "1号线支线" }
+  "info": { "note": "样例数据：支线，与主线同线组 lg01；两段均空名（状态不同即须分段）" },
+  "meta": { "created": "2026-11-20", "updated": "2026-11-21", "archived": false, "aliases": [], "sourceLayer": "1号线支线" }
 }

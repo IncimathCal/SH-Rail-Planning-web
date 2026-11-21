@@ -8,7 +8,8 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
 
   <out>/lines.geojson  线路×分段，每 feature 一条 LineString
                         properties: lineId / name / aliases / color / role /
-                        layer / loop / segIndex / segStatus
+                        layer / loop / segIndex / segStatus / sectionName
+                        （sectionName＝所属分段名，空名段省略该键）
   <out>/stops.geojson  设站，每 feature 一个 Point
                         properties: sid / name / lineId / lineName / t /
                         groupId / groupType
@@ -25,8 +26,14 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
   非环线 n 站 n-1 段（stops[i].t → stops[i+1].t）；
   环线 n 站 n 段，末段为环绕段（stops[n-1].t → stops[0].t，跨 1/0）；
   环线仅 1 站＝整条闭合路径；
-  站数 < 2 的线（如零设站联络线）用线路级 status 输出整线单段；
-  段无记录（segments 缺项）按 "existing"。
+  站数 < 2 的线（如零设站联络线）用线路级 status 输出整线单段。
+状态派生（v1.5，fmt/line@2：分段一等实体）：
+  站间段 i 的状态＝sections[segments[i]].status（segments[i] 为分段
+  0-based 索引，非状态字符串），分段名写入 sectionName（空名省略）；
+  站数 <2 时 sections/segments 必空，整线单段状态取线路级 status；
+  段记录缺失（sections/segments 缺项）防御性兜底 "existing"。
+  输入为 fmt/line@1 直接中文报错拒绝（不静默兼容），须先在编辑器
+  载入重存为 @2。
 
 线路清单：优先 <data>/manifest.json 的 lines[].file（剔除 archived 列表中的
 线），无 manifest 则 glob <data>/lines/*.json；单线文件 meta.archived=true 剔除。
@@ -129,6 +136,7 @@ def flatten_line(line, ap, tps, group_color, stop_group):
     """单条线路 → (分段 LineString feature 列表, 设站 Point feature 列表)。"""
     lid = line.get("id")
     stops = line.get("stops") or []
+    sections = line.get("sections") or []
     segs = line.get("segments") or []
     n = len(stops)
     loop = bool(line.get("loop"))
@@ -171,13 +179,24 @@ def flatten_line(line, ap, tps, group_color, stop_group):
             print(f"警告：{lid} 段 {i} 折线点数不足 2，跳过")
             continue
         if whole:
-            # 整线单段：优先线路级 status，无则 segments[0]，再缺省 existing
-            status = line.get("status") or (segs[0] if segs else None) or "existing"
+            # 整线单段（环线 1 站 / 站数<2）：@2 下 sections/segments 必空，
+            # 状态取线路级 status，缺省 existing
+            status = line.get("status") or "existing"
+            sec = None
         else:
-            status = segs[i] if i < len(segs) and segs[i] else "existing"
+            # 站间段 i 的状态＝所属 section 的 status（v1.5：segments[i] 为
+            # section 的 0-based 索引）；记录缺失时防御性兜底 existing
+            idx = segs[i] if i < len(segs) else None
+            sec = (sections[idx]
+                   if isinstance(idx, int) and 0 <= idx < len(sections)
+                   and isinstance(sections[idx], dict) else None)
+            status = (sec.get("status") if sec else None) or "existing"
         props = dict(base_props)
         props["segIndex"] = i
         props["segStatus"] = status
+        # 分段名：空字符串/缺失省略该键（查看器信息面板按需读取）
+        if sec and sec.get("name"):
+            props["sectionName"] = sec["name"]
         line_feats.append({
             "type": "Feature",
             "properties": props,
@@ -261,6 +280,13 @@ def main():
         if (line.get("meta") or {}).get("archived"):
             n_archived += 1
             continue
+        # v1.5 分段一等实体：只消费 fmt/line@2；@1 明确报错拒绝（不静默兼容，
+        # 也不自行猜测转换——编辑器载入重存才是权威转换通道）
+        schema = line.get("schema")
+        if schema == "fmt/line@1":
+            sys.exit(f"错误：{lf.name} 为 line@1，请先在编辑器载入重存为 @2（v1.5 分段一等实体）")
+        if schema != "fmt/line@2":
+            sys.exit(f"错误：{lf.name} 的 schema {schema!r} 不是 fmt/line@2，拒绝处理")
         # 空白规范化：svg_parse 的词法把空格误当命令字符（真实 AI 导出 d 串为
         # 压缩格式无空格，仅手写样张含空格），此处统一换成逗号——SVG path 语法
         # 中空白与逗号同为分隔符，语义等价且与 src/geom.js（忽略空白）口径一致

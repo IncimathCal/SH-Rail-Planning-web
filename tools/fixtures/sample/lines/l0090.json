@@ -1,5 +1,5 @@
 {
-  "schema": "fmt/line@1",
+  "schema": "fmt/line@2",
   "id": "l0090",
   "name": "联络线（样例）",
   "groupId": null,
@@ -9,8 +9,9 @@
   "path": "M 320 100 C 350 60 370 40 400 20",
   "connects": ["l0001", "l0002"],
   "stops": [],
+  "sections": [],
   "segments": [],
   "status": "future",
-  "info": { "note": "样例数据：联络线，零设站，线路级状态替代 segments" },
-  "meta": { "created": "2026-11-20", "updated": "2026-11-20", "archived": false, "aliases": [], "sourceLayer": "联络线" }
+  "info": { "note": "样例数据：联络线，零设站；站数<2 时 sections/segments 为空，状态挂线路级 status" },
+  "meta": { "created": "2026-11-20", "updated": "2026-11-21", "archived": false, "aliases": [], "sourceLayer": "联络线" }
 }

@@ -1,5 +1,5 @@
 {
-  "schema": "fmt/line@1",
+  "schema": "fmt/line@2",
   "id": "l0001",
   "name": "1号线",
   "groupId": "lg01",
@@ -14,8 +14,12 @@
     { "id": "l0001-s03", "name": "上海火车站", "t": 0.61, "geo": null },
     { "id": "l0001-s04", "name": "富锦路", "t": 0.95, "geo": null }
   ],
-  "segments": ["existing", "existing", "existing"],
+  "sections": [
+    { "name": "", "status": "existing" },
+    { "name": "北延伸段", "status": "future" }
+  ],
+  "segments": [0, 0, 1],
   "status": null,
-  "info": { "note": "样例数据（fixtures），非真实录入" },
-  "meta": { "created": "2026-11-20", "updated": "2026-11-20", "archived": false, "aliases": [], "sourceLayer": "1号线" }
+  "info": { "note": "样例数据（fixtures），非真实录入；v1.5 分段：无名既有段＋北延伸段两段" },
+  "meta": { "created": "2026-11-20", "updated": "2026-11-21", "archived": false, "aliases": [], "sourceLayer": "1号线" }
 }

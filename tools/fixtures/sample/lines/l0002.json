@@ -1,5 +1,5 @@
 {
-  "schema": "fmt/line@1",
+  "schema": "fmt/line@2",
   "id": "l0002",
   "name": "4号线",
   "groupId": null,
@@ -13,8 +13,12 @@
     { "id": "l0002-s02", "name": "世纪大道", "t": 0.33, "geo": null },
     { "id": "l0002-s03", "name": "宝山路", "t": 0.66, "geo": null }
   ],
-  "segments": ["existing", "existing", "existing"],
+  "sections": [
+    { "name": "", "status": "existing" },
+    { "name": "改造段", "status": "approved" }
+  ],
+  "segments": [1, 0, 1],
   "status": null,
-  "info": { "note": "样例数据：环线（含首尾环绕段）" },
-  "meta": { "created": "2026-11-20", "updated": "2026-11-20", "archived": false, "aliases": [], "sourceLayer": "4号线" }
+  "info": { "note": "样例数据：环线（含首尾环绕段）；section 1 占据 seg[0] 与环绕段 seg[2]，跨环绕成块（环线合法）" },
+  "meta": { "created": "2026-11-20", "updated": "2026-11-21", "archived": false, "aliases": [], "sourceLayer": "4号线" }
 }
