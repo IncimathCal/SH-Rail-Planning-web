@@ -2,7 +2,8 @@
 // editor.js 纯逻辑层单测：分段实体（fmt/line@2：加删站索引簿记、切分/并段/区间/约束检测、@1→@2 迁移）、
 // stopSeq 水位、status 修正、lineIssues、批量命名、站圆预置批量落站（planStopImport/applyStopImport/suggestForStop）、
 // 出省箭头（kind:'arrow' 落位/编组/命名/校验）、多线换乘药丸串法（planGroupPillChain 确定性）、
-// 线路显示顺序（normalizeLineOrder：缺省回退/序列化补全/新建追加/失效清理/删除移除）。
+// 线路显示顺序（normalizeLineOrder：缺省回退/序列化补全/新建追加/失效清理/删除移除）、
+// 站类型循环切换（nextStopKind：三种位置 × 各起点）、站数<2 缺 status 载入兜底（2026-11-22）。
 // 用法：node tools/test_editor_logic.js
 
 const L = require(path_join('src', 'editor.js'));
@@ -607,6 +608,59 @@ awl2.segments = [0, 0, 0];
 awl2.sections = [{ name: '', status: 'existing' }];
 awl2.status = null;
 ok(L.lineIssues(awl2).some((x) => x.includes('出省箭头须在非环线头/尾')), '环线箭头检出');
+
+// ---------- 站类型循环切换 nextStopKind（kind-tgl 按钮；2026-11-22） ----------
+console.log('nextStopKind:');
+// 非环线首/尾（isEnd）：站→所→箭→站 三种都合法
+eq(L.nextStopKind(null, { isLoop: false, isEnd: true }), 'block', '非环首尾：站→所');
+eq(L.nextStopKind('block', { isLoop: false, isEnd: true }), 'arrow', '非环首尾：所→箭');
+eq(L.nextStopKind('arrow', { isLoop: false, isEnd: true }), null, '非环首尾：箭→站（免删了重放）');
+// 非环线中途（isEnd:false）：站↔所，arrow 只许首尾
+eq(L.nextStopKind(null, { isLoop: false, isEnd: false }), 'block', '非环中途：站→所');
+eq(L.nextStopKind('block', { isLoop: false, isEnd: false }), null, '非环中途：所→站');
+eq(L.nextStopKind('arrow', { isLoop: false, isEnd: false }), null, '非环中途的异常箭头：出路＝回站');
+// 环线任意位置：站↔所（环线无 arrow）
+eq(L.nextStopKind(null, { isLoop: true, isEnd: true }), 'block', '环线：站→所');
+eq(L.nextStopKind('block', { isLoop: true, isEnd: false }), null, '环线：所→站');
+eq(L.nextStopKind('arrow', { isLoop: true, isEnd: true }), null, '环线的异常箭头：出路＝回站');
+// 防御：opts 缺省不崩（视作非首尾）；未知/undefined kind 按普通站处理
+eq(L.nextStopKind(null), 'block', 'opts 缺省不崩');
+eq(L.nextStopKind('weird', { isLoop: false, isEnd: true }), 'block', '未知 kind 按普通站');
+eq(L.nextStopKind(undefined, { isLoop: false, isEnd: true }), 'block', 'undefined kind 按普通站');
+// 循环闭合：非环首尾从任意起点连点三次回到原点；环线/中途在合法集合 {null,block} 内两连击回到原点
+// （arrow 在环线/中途本就非法——异常起点首击即纠正回站，见上方「出路＝回站」用例，不参与闭合环）
+for (const k of [null, 'block', 'arrow']) {
+  let cur = k;
+  for (let s = 0; s < 3; s++) cur = L.nextStopKind(cur, { isLoop: false, isEnd: true });
+  ok(cur === k, `非环首尾三连击回到 ${JSON.stringify(k)}`);
+}
+for (const pos of [{ isLoop: false, isEnd: false }, { isLoop: true, isEnd: true }, { isLoop: true, isEnd: false }]) {
+  for (const k of [null, 'block']) {
+    let cur = k;
+    for (let s = 0; s < 2; s++) cur = L.nextStopKind(cur, pos);
+    ok(cur === k, `环线/中途两连击回到 ${JSON.stringify(k)}（${JSON.stringify(pos)}）`);
+  }
+}
+
+// ---------- migrateLineToV2 的站数<2 缺 status 兜底（属性面板删状态字段后；2026-11-22） ----------
+console.log('status fallback:');
+let sf1 = mkLine(false);
+delete sf1.status;   // 手编/旧数据缺线路级 status
+sf1.stops = [{ id: 'l0001-s01', name: 'a', t: 0.5 }];
+L.migrateLineToV2(sf1);
+eq(sf1.status, 'future', '站数<2 缺 status 载入兜底补 future');
+let sf2 = mkLine(false);
+sf2.status = 'approved';
+sf2.stops = [{ id: 'l0001-s01', name: 'a', t: 0.5 }];
+L.migrateLineToV2(sf2);
+eq(sf2.status, 'approved', '已有合法 status 不被覆盖');
+let sf3 = mkLine(false);
+delete sf3.status;
+L.migrateLineToV2(sf3);
+eq(sf3.status, 'future', '空线（0 站）同样兜底');
+let sf4 = mkSecLine(false, ['existing', 'future']);   // ≥2 站、status=null
+L.migrateLineToV2(sf4);
+eq(sf4.status, null, '站数≥2 status=null 不动（状态挂分段）');
 
 // ---------- 多线换乘药丸串法 planGroupPillChain（同站组 ≥3 线；确定性） ----------
 console.log('planGroupPillChain:');

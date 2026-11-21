@@ -1488,32 +1488,65 @@
     box.innerHTML = html;
   }
 
+  // 线路列表分页（临时 UI 状态，同导入源）：分类组各自独立翻页，组头照旧显示组内总数
+  const LINE_PAGE_SIZE = 8;
+  const lineListUi = new Map();   // 分类组 key（JSON.stringify(layer)，null 组为 "null"）-> 页码
+  const layerKey = (layer) => JSON.stringify(layer == null ? null : layer);
+  function llPageOf(key) {
+    const p = lineListUi.get(key);
+    if (Number.isInteger(p) && p >= 1) return p;
+    lineListUi.set(key, 1);
+    return 1;
+  }
+  /** 左栏定位辅助（画布双击线路/车站用）：目标线不在其分类组当前页时，把该组页码切到目标页
+   *  （临时 UI 状态，不动数据不进撤销）——否则分页会让 scrollIntoView 找不到行。
+   *  返回是否切了页（调用方据此补一次 renderLineList） */
+  function pageLineIntoView(lid) {
+    const line = S.lines.get(lid);
+    if (!line) return false;
+    const key = layerKey((line.meta && typeof line.meta.layer === 'string' && line.meta.layer) || null);
+    for (const grp of layerGroupsOf([...S.lines.values()])) {
+      if (layerKey(grp.layer) !== key) continue;
+      const idx = grp.lines.findIndex((l) => l.id === lid);
+      if (idx >= 0) {
+        const want = Math.floor(idx / LINE_PAGE_SIZE) + 1;
+        const changed = llPageOf(key) !== want;
+        lineListUi.set(key, want);
+        return changed;
+      }
+      return false;
+    }
+    return false;
+  }
+
   function renderLineList() {
     const box = $('lineList');
     if (!S.lines.size) { box.innerHTML = '<div style="color:var(--dim)">暂无线路。</div>'; return; }
     // 按 meta.layer 分组渲染：组头（分类名＋条数）＋组内按 id 升序；未分类组固定最后；
-    // 只有一类且无未分类时也照常显示组头（layerGroupsOf 保证，保持一致）
+    // 只有一类且无未分类时也照常显示组头（layerGroupsOf 保证，保持一致）。
+    // 每组每页 8 条、组脚独立翻页（2026-11-22）；组头显示的仍是组内总数
     let html = '';
     for (const grp of layerGroupsOf([...S.lines.values()])) {
+      const key = layerKey(grp.layer);
+      const pages = Math.max(1, Math.ceil(grp.lines.length / LINE_PAGE_SIZE));
+      const page = Math.min(llPageOf(key), pages);   // 删线后组变短：页码回正（临时状态，无快照）
+      lineListUi.set(key, page);
+      html += `<div class="ll-group" data-llkey="${esc(key)}">`;
       html += `<div class="layer-head"><span>${esc(grp.layer || '未分类')}</span><span>${grp.lines.length}</span></div>`;
-      html += grp.lines.map((l) => `
+      html += grp.lines.slice((page - 1) * LINE_PAGE_SIZE, page * LINE_PAGE_SIZE).map((l) => `
         <div class="line-row ${l.id === S.activeLine ? 'active' : ''}" data-lid="${l.id}">
           <span class="chip" style="background:${esc(l.color)}"></span>
           <span class="nm">${esc(l.name)} ${l.meta && l.meta.archived ? '<span class="badge arch">归档</span>' : ''}</span>
           <span class="id">${l.id} · ${l.stops.length}站</span>
         </div>`).join('');
+      if (pages > 1) html += `<div class="ll-foot">
+        <button class="mini" data-llpg="prev" ${page <= 1 ? 'disabled' : ''}>上一页</button>
+        <span>${page} / ${pages} 页</span>
+        <button class="mini" data-llpg="next" ${page >= pages ? 'disabled' : ''}>下一页</button>
+      </div>`;
+      html += '</div>';
     }
     box.innerHTML = html;
-  }
-
-  // 本线 path 对应的导入建议名（自动就近匹配的源图文字，仅供参考）
-  function importHintsFor(l) {
-    if (!l || !l.path) return [];
-    for (const imp of S.imports) {
-      const p = imp.paths.find((x) => x.path === l.path);
-      if (p && p.hintNames && p.hintNames.length) return p.hintNames;
-    }
-    return [];
   }
 
   /** 线路 → 匹配的站圆预置项（fmt/stations-import@1）。
@@ -1553,7 +1586,9 @@
     const lgOpts = ['<option value="">（无）</option>'].concat(
       lgs.map((g) => `<option value="${g.id}" ${l.groupId === g.id ? 'selected' : ''}>${g.id} ${esc(g.name)}</option>`),
       ['<option value="__new__">＋ 新建线组…</option>']).join('');
-    const needStatus = l.stops.length < 2;
+    // 「建议名」与「状态」字段已删（2026-11-22 用户裁定）：前者只留导入列表 ≈灰字与设站栏建议 chip；
+    // 后者——<2 站的线路级 status 由建线默认与载入兜底统一给 'future'（见 migrateLineToV2 注释），
+    // ≥2 站状态挂在分段上（左栏「设站」面板分段区管理），属性面板不再出现状态行。
     // 分类下拉：选项＝已载入导入记录里所有非空 layer 去重（拼音序）＋「（未分类）」空值；
     // 当前线 meta.layer 为手输历史值不在选项里时补一项保底显示（不得丢弃用户已存的值）
     const curLayer = (l.meta && typeof l.meta.layer === 'string' && l.meta.layer) || '';
@@ -1570,12 +1605,6 @@
     box.innerHTML = `
       <div class="fld"><label>id</label><input type="text" value="${l.id}" disabled></div>
       <div class="fld"><label>名称</label><input type="text" id="lfName" value="${esc(l.name)}"></div>
-      ${importHintsFor(l).length ? `
-      <div class="fld"><label>建议名</label><span class="hintline" style="flex:1">
-        ${importHintsFor(l).map((n) => `<span class="namehint" data-namehint="${esc(n)}"
-          title="源图附近自动匹配的文字，仅供参考；点击采用">${esc(n)}</span>`).join('')}
-        <span style="color:var(--dim);font-size:10px">（自动匹配，不保证正确）</span>
-      </span></div>` : ''}
       <div class="fld"><label>颜色</label><input type="color" id="lfColor" value="${esc(l.color)}"></div>
       <div class="fld"><label>环线</label><input type="checkbox" id="lfLoop" ${l.loop ? 'checked' : ''}
         style="flex:1"><span style="color:var(--dim);font-size:11px">（path 闭合）</span></div>
@@ -1588,12 +1617,6 @@
       <div class="fld" id="lfConnRow" style="display:${l.role === 'connector' ? 'flex' : 'none'}">
         <label>联络</label><input type="text" id="lfConnects" placeholder="l0001,l0002"
           value="${esc((l.connects || []).join(','))}"></div>
-      ${needStatus ? `
-      <div class="fld" id="lfStatusRow">
-        <label>状态</label><select id="lfStatus" style="flex:1">
-        ${SEG_ORDER.map((s2) => `<option value="${s2}" ${l.status === s2 ? 'selected' : ''}>${SEG_LABEL[s2]}</option>`).join('')}
-        </select><span style="color:var(--dim);font-size:11px">（站数&lt;2 时必填）</span></div>` : `
-      <div class="fld" id="lfStatusRow"><label>状态</label><span style="flex:1;color:var(--dim);font-size:11px">≥2 站后整线状态停用——状态挂在分段上：在左侧「设站」面板「分段（铺满全线）」区命名/切分/并段、整段改状态</span></div>`}
       <div class="fld"><label>分类</label><select id="lfLayer" style="flex:1"
         title="＝源图 Line 直属子图层名（如 市区线/市域线/联络线）；建线时自动带入，可改">${layerOpts.join('')}</select></div>
       <div class="fld"><label>源图层</label><input type="text" value="${esc((l.meta && l.meta.sourceLayer) || '')}" disabled></div>
@@ -1625,6 +1648,15 @@
       return;
     }
     const preset = matchPresetForLine(l);   // 站名建议来源（无匹配则无 chips）
+    // 站类型循环按钮（站→所→箭→站，按位置约束；2026-11-22）：标签显示**当前**类型一个字，
+    // title 说明下一次点击变成什么；arrow 不再禁用（可循环改回站，免删了重放）
+    const kindChar = (k) => (k === 'block' ? '所' : k === 'arrow' ? '箭' : '站');
+    const kindName = (k) => (k === 'block' ? '线路所' : k === 'arrow' ? '出省箭头' : '普通车站');
+    const kindDesc = (k) => k === 'block'
+      ? '中途接轨点，虚线圆、可无名、仅编辑器可见（正式网页隐藏）；只能与线路所编为接轨站组'
+      : k === 'arrow'
+        ? '非站点，线色箭头指向线路外侧、可无名，编辑器与正式网页都显示；仅非环线头/尾可设'
+        : '普通设站，需站名';
     box.innerHTML = l.stops.map((st, i) => {
       const prev = i > 0 ? l.stops[i - 1].t : null;
       const next = i < l.stops.length - 1 ? l.stops[i + 1].t : null;
@@ -1634,6 +1666,8 @@
         || (isArr && !(i === 0 || i === l.stops.length - 1));   // 箭头离开头尾即标红
       // 站名建议 chip：仅普通空名站展示（源图就近文字，点选才写入；绝不自动命名；线路所/出省箭头不参与）
       const sug = preset && !isBlk && !isArr && !(st.name && st.name.trim()) ? suggestForStop(preset, st.t) : null;
+      const nk = nextStopKind(st.kind, { isLoop: l.loop, isEnd: i === 0 || i === l.stops.length - 1 });
+      const cur = isBlk ? 'block' : isArr ? 'arrow' : null;
       return `
       <div class="stop-row ${S.selStop === st.id ? 'sel' : ''} ${S.pending.includes(st.id) ? 'pend' : ''}" data-sid="${st.id}">
         <span class="idx">${i + 1}</span>
@@ -1644,8 +1678,8 @@
           title="源图就近文字（距站圆 ${sug.dist}pt），仅供参考、不保证正确；点击采用">${esc(sug.name)}</span>` : ''}
         <input type="text" value="${st.t.toFixed(6)}" data-tedit="${st.id}"
           class="tin${tBad ? ' warn' : ''}" title="弧长位置 t∈[0,1]，可手改（如起点改 0、开线终点改 1）">
-        <button class="mini kind-tgl ${isBlk ? 'primary' : ''}" data-kind="${st.id}" ${isArr ? 'disabled' : ''}
-          title="${isBlk ? '转回普通车站（有名、正式网页可见）' : isArr ? '出省箭头：如需改为其他类型，请删除后按所需类型重新放置（仅头/尾可放）' : '转为线路所：中途接轨点，虚线圆、可无名、仅编辑器可见（正式网页隐藏）；只能与线路所编为接轨站组'}">所</button>
+        <button class="mini kind-tgl ${cur ? 'primary' : ''}" data-kind="${st.id}"
+          title="当前：${kindName(cur)}。点击转为${kindName(nk)}：${kindDesc(nk)}">${kindChar(cur)}</button>
         <button class="mini danger" data-del="${st.id}" title="删除设站">✕</button>
       </div>`;
     }).join('');
@@ -1661,7 +1695,7 @@
     const n = line ? line.stops.length : 0;
     if (!line || n < 2) {
       rows.innerHTML = '<div style="color:var(--dim);font-size:11px">'
-        + '设站 ≥2 后可用（当前用属性面板线路级状态）。</div>';
+        + '设站 ≥2 后可用（不足 2 站时线路级状态自动取「远期」兜底，无需手设）。</div>';
       splitSel.innerHTML = '';
       splitSel.disabled = splitBtn.disabled = true;
       hint.textContent = '';
@@ -1802,7 +1836,7 @@
     snapshot();
     const lid = allocLid();
     const line = {
-      // name 留空待人工录入（不擅自命名）；源图匹配文字只作属性面板里的建议名
+      // name 留空待人工录入（不擅自命名）；导入列表里的 ≈灰字仅建议展示，点选采用才写入
       schema: 'fmt/line@2', id: lid, name: '',
       groupId: null, role: 'standalone', color: p.color,
       loop: /z/i.test(p.path), path: p.path, connects: [],
@@ -1819,7 +1853,7 @@
     S.lines.set(lid, line);
     S.activeLine = lid; S.selStop = null;
     renderAll();
-    setStatus(`已建线 ${lid}。请在属性面板命名（导入匹配文字仅作建议），再到「加站」模式点击线路设站。`);
+    setStatus(`已建线 ${lid}。请在属性面板命名，再到「加站」模式点击线路设站。`);
   }
 
   function updatePathFromImport() {
@@ -2005,17 +2039,19 @@
     lastCanvasClick = { t: now, key };
     return false;
   }
-  /** 画布双击线路/段后：左栏定位并滚动可见 */
+  /** 画布双击线路/段后：左栏定位并滚动可见（分页感知：目标线不在当前页先切页） */
   function locateLineInList(lid) {
     S.activeLine = lid; S.selStop = null;
+    pageLineIntoView(lid);
     renderLineList(); renderLineForm(); renderStopList();
     const r = [...$('lineList').querySelectorAll('.line-row')].find((x) => x.dataset.lid === lid);
     if (r) r.scrollIntoView({ block: 'nearest' });
   }
-  /** 画布双击车站后：左栏定位滚动可见 */
+  /** 画布双击车站后：左栏定位滚动可见（线路行分页感知同上） */
   function locateStopInList(sid, lid) {
     const r = [...$('stopList').querySelectorAll('.stop-row')].find((x) => x.dataset.sid === sid);
     if (r) r.scrollIntoView({ block: 'nearest' });
+    if (pageLineIntoView(lid)) renderLineList();   // 目标线不在当前页：先切页再找行
     const lr = [...$('lineList').querySelectorAll('.line-row')].find((x) => x.dataset.lid === lid);
     if (lr) lr.scrollIntoView({ block: 'nearest' });
     setStatus(`已在左栏定位 ${sid}。`);
@@ -2235,10 +2271,12 @@
     const impEl = hitEl.closest('path[data-imp-source]');
     if (impEl) {
       S.selImport = { source: impEl.dataset.impSource, sourceLayer: impEl.dataset.impLayer };
+      pageImportIntoView(impEl.dataset.impSource, impEl.dataset.impLayer);   // 分页感知：选中行不在当前页先翻页
       renderImportList(); renderWorld();   // 画布同步高亮该未建线
       setStatus(`选中导入 path：${impEl.dataset.impLayer}（${impEl.dataset.impSource}）`);
       const iSrc = impEl.dataset.impSource, iLayer = impEl.dataset.impLayer;
       regCanvasDbl(`imp:${iSrc}|${iLayer}`, () => {   // 双击未建线：左栏导入源定位滚动可见
+        pageImportIntoView(iSrc, iLayer);
         renderImportList();
         const r = [...$('impList').querySelectorAll('.imp-row')]
           .find((x) => x.dataset.src === iSrc && x.dataset.layer === iLayer);
@@ -2330,6 +2368,32 @@
 
   // ---------- 侧栏事件（委托） ----------
   $('impList').addEventListener('click', (e) => {
+    // 模块筛选三选（临时 UI 状态）：切筛选回第 1 页；不动数据、不进撤销/暂存
+    const flt = e.target.closest('[data-impfilter]');
+    if (flt) {
+      const grp = e.target.closest('.imp-group');
+      if (grp) {
+        const ui = impUiOf(grp.dataset.igsrc);
+        ui.filter = flt.dataset.impfilter;
+        ui.page = 1;
+        renderImportList();
+      }
+      return;
+    }
+    // 模块翻页（临时 UI 状态）：重渲染后页脚滚回可见，防多模块场景视口跳走
+    const pg = e.target.closest('[data-imppg]');
+    if (pg && !pg.disabled) {
+      const grp = e.target.closest('.imp-group');
+      if (grp) {
+        const ui = impUiOf(grp.dataset.igsrc);
+        ui.page += pg.dataset.imppg === 'prev' ? -1 : 1;
+        renderImportList();
+        const foot = $('impList').querySelector(
+          `.imp-group[data-igsrc="${CSS.escape(grp.dataset.igsrc)}"] .imp-foot`);
+        if (foot) foot.scrollIntoView({ block: 'nearest' });
+      }
+      return;
+    }
     const row = e.target.closest('.imp-row');
     if (!row) return;
     S.selImport = { source: row.dataset.src, sourceLayer: row.dataset.layer };
@@ -2347,6 +2411,20 @@
   });
 
   $('lineList').addEventListener('click', (e) => {
+    // 分类组翻页（临时 UI 状态，组独立翻页）：重渲染后组页脚滚回可见
+    const pg = e.target.closest('[data-llpg]');
+    if (pg && !pg.disabled) {
+      const grp = e.target.closest('.ll-group');
+      if (grp) {
+        const key = grp.dataset.llkey;
+        lineListUi.set(key, llPageOf(key) + (pg.dataset.llpg === 'prev' ? -1 : 1));
+        renderLineList();
+        const foot = $('lineList').querySelector(
+          `.ll-group[data-llkey="${CSS.escape(key)}"] .ll-foot`);
+        if (foot) foot.scrollIntoView({ block: 'nearest' });
+      }
+      return;
+    }
     const row = e.target.closest('.line-row');
     if (!row) return;
     S.activeLine = row.dataset.lid; S.selStop = null;
@@ -2361,16 +2439,24 @@
   $('stopList').addEventListener('click', (e) => {
     const del = e.target.dataset.del;
     if (del) { deleteStop(S.activeLine, del); return; }
-    const kindEl = e.target.closest('[data-kind]');   // 线路所↔普通车站切换（互相转换）
+    const kindEl = e.target.closest('[data-kind]');   // 站类型循环切换（站→所→箭→站，按位置约束见 nextStopKind）
     if (kindEl) {
       const line = S.lines.get(S.activeLine);
       const st = line && line.stops.find((s) => s.id === kindEl.dataset.kind);
       if (st) {
-        // 双向守住组约束：转换后组内不得混编（全线路所⟺junction 组；普通站组不得混入线路所）
+        const i = line.stops.indexOf(st);
+        const next = nextStopKind(st.kind,
+          { isLoop: line.loop, isEnd: i === 0 || i === line.stops.length - 1 });
+        // 双向守住组约束（先于快照：拒绝不压撤销栈）：转换后组内不得混编（全线路所⟺junction 组；
+        // 普通站组不得混入线路所）；出省箭头不可编组——在组中的站一律不许切箭头
         const grp = S.groups && (S.groups.stationGroups || []).find((g) => g.stops.includes(st.id));
         if (grp) {
           const others = grp.stops.filter((sid) => sid !== st.id).map((sid) => stopKindOf(sid));
-          if (st.kind !== 'block') {   // → 线路所：组内须已全线路所，且组为 junction
+          if (next === 'arrow') {
+            setStatus(`${st.id} 在组 ${grp.id} 中：出省箭头不可编组，请先拆组再切换。`, true);
+            return;
+          }
+          if (next === 'block') {   // → 线路所：组内须已全线路所，且组为 junction
             if (others.some((k) => k !== 'block')) {
               setStatus(`${st.id} 所在组 ${grp.id} 内还有普通车站：线路所不能与之同组，请先拆组。`, true);
               return;
@@ -2386,13 +2472,15 @@
           }
         }
         snapshot();
-        if (st.kind === 'block') delete st.kind;
-        else st.kind = 'block';
+        if (next === null) delete st.kind;
+        else st.kind = next;
         line.meta.updated = today();
-        renderAll();
-        setStatus(st.kind === 'block'
+        renderAll();   // 画布同步重渲染（虚线圆/箭头三角样式切换；arrow 分支同走 renderWorld 既有路径）
+        setStatus(next === 'block'
           ? `${st.id} 已转为线路所（虚线圆、可无名、仅编辑器可见）。`
-          : `${st.id} 已转回普通车站。`);
+          : next === 'arrow'
+            ? `${st.id} 已转为出省箭头（线色箭头指向线路外侧、可无名）。`
+            : `${st.id} 已转回普通车站。`);
       }
       return;
     }
@@ -2644,7 +2732,6 @@
       case 'lfConnects':
         l.connects = e.target.value.split(',').map((s) => s.trim()).filter(Boolean);
         break;
-      case 'lfStatus': l.status = e.target.value; break;
       case 'lfLayer': {
         // 分类改动即生效（同 lfName 模式）；选「（未分类）」即删除字段，不留空串
         const v = e.target.value;
@@ -2661,16 +2748,6 @@
     }
   });
   $('lineform').addEventListener('click', (e) => {
-    if (e.target.dataset.namehint !== undefined) {   // 建议名：点选采用（人工确认后才写入）
-      const l = S.lines.get(S.activeLine);
-      if (!l) return;
-      snapshot();
-      l.name = e.target.dataset.namehint;
-      l.meta.updated = today();
-      renderLineForm(); renderLineList(); renderWorld(); autosave();
-      setStatus(`已采用建议名「${l.name}」为 ${l.id} 命名（可继续在名称框修改）。`);
-      return;
-    }
     if (e.target.id === 'lfUpdatePath') updatePathFromImport();
     if (e.target.id === 'lfImportStops') importStopsFromPreset();
     if (e.target.id === 'lfAdoptNames') adoptSuggestedNames();
