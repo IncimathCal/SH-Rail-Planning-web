@@ -392,7 +392,8 @@
     } catch (e) { /* 忽略 */ }
   }
   function saveCounters() {
-    localStorage.setItem('shrail.counters', JSON.stringify(counters));
+    try { localStorage.setItem('shrail.counters', JSON.stringify(counters)); }
+    catch (e) { setStatus('编号水位暂存失败（存储不可用）：重开前请先保存 manifest 留水位。', true); }
   }
   function bumpCounter(key, fmt, n) {
     const id = fmt + String(counters[key]).padStart(n, '0');
@@ -427,10 +428,12 @@
 
   // ---------- 撤销（快照式） ----------
   function snapshot() {
-    S.undo.push(JSON.stringify({
+    const s = JSON.stringify({
       lines: [...S.lines.values()],
       groups: S.groups, imports: S.imports,
-    }));
+    });
+    if (S.undo.length && S.undo[S.undo.length - 1] === s) return;   // 与栈顶相同不压栈（防空转膨胀）
+    S.undo.push(s);
     if (S.undo.length > 100) S.undo.shift();
   }
   function undo() {
@@ -448,6 +451,7 @@
 
   // ---------- localStorage 暂存 ----------
   let lsTimer = null;
+  let lsFailed = false;   // 最近一次暂存是否失败（beforeunload 拦截与告警依据）
   function autosave() {
     clearTimeout(lsTimer);
     lsTimer = setTimeout(() => {
@@ -457,7 +461,11 @@
           lines: [...S.lines.values()],
           groups: S.groups, imports: S.imports, activeLine: S.activeLine,
         }));
-      } catch (e) { /* 存储满等异常忽略 */ }
+        lsFailed = false;
+      } catch (e) {
+        lsFailed = true;
+        setStatus('自动暂存失败（' + ((e && e.name) || '存储异常') + '）：存储不可用或已满——请立即「保存全部线路」下载备份！', true);
+      }
     }, 400);
   }
   function offerRestore() {
@@ -547,12 +555,20 @@
       return;
     }
     if (obj && obj.schema === 'fmt/line@1' && /^l\d{4}$/.test(obj.id || '')) {
+      const prev = S.lines.get(obj.id);
+      if (prev && !confirm(`线路 ${obj.id} 已在编辑（${prev.name || '未命名'}，${prev.stops.length} 站）。`
+        + `载入「${fileName || obj.id + '.json'}」将覆盖当前版本，继续？`)) {
+        setStatus(`已跳过 ${fileName || obj.id + '.json'}（保留当前 ${obj.id}，未做改动）。`, true);
+        return;
+      }
+      snapshot();   // 载入前快照：覆盖可撤销（防误选旧文件静默冲掉当前编辑）
       S.lines.set(obj.id, obj);
       S.arcs.delete(obj.id);
       if (!S.activeLine) S.activeLine = obj.id;
+      setStatus(`已载入线路 ${obj.id}${prev ? '（覆盖旧版，Ctrl+Z 可撤销）' : ''}。`);
       return;
     }
-    if (obj && obj.schema === 'fmt/groups@1') { S.groups = obj; return; }
+    if (obj && obj.schema === 'fmt/groups@1') { snapshot(); S.groups = obj; return; }
     if (obj && obj.schema === 'fmt/manifest@1') { S.manifest = obj; return; }
     if (obj && obj.schema === 'fmt/calibration@1') {
       setStatus('旧 deg3 标定已停用：渲染恒用手动标定 TPS v2（data/calibration.json）。'
@@ -688,6 +704,7 @@
   let basemapG = null;
   const basemapTiles = new Map();   // "z/x/y" -> <image>
   let basemapEpoch = 0;             // 标定方案/参数变化计数：瓦片 transform 只在跨 epoch 重算
+  let tileWarned = false;           // 瓦片重试后仍失败的一次性提示开关
   let basemapTimer = null;
   function scheduleBasemap() {
     clearTimeout(basemapTimer);
@@ -738,6 +755,15 @@
         if (!img) {
           img = el('image', { width: 256, height: 256, class: 'basemap-tile' }, basemapG);
           img.setAttribute('href', `https://tile.openstreetmap.org/${z}/${tx}/${ty}.png`);
+          img.addEventListener('error', () => {   // 加载失败重试一次（删元素重发）；仍失败仅提示一次
+            if (img.dataset.retry) {
+              if (!tileWarned) { tileWarned = true; setStatus('部分底图瓦片加载失败（网络受限？），重试无效。', true); }
+              return;
+            }
+            img.dataset.retry = '1';
+            img.remove(); basemapTiles.delete(key);
+            setTimeout(scheduleBasemap, 800);
+          });
           basemapTiles.set(key, img);
         }
         // 瓦片像素 → SVG 世界：三点仿射（(0,0)(256,0)(0,256)），标定在小范围内近似线性；
@@ -766,6 +792,15 @@
     const pts = ap.polylineBetween(t1, t2);
     if (!pts.length) return '';
     return 'M' + pts.map((p) => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join('L');
+  }
+
+  /** 站圈 <title> 提示文本（渲染与改名/拖站局部更新共用，保持一致） */
+  function stopTitle(line, st, idx, grp) {
+    const isBlk = st.kind === 'block';
+    const oos = grp && grp.type === 'out-of-station';
+    return `${idx + 1}. ${st.name || (isBlk ? '（线路所）' : '（未命名）')}  t=${st.t.toFixed(4)}`
+      + (isBlk ? '  线路所：仅编辑器可见，正式网页隐藏' : '')
+      + (oos ? `  ${grp.id}（出闸换乘）` : '');
   }
 
   function renderWorld() {
@@ -863,9 +898,7 @@
         if (isBlk) c.setAttribute('stroke-dasharray', `${3 / scale} ${3 / scale}`);   // 屏幕恒定虚线（同 hint-ring 3 3 习惯）
         c.dataset.lid = lid; c.dataset.sid = st.id;
         const t = el('title', {}, c);
-        t.textContent = `${idx + 1}. ${st.name || (isBlk ? '（线路所）' : '（未命名）')}  t=${st.t.toFixed(4)}`
-          + (isBlk ? '  线路所：仅编辑器可见，正式网页隐藏' : '')
-          + (oos ? `  ${grp.id}（出闸换乘）` : '');
+        t.textContent = stopTitle(line, st, idx, grp);
       });
     }
 
@@ -1459,10 +1492,13 @@
       const sid = stopEl.dataset.sid, lid = stopEl.dataset.lid;
       S.activeLine = lid;
       S.selStop = sid;
+      renderStopList(); renderLineList(); renderLineForm();
+      renderWorld();   // 先全量一次：渲染选中环并取重绘后的新站圈引用（旧元素已销毁），供拖动局部更新
       drag = { type: 'stop', lid, sid, moved: false,
+        el: world.querySelector(`.stop-c[data-sid="${CSS.escape(sid)}"]`),
+        ring: world.querySelector('.stop-ring'),
         pre: JSON.stringify({ lines: [...S.lines.values()], groups: S.groups, imports: S.imports }) };
       svg.setPointerCapture(e.pointerId);
-      renderStopList(); renderLineList(); renderLineForm();
       regCanvasDbl(`stop:${sid}`, () => locateStopInList(sid, lid));   // 双击站圈：左栏定位
       return;
     }
@@ -1475,7 +1511,7 @@
       regCanvasDbl(`stop:${sid}`, () => locateStopInList(sid, lid));   // 双击站圈：左栏定位
     }
     if (S.mode === 'group') {
-      if (stopEl) return;                                  // 站圈点按：pointerup 切换待编组
+      if (stopEl) { startPan(e); return; }                 // 站圈点按：pointerup 切换待编组；按住拖动＝平移（防拖远松手误切换）
       const [wx, wy] = toWorld(e);                         // 其余任意处起拉：拉框直接建组
       rubber = { x0: wx, y0: wy, x1: wx, y1: wy, sx: e.clientX, sy: e.clientY, moved: false };
       svg.setPointerCapture(e.pointerId);
@@ -1510,7 +1546,20 @@
       const [wx, wy] = toWorld(e);
       if (moveStop(drag.lid, drag.sid, nearestTOnLine(drag.lid, wx, wy))) {
         drag.moved = true;
-        renderWorld(); renderStopList();
+        // 拖动中只挪该站圆＋选中环＋title（松手再全量对齐列表 t 值/排序）——满规模防逐帧全量重建卡顿
+        const line = S.lines.get(drag.lid);
+        const st = line && line.stops.find((x) => x.id === drag.sid);
+        const ap = st && arcOf(drag.lid);
+        if (st && ap && drag.el && drag.el.isConnected) {
+          const [x, y] = ap.pointAt(st.t);
+          drag.el.setAttribute('cx', x); drag.el.setAttribute('cy', y);
+          if (drag.ring && drag.ring.isConnected) { drag.ring.setAttribute('cx', x); drag.ring.setAttribute('cy', y); }
+          const tt = drag.el.querySelector('title');
+          if (tt) tt.textContent = stopTitle(line, st, line.stops.indexOf(st),
+            ((S.groups && S.groups.stationGroups) || []).find((g) => g.stops.includes(drag.sid)));
+        } else {
+          renderWorld(); renderStopList();
+        }
       }
     }
   });
@@ -1533,6 +1582,7 @@
         S.undo.push(drag.pre);  // 用拖动前快照
         if (S.undo.length > 100) S.undo.shift();
         autosave();
+        renderWorld(); renderStopList();   // 拖动中只做局部更新，松手一次性全量对齐
       }
       drag = null;
       return;
@@ -1816,7 +1866,14 @@
       st.name = e.target.value;
       line.meta.updated = today();
       e.target.classList.toggle('warn', !st.name && st.kind !== 'block');
-      renderWorld(); autosave();
+      // 站名不上画布（只在 title 提示里）：逐键仅更新该站 title，不全量重绘（合并圈成员留待下次全量渲染）
+      const c = world.querySelector(`.stop-c[data-sid="${CSS.escape(sid)}"]`);
+      if (c) {
+        const tt = c.querySelector('title');
+        if (tt) tt.textContent = stopTitle(line, st, line.stops.indexOf(st),
+          ((S.groups && S.groups.stationGroups) || []).find((g) => g.stops.includes(sid)));
+      }
+      autosave();
     }
   });
 
@@ -1885,6 +1942,19 @@
       + (stillEmpty ? `；仍有 ${stillEmpty} 站未命名。` : '；当前线全部站已命名。'));
   });
 
+  // 属性面板逐键渲染合帧（每帧至多一次；名称等不影响画布的字段跳过 renderWorld）——满规模防逐键全量重绘卡顿
+  let formRaf = 0, formNeedsWorld = false;
+  function scheduleFormRender(needsWorld) {
+    if (needsWorld) formNeedsWorld = true;
+    if (formRaf) return;
+    formRaf = requestAnimationFrame(() => {
+      formRaf = 0;
+      const w = formNeedsWorld; formNeedsWorld = false;
+      renderLineList(); renderGroupsPanel();
+      if (w) renderWorld();
+    });
+  }
+
   $('lineform').addEventListener('input', (e) => {
     const l = S.lines.get(S.activeLine);
     if (!l) return;
@@ -1924,7 +1994,11 @@
       }
       default: touched = false;
     }
-    if (touched) { l.meta.updated = today(); renderLineList(); renderWorld(); renderGroupsPanel(); autosave(); }
+    if (touched) {
+      l.meta.updated = today(); autosave();
+      const fld = e.target.id;
+      scheduleFormRender(fld === 'lfColor' || fld === 'lfLoop' || fld === 'lfRole');
+    }
   });
   $('lineform').addEventListener('click', (e) => {
     if (e.target.dataset.namehint !== undefined) {   // 建议名：点选采用（人工确认后才写入）
@@ -2049,6 +2123,7 @@
 
   // ---------- 模式与撤销 ----------
   S.basemapOn = localStorage.getItem('shrail.basemap') === '1';
+  $('btnUndo').addEventListener('click', () => undo());   // 顶栏撤销按钮（此前仅 Ctrl+Z，按钮未接线）
   $('btnBasemap').addEventListener('click', () => {
     if (!S.basemapOn && !S.calib) {
       setStatus('无标定参数：先运行 python -X utf8 tools/calib_manual_fit.py（手动标定）或 python tools/georef.py <svg> <kml> --emit'
@@ -2082,6 +2157,10 @@
     });
   }
   $('btnUndo').addEventListener('click', undo);
+  // 关页拦截：仅当暂存通道已坏（lsFailed）时才拦——正常情况有恢复横幅兜底，不打扰关页
+  window.addEventListener('beforeunload', (e) => {
+    if (lsFailed) { e.preventDefault(); e.returnValue = ''; }
+  });
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'
         && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) {
@@ -2168,21 +2247,11 @@
     if (!l) { setStatus('没有当前线路。', true); return; }
     if (saveLine(l)) setStatus(`已下载 ${l.id}.json → 放入 data/lines/。`);
   };
-  $('btnSaveAll').onclick = () => {
-    let ok = 0, fail = 0;
-    for (const l of S.lines.values()) { if (saveLine(l)) ok++; else fail++; }
-    setStatus(`已下载 ${ok} 个线路 JSON${fail ? `，${fail} 个未通过检查（见上）` : ''} → 放入 data/lines/。`, !!fail);
-  };
-  $('btnSaveGroups').onclick = () => {
-    if (!S.groups) S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
-    download('groups.json', S.groups);
-    setStatus('已下载 groups.json → 放入 data/。');
-  };
-  $('btnSaveManifest').onclick = () => {
+  function buildManifest() {
     const active = [...S.lines.values()].filter((l) => !l.meta.archived);
     const archivedIds = new Set(S.manifest ? S.manifest.archived || [] : []);
     for (const l of S.lines.values()) if (l.meta.archived) archivedIds.add(l.id);
-    const mf = {
+    S.manifest = {
       schema: 'fmt/manifest@1',
       dataset: (S.manifest && S.manifest.dataset) || 'main',
       version: (S.manifest && S.manifest.version) || '0.1.0',
@@ -2190,8 +2259,38 @@
       lines: active.map((l) => ({ id: l.id, file: `lines/${l.id}.json`, name: l.name, stops: l.stops.length })),
       archived: [...archivedIds].sort(),
     };
-    S.manifest = mf;
-    download('manifest.json', mf);
+    return S.manifest;
+  }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // 保存全部＝线路＋groups＋manifest 一并下载（水位恢复依赖 manifest，务必成套）；
+  // 逐个隔 150ms 发出降低浏览器多下载拦截概率，结束对账计数
+  $('btnSaveAll').onclick = async () => {
+    const lines = [...S.lines.values()];
+    const total = lines.length + 2;
+    let ok = 0, fail = 0, n = 0;
+    for (const l of lines) {
+      const issues = lineIssues(l);
+      if (issues.length) { fail++; setStatus(`保存失败 ${l.id}：${issues.join('；')}`, true); continue; }
+      download(`${l.id}.json`, l); ok++; n++;
+      setStatus(`保存全部 ${n}/${total}：已请求 ${l.id}.json`);
+      await sleep(150);
+    }
+    if (!S.groups) S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
+    download('groups.json', S.groups); n++;
+    setStatus(`保存全部 ${n}/${total}：已请求 groups.json`);
+    await sleep(150);
+    download('manifest.json', buildManifest()); n++;
+    setStatus(`保存全部完成：已请求 ${n}/${total} 个文件（线路 ${ok} 个`
+      + (fail ? `＋未过检查 ${fail} 个（见上）` : '') + '＋groups＋manifest）→ 放入 data/ 对应位置。'
+      + '若浏览器询问「允许下载多个文件」请允许；中途取消可再点本按钮补齐。', !!fail);
+  };
+  $('btnSaveGroups').onclick = () => {
+    if (!S.groups) S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
+    download('groups.json', S.groups);
+    setStatus('已下载 groups.json → 放入 data/。');
+  };
+  $('btnSaveManifest').onclick = () => {
+    download('manifest.json', buildManifest());
     setStatus('已下载 manifest.json → 放入 data/（工具生成+人工确认）。');
   };
 
