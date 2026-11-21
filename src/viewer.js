@@ -219,28 +219,25 @@
       'line-color': ['get', 'color'],
       'line-opacity': V.buildSegLayerOpacity([], status, S.emphasize),
       'line-width': 7,
-      'line-cap': 'round',
     };
     if (status === 'future') paint['line-dasharray'] = [1.4286, 1];
-    return { id, type: 'line', source: 'lines', filter: ['==', ['get', 'segStatus'], status], paint };
+    // line-cap/line-join 是 layout 属性——放 paint 会被样式校验判非法、整个 style 拒载
+    //（2026-11-22 黑屏根因：药丸层初版起就放错在 paint，全部图层因此一个都不渲染）
+    return { id, type: 'line', source: 'lines', filter: ['==', ['get', 'segStatus'], status],
+      layout: { 'line-cap': 'round', 'line-join': 'round' }, paint };
   }
   // 药丸：外黑宽＝2×7.5＋2×2.2＝19.4、内白宽 15（编辑器 grp-pill thick/border 同值）；圆帽即胶囊。
+  // line-cap 属 layout（放 paint 会致样式校验拒载——黑屏根因，见上）。
   const PILL_LAYER_DEFS = [
     {
       id: 'pills-outer', type: 'line', source: 'pills',
-      paint: {
-        'line-color': '#000000',
-        'line-width': 19.4,
-        'line-cap': 'round',
-      },
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#000000', 'line-width': 19.4 },
     },
     {
       id: 'pills-inner', type: 'line', source: 'pills',
-      paint: {
-        'line-color': '#ffffff',
-        'line-width': 15,
-        'line-cap': 'round',
-      },
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#ffffff', 'line-width': 15 },
     },
   ];
   // 箭头 glyph：canvas 本地绘制（无 sprite 文件、零网络请求），icon-rotate 数据驱动旋转；
@@ -350,11 +347,18 @@
       map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; hideStopTip(); });
       map.on('mousemove', id, showStopTip);
     }
+    map.on('error', (e) => {
+      // MapLibre 运行时错误默认不上控制台（2026-11-22 黑屏排查教训：吞错害人）——显式转发
+      console.error('map error:', e && e.error ? e.error.message || e.error : e);
+    });
     map.on('load', () => {
       S.styleReady = true;
       // 补应用样式未就绪期间点的底图目标态（目标恒存 S.basemap，此处只补地图侧动作）
       if (S.basemapPending) { S.basemapPending = false; applyBasemapToMap(); }
       fitAll(); scheduleLabels();
+      console.info('viewer map loaded: layers=' + (map.getStyle().layers || []).length
+        + ', center=' + JSON.stringify(map.getCenter()) + ', zoom=' + map.getZoom().toFixed(2)
+        + ', rendered=' + map.queryRenderedFeatures({ validate: false }).length);
     });
   }
   function fitAll() {
