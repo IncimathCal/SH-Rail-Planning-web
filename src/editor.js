@@ -865,7 +865,10 @@
     let html = '';
     for (const imp of S.imports) {
       html += `<div class="imp-src">${esc(imp.source)}（${imp.imported}）</div>`;
-      for (const p of imp.paths) {
+      // 渲染用副本按 sourceLayer 拼音序排列（已建线与未建线混排同一序列）；
+      // S.imports 本身顺序不动——其载入顺序被 path 精确匹配（importHintsFor/matchPresetForLine）等逻辑遍历依赖。
+      const rows = [...imp.paths].sort((a, b) => a.sourceLayer.localeCompare(b.sourceLayer, 'zh'));
+      for (const p of rows) {
         const isBound = bound.has(p.path);
         const sel = S.selImport && S.selImport.source === imp.source
           && S.selImport.sourceLayer === p.sourceLayer;
@@ -977,6 +980,8 @@
         const ns = it.stops.filter((s) => s.nameSuggestion).length;
         return `<div class="fld"><label>站圆预置</label><span style="flex:1" class="preset-line">
           <button class="mini primary" id="lfImportStops" title="按站圆圆心的弧长投影 t 批量落站；已有站 |Δt|<0.002 跳过；撤销一次回退整批">从预置导入车站</button>
+          <button class="mini primary" id="lfAdoptNames" ${ns ? '' : 'disabled'}
+            title="当前线所有空名站按 t 就近采纳站圆预置的建议名；已有名站跳过；错了可手动改；撤销一次回退整批">采用全部建议名</button>
           <span style="color:var(--dim);font-size:11px">${esc(it.stationGroup)} · ${it.stops.length} 圆${ns ? ` · ${ns} 带站名建议` : ''}</span>
         </span></div>`;
       })()}
@@ -1140,6 +1145,37 @@
       + `、跳过 ${plan.skippedExist}（已有站在位）`
       + (plan.skippedConflict ? `、${plan.skippedConflict}（位置过近冲突）` : '')
       + `、预置共 ${plan.total} 圆。站名未写入——空名站旁的建议 chips 点选采用；撤销一次回退整批。`);
+  }
+
+  /** 一键采用建议名：当前线所有空名站按 t 就近写入站圆预置的 nameSuggestion。
+   *  口径与「绝不自动写入建议名」一致——本操作由用户人工点击「采用全部建议名」触发，属批量人工采用而非自动命名：
+   *  只填空名站、已有名站跳过；写入前一次 snapshot，撤销一次回退整批；个别错名可再手动改。 */
+  function adoptSuggestedNames() {
+    const l = S.lines.get(S.activeLine);
+    if (!l) { setStatus('没有当前线路，无法采用建议名。', true); return; }
+    const preset = matchPresetForLine(l);
+    if (!preset) { setStatus('当前线路没有匹配的站圆预置（预置按几何签名绑定，与 path-NN 命名无关）。', true); return; }
+    let named = 0, noSug = 0;
+    const pairs = [];
+    for (const st of l.stops) {
+      if (st.name && st.name.trim()) { named++; continue; }
+      const sug = suggestForStop(preset, st.t);
+      if (sug) pairs.push([st, sug]);
+      else noSug++;
+    }
+    if (!pairs.length) {
+      setStatus(`没有可采用的建议名：${noSug} 个空名站无就近建议（|Δt|>0.002）`
+        + (named ? `，${named} 站已有名跳过` : '') + '。');
+      return;
+    }
+    snapshot();   // 写入前一次快照：整批一次撤销（无可采用时上面已 return，不清快照）
+    for (const [st, sug] of pairs) st.name = sug.name;
+    l.meta.updated = today();
+    renderAll();
+    setStatus(`已采用 ${pairs.length} 个建议名（空名站按 t 就近写入，可手动修改）`
+      + `、跳过 ${named} 个已有名`
+      + (noSug ? `、${noSug} 个空名站无就近建议（|Δt|>0.002）` : '')
+      + '；撤销一次回退整批。');
   }
 
   // ---------- 设站操作 ----------
@@ -1608,6 +1644,7 @@
     }
     if (e.target.id === 'lfUpdatePath') updatePathFromImport();
     if (e.target.id === 'lfImportStops') importStopsFromPreset();
+    if (e.target.id === 'lfAdoptNames') adoptSuggestedNames();
     if (e.target.id === 'lfArchive') {
       const l = S.lines.get(S.activeLine);
       if (!l) return;
