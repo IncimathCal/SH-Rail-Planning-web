@@ -333,6 +333,11 @@ eq(V.scaledSize(2.2), 0.03, '黑边 2.2 → 0.03（低端锚两位小数与描�
 eq(V.scaledSize(15), 0.23, '药丸 15 → 0.23');
 eq(V.scaledSize(19.4), 0.3, '药丸外层 19.4 → 0.30（两位小数舍入防浮点噪声）');
 eq(V.scaledSize(1), 0.02, 'icon-size 1 → 0.02');
+ok(V.labelScale(11) === 1 && V.labelScale(13) === 1 && V.labelScale(11.7) === 1, 'labelScale：z≥11 封顶 1（拉近不变大）');
+eq(V.labelScale(10), 0.5, 'labelScale(10)＝0.5');
+eq(V.labelScale(9), 0.25, 'labelScale(9)＝0.25');
+ok(Math.abs(V.labelScale(8) - 0.125) < 1e-12, 'labelScale(8)≈0.125（无下限地板，与元素同规则）');
+ok(V.labelScale('abc') === 1 && V.labelScale(null) === 1, 'labelScale 异常输入容错＝1');
 
 // ---------- stopDisplayName / formatTerminals（显示文案） ----------
 console.log('stopDisplayName / formatTerminals:');

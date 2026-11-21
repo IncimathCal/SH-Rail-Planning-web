@@ -347,16 +347,18 @@
             id: 'stops', type: 'circle', source: 'stops',
             paint: {
               // 编辑器同值常量：普通站圈 r 5.5/描边 2，换乘大圈 r 7.5/黑边 2.2（.stop-c/.stop-merge）
-              // 尺寸同套缩放冻结（z≥11 恒基准、z<11 线性缩小——interpolate 外层、case 做档位值）；
+              // 尺寸与线层同一套等比缩放（V.zoomInterp——z≥11 封顶、z<11 按 2^(z−11)；case 做
+              // 档位值传入低端/高端 stop。⚠ 必须走助手不得内联手写：6d1552e 改等比时此处两条
+              // 内联 ['linear'] 漏改，线缩圆不缩，被用户目验抓包「细线上挂一串葡萄」）；
               // 被调光线的站圈半透明（同系数，填充与描边一起）
               'circle-color': '#ffffff',
-              'circle-radius': ['interpolate', ['linear'], ['zoom'],
-                V.SIZE_ZOOM_MIN, ['case', ['get', 'big'], V.scaledSize(7.5), V.scaledSize(5.5)],
-                V.SIZE_ZOOM_HOLD, ['case', ['get', 'big'], 7.5, 5.5]],
+              'circle-radius': V.zoomInterp(
+                ['case', ['get', 'big'], V.scaledSize(7.5), V.scaledSize(5.5)],
+                ['case', ['get', 'big'], 7.5, 5.5]),
               'circle-stroke-color': ['get', 'stroke'],
-              'circle-stroke-width': ['interpolate', ['linear'], ['zoom'],
-                V.SIZE_ZOOM_MIN, ['case', ['get', 'dark'], V.scaledSize(2.2), V.scaledSize(2)],
-                V.SIZE_ZOOM_HOLD, ['case', ['get', 'dark'], 2.2, 2]],
+              'circle-stroke-width': V.zoomInterp(
+                ['case', ['get', 'dark'], V.scaledSize(2.2), V.scaledSize(2)],
+                ['case', ['get', 'dark'], 2.2, 2]),
               'circle-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
               'circle-stroke-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
             },
@@ -817,6 +819,11 @@
     const items = V.visibleLabels(S.dispLabels, map.getZoom(), V.LABEL_CAP,
       { hideAll: !S.namesOn, dimmedSet: S.dimmed, focus: S.focus });
     const w = wrap.clientWidth, h = wrap.clientHeight, M = 60;   // 视口外裁剪边距
+    // 站名文字随画布等比缩放（2026-11-22 用户指示「站名和站点也一样，以 z11 为界」）：
+    // z≥11 恒 1、z<11 按 2^(z−11)——与线宽/站圈同一规则（V.labelScale），挂 transform 末尾
+    // 随标签自身锚点缩不漂移；百分比偏移（-50%/-140%）基于自身盒子也同步缩小，自然贴近站点。
+    const zf = V.labelScale(map.getZoom());
+    const zfTxt = zf < 1 ? ' scale(' + zf.toFixed(3) + ')' : '';
     const seen = new Set();
     for (const it of items) {
       let xy;
@@ -834,7 +841,7 @@
         S.labelPool.set(it.key, el);
       }
       if (el.style.visibility !== 'visible') el.style.visibility = 'visible';
-      el.style.transform = 'translate3d(' + xy.x.toFixed(1) + 'px,' + xy.y.toFixed(1) + 'px,0) translate(-50%,-140%)';
+      el.style.transform = 'translate3d(' + xy.x.toFixed(1) + 'px,' + xy.y.toFixed(1) + 'px,0) translate(-50%,-140%)' + zfTxt;
     }
     for (const [k, el] of S.labelPool) {
       if (!seen.has(k)) el.style.visibility = 'hidden';

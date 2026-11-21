@@ -572,6 +572,14 @@
   function scaledSize(base) {
     return Math.round(base * Math.pow(SIZE_SCALE_EXP, SIZE_ZOOM_MIN - SIZE_ZOOM_HOLD) * 100) / 100;
   }
+  // labelScale(zoom)：站名文字（HTML 标签）的同一缩放规则——z≥11 封顶 1、z<11 按 2^(z−11)
+  // 等比（2026-11-22 用户指示「站名和站点也一样，以 z11 为界」；站点圈走 zoomInterp 同规则）。
+  function labelScale(zoom) {
+    if (zoom == null) return 1;
+    var z = Number(zoom);
+    if (!Number.isFinite(z)) return 1;
+    return Math.min(1, Math.pow(SIZE_SCALE_EXP, z - SIZE_ZOOM_HOLD));
+  }
 
   // ---------- 左栏列表分组＋类别过滤 ----------
   // 在 layerGroups 之上套 HIDDEN_LIST_LAYERS 过滤（列表不显示、地图照画、搜索照收）；
@@ -667,7 +675,7 @@
     DIM_OPACITY, SEG_STATUS_RANK, DEFAULT_LINE_COLOR, GROUP_TYPE_ZH, ROLE_ZH, SEG_STATUS_ZH,
     PHASE_CYCLE, PHASE_LABEL_ZH, HIDDEN_LIST_LAYERS, DISPLAY_ONLY_LAYERS,
     LABEL_CAP, LABEL_ZOOM_GROUP, LABEL_ZOOM_STOP,
-    SIZE_ZOOM_MIN, SIZE_ZOOM_HOLD, SIZE_SCALE_EXP,
+    SIZE_ZOOM_MIN, SIZE_ZOOM_HOLD, SIZE_SCALE_EXP, labelScale,
     UNNAMED_STOP_ZH, stopDisplayName, formatTerminals,
     xmlEscape, normalizeHex, hexToKmlColor,
     normalizeLines, lineBboxOf, stopList, buildStopView, buildArrowViews,
