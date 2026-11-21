@@ -34,8 +34,10 @@ RE_NUMBER = re.compile(r"-?\d*\.?\d+(?:[eE][+-]?\d+)?")
 RE_PATH_LETTERS = re.compile(r"^[MmZzLlHhVvCcSsQqTtAa]+$")
 RE_CJK = re.compile(r"[一-鿿　-〿＀-￯]")
 
-# 允许含中文的字段（文本内容）；info 子树整体放宽
-CJK_OK_KEYS = {"name", "note", "sourceLayer", "aliases"}
+# 允许含中文的字段（文本内容）；info 子树整体放宽。
+# layer＝源图 Line 直属子图层名原样转写（v1.4 meta.layer 自动继承 import 的 layer 字段，
+# 值恒为用户源图词汇「市域线/市区线/联络线/预控通道/他省」），与 sourceLayer 同性质豁免
+CJK_OK_KEYS = {"name", "note", "sourceLayer", "aliases", "layer"}
 
 errors = []
 warnings = []
