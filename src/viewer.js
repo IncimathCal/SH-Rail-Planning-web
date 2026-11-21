@@ -25,10 +25,10 @@
 //（paint-order:stroke fill 先描后填＝描边只露外侧，外扩＝字号 1/8——12px 字 3px 描边可见
 // 1.5px；CSS 见 index.html）＋站名缩放锚定站点（transform-origin 与 translate(-50%,-140%)
 // 同参考点，拉远文字朝站点收拢、不再上浮漂移）；底图瓦片 100% 不透明＋其上白色遮罩 fill 层
-//（全世界矩形、插在瓦片之上线路之下，只洗底图不碰线网站名；临时档位 30~70% 顶栏下拉、
-// 测试定值后删）；站圈等比缩放改按 big/dark 拆三常量档位层——数据驱动 case 值作 zoom 插值
-// stops（复合表达式）在真机不随缩放连续求值（线层同助手常量 stops 正常，「线缩圆不缩」
-// 两轮目验未愈即此因），拆层后与线宽层同一机制。
+//（全世界矩形、插在瓦片之上线路之下，只洗底图不碰线网站名；不透明度用户档测定值 40%
+// VEIL_OPACITY，临时下拉控件已删）；站圈等比缩放改按 big/dark 拆三常量档位层（同轮
+// filter 曾用 '!' 吃数字被判类型错、三层静默弃载即「站圆全没」——已改显式 == 比较，教训
+// 见 STOP_LAYER_DEFS 注）。
 // 与编辑器完全独立：不加载 editor.js 的任何代码。中文标签走 HTML 叠加（架构方案 §6 备案路线）。
 
 (function (G) {
@@ -57,7 +57,6 @@
     searchIdx: [],                // 搜索条目
     dropIndex: 0,                 // 搜索下拉键盘焦点序
     basemap: 'off',               // 测试阶段底图三态：'off'|'osm'|'gaode'（默认无＝与现状零差别；不持久化）
-    veil: 0.5,                     // 底图白色遮罩不透明度（2026-11-22 三批临时测试档：0/0.3~0.7，定值后随下拉一起删）
     dispCoord: V.makeDispCoord('none'), // 显示坐标变换（gaode＝WGS84→GCJ02；仅显示侧，见下方底图段）
     basemapPending: false,        // 样式未就绪时点击的补应用标记（目标态恒存 S.basemap）
     styleReady: false,            // map 'load' 已触发（样式只建一次，就绪后 addSource/addLayer 恒可用）
@@ -316,9 +315,12 @@
   // filter 三层互斥全覆盖：big⇒黑边大圈（same-station ≤2 线合并，dark 恒 1）、
   // dark&&!big⇒出闸组成员（各自成圈不并点）、其余＝普通站＋junction 组（描边色仍逐站
   // ['get','stroke'] 取线色/角色优先级色——颜色数据驱动不带 zoom，不受此坑影响）。
+  // ⚠ filter 一律显式 ['==', ['get','x'], 0/1]：表达式 '!' 要求布尔输入，而 GeoJSON 属性
+  // big/dark 是数字——'!' 数字判类型错，所在层被 MapLibre 静默弃载（c07360d「站圆全没」
+  // 根因：药丸/线/箭头层无 filter 照常渲染，三个站圈层全弃；错误只进 console 不上画面）。
   const STOP_LAYER_DEFS = [
-    { id: 'stops', filter: ['all', ['!', ['get', 'big']], ['!', ['get', 'dark']]], radius: 5.5, strokeW: 2 },
-    { id: 'stops-dark', filter: ['all', ['!', ['get', 'big']], ['get', 'dark']], radius: 5.5, strokeW: 2.2 },
+    { id: 'stops', filter: ['all', ['==', ['get', 'big'], 0], ['==', ['get', 'dark'], 0]], radius: 5.5, strokeW: 2 },
+    { id: 'stops-dark', filter: ['all', ['==', ['get', 'big'], 0], ['==', ['get', 'dark'], 1]], radius: 5.5, strokeW: 2.2 },
     { id: 'stops-big', filter: ['==', ['get', 'big'], 1], radius: 7.5, strokeW: 2.2 },
   ];
   function stopLayerDef(d) {
@@ -462,6 +464,8 @@
   //（编辑器是「逐瓦片常量偏移」动瓦片侧，查看器数据侧变换，各自单侧适配、殊途同归）。
   const BASEMAP_LABEL_ZH = { off: '无', osm: 'OSM', gaode: '高德' };
   const BASEMAP_ATTR_ZH = { osm: '底图 © OpenStreetMap 贡献者', gaode: '底图 © 高德' };
+  // 底图白色遮罩不透明度：2026-11-22 用户档位测试后定值 40%（临时下拉控件已删，调值改此处）
+  const VEIL_OPACITY = 0.4;
   function syncBasemapUI() {
     const b = $('btnBasemap');
     if (b) b.textContent = '底图：' + (BASEMAP_LABEL_ZH[S.basemap] || S.basemap);
@@ -484,7 +488,7 @@
   // 按 (tx+ty)%4 取子域，MapLibre 无子域模板语法，tiles 列 4 个完整 URL 由其内部轮询，等价。
   // 2026-11-22 三批：瓦片 100% 不透明（旧 0.45 透明作废），提亮改走白色遮罩 fill 层——
   // 全世界矩形（Mercator ±85.0511，任何平移不出界），插在瓦片之上、线路之下，只洗底图
-  // 不碰线网站名；不透明度＝S.veil（临时测试档 30~70% 顶栏下拉，定值后连下拉一起删）。
+  // 不碰线网站名；不透明度＝VEIL_OPACITY（用户档位测试定值 40%，临时下拉已删）。
   function ensureBasemapLayers() {
     const map = S.map;
     if (!map || map.getSource('basemap-osm')) return;
@@ -511,7 +515,7 @@
     map.addLayer({ id: 'basemap-gaode', type: 'raster', source: 'basemap-gaode',
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-veil', type: 'fill', source: 'basemap-veil',
-      layout: { visibility: 'none' }, paint: { 'fill-color': '#ffffff', 'fill-opacity': S.veil } }, before);
+      layout: { visibility: 'none' }, paint: { 'fill-color': '#ffffff', 'fill-opacity': VEIL_OPACITY } }, before);
   }
   // 应用到地图：层可见性＋显示坐标变换＋四个 source 全量 setData 重渲染＋标签重排
   //（复用既有 render 函数，mode 变了自然产出变换后坐标）。箭头 icon-rotate 角度是 WGS84
@@ -524,8 +528,8 @@
     };
     vis('basemap-osm', S.basemap === 'osm');
     vis('basemap-gaode', S.basemap === 'gaode');
-    // 遮罩只在底图开启且档位非零时现身（fill-opacity 建层时取 S.veil，档位变化走 setPaintProperty）
-    vis('basemap-veil', S.basemap !== 'off' && S.veil > 0);
+    // 遮罩随底图开关（不透明度定值 VEIL_OPACITY，无运行时档位）
+    vis('basemap-veil', S.basemap !== 'off');
     S.dispCoord = V.makeDispCoord(S.basemap === 'gaode' ? 'gaode' : 'none');
     if (S.map.getSource('lines')) S.map.getSource('lines').setData(renderLinesFC());
     if (S.map.getSource('stops')) S.map.getSource('stops').setData(renderStopsFC());
@@ -915,16 +919,6 @@
     // 测试阶段底图三态循环：无 → OSM → 高德 → 无（不持久化，刷新回默认「无」）
     $('btnBasemap').addEventListener('click', () => {
       setBasemap(S.basemap === 'off' ? 'osm' : (S.basemap === 'osm' ? 'gaode' : 'off'));
-    });
-    // 白色遮罩档位（⚠ 临时测试控件，2026-11-22 用户指示做档测试效果、定值后删——
-    // HTML 里的 #selVeil 与 S.veil 一并移除）：底图未开时只存值，开底图时按存值建层生效
-    $('selVeil').addEventListener('change', () => {
-      S.veil = parseFloat($('selVeil').value) || 0;
-      if (S.map && S.map.getLayer('basemap-veil')) {
-        S.map.setPaintProperty('basemap-veil', 'fill-opacity', S.veil);
-        S.map.setLayoutProperty('basemap-veil', 'visibility',
-          S.basemap !== 'off' && S.veil > 0 ? 'visible' : 'none');
-      }
     });
     syncPhaseUI();     // 与 S.phase 初始态（'none'）对齐：按钮文案「分期：无」
     syncNamesUI();     // 与 S.namesOn 初始态（true）对齐：按钮文案「站名：显示」

@@ -73,13 +73,6 @@
       border: 1px solid var(--panel-border); border-radius: 6px;
     }
     #btnPhase:hover, #btnNames:hover, #btnBasemap:hover { border-color: var(--accent); color: #fff; }
-    /* 白色遮罩档位（⚠ 临时测试控件，2026-11-22：效果定值后连同 viewer.js 的 S.veil/#selVeil 段一起删） */
-    #selVeil {
-      flex: none; padding: 6px 8px; cursor: pointer; white-space: nowrap; outline: none;
-      background: #0d0f13; color: var(--text);
-      border: 1px solid var(--panel-border); border-radius: 6px;
-    }
-    #selVeil:hover { border-color: var(--accent); }
     #searchDrop {
       position: absolute; top: calc(100% + 4px); left: 0; right: 0;
       margin: 0; padding: 4px 0; list-style: none;
@@ -241,18 +234,7 @@
     <!-- 测试阶段功能（正式上线可能移除）：底图三态循环。默认「无」＝零外部资源、零网络请求；
          高德为 GCJ02，仅显示坐标做偏移对齐，数据与导出仍为 WGS84。状态不持久化。 -->
     <button id="btnBasemap" type="button"
-      title="测试阶段功能（正式上线可能移除）：底图三态 无→OSM→高德 循环，仅显示对位参考；默认无底图＝零外部资源、零网络请求；高德（GCJ02）仅显示坐标做偏移对齐，数据与导出仍为 WGS84。">底图：无</button>
-    <!-- ⚠ 临时测试控件（2026-11-22，效果定值后删）：底图白色遮罩档位——瓦片已改 100%
-         不透明，提亮由遮罩承担；仅在底图（OSM/高德）开启时生效，「关」＝不加遮罩。 -->
-    <select id="selVeil"
-      title="底图白色遮罩不透明度（临时测试控件，效果定值后删除）：瓦片为 100% 不透明，提亮由本遮罩承担；仅在底图（OSM/高德）开启时生效。">
-      <option value="0">遮罩：关</option>
-      <option value="0.3">遮罩：30%</option>
-      <option value="0.4">遮罩：40%</option>
-      <option value="0.5" selected>遮罩：50%</option>
-      <option value="0.6">遮罩：60%</option>
-      <option value="0.7">遮罩：70%</option>
-    </select>
+      title="测试阶段功能（正式上线可能移除）：底图三态 无→OSM→高德 循环，仅显示对位参考；默认无底图＝零外部资源、零网络请求；高德（GCJ02）仅显示坐标做偏移对齐，数据与导出仍为 WGS84。瓦片 100% 不透明＋40% 白色遮罩（2026-11-22 定值）。">底图：无</button>
   </header>
 
   <aside id="linePanel">
