@@ -494,7 +494,7 @@
     return true;
   }
   function calibLabel(obj) {
-    return obj && obj.model === 'tps' ? 'TPS 边缘标定 v2' : 'deg3 旧全局三阶';
+    return obj && obj.model === 'tps' ? 'TPS 标定 v2' : 'deg3 旧全局三阶';
   }
 
   function loadDataObject(obj, fileName) {
@@ -1711,7 +1711,7 @@
   S.basemapOn = localStorage.getItem('shrail.basemap') === '1';
   $('btnBasemap').addEventListener('click', () => {
     if (!S.basemapOn && !S.calib) {
-      setStatus('无标定参数：先运行 python tools/calib2_fit.py（TPS）或 python tools/georef.py <svg> <kml> --emit'
+      setStatus('无标定参数：先运行 python -X utf8 tools/calib_manual_fit.py（手动标定）或 python tools/georef.py <svg> <kml> --emit'
         + ' 生成 data/calibration.json（或用「数据文件」按钮载入），再开底图。', true);
       return;
     }
@@ -1721,7 +1721,7 @@
     renderWorld();
     setStatus(S.basemapOn
       ? `底图已开启：© OpenStreetMap contributors（${calibLabel(S.calib)}；对位精度≈标定残差`
-        + (S.calib && S.calib.model === 'tps' ? '：全图 133 m / 郊区明显改善）' : ' 80 m，仅中4线控区）') + '。'
+        + (S.calib && S.calib.model === 'tps' ? '：手动标定 38 点，LOO 全图 108 m）' : ' 80 m，仅中4线控区）') + '。'
       : '底图已关闭。');
   });
 
@@ -1738,7 +1738,7 @@
     if (!target) {
       setStatus(`标定方案「${other === 'tps' ? 'TPS' : 'deg3'}」的文件未载入`
         + (other === 'deg3' ? '（data/calibration-deg3-backup.json 缺失？用「数据文件」载入或 git 历史找回）'
-          : '（data/calibration.json 不是 fmt/calibration@2？运行 python tools/calib2_fit.py 重生成）'), true);
+          : '（data/calibration.json 不是 fmt/calibration@2？运行 python -X utf8 tools/calib_manual_fit.py 重生成）'), true);
       return;
     }
     S.calibChoice = other;
