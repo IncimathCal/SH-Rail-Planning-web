@@ -5,7 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { pathFromD } = require(path.join(__dirname, '..', 'src', 'geom.js'));
+const { pathFromD, wgs84ToGcj02, outOfChina } = require(path.join(__dirname, '..', 'src', 'geom.js'));
 
 const refPath = path.join(__dirname, 'fixtures', 'geom_ref.json');
 // 旧框选基准的 4 线导入记录已挪 零散/（防混基准），此处用其固定样张副本做几何对拍（与基准无关）
@@ -16,6 +16,45 @@ const imp = JSON.parse(fs.readFileSync(impPath, 'utf8'));
 const byLayer = Object.fromEntries(imp.paths.map((p) => [p.sourceLayer, p.path]));
 
 let fails = 0;
+function ok(cond, msg) {
+  if (!cond) { console.log('  FAIL ' + msg); fails++; }
+  else console.log('  ok   ' + msg);
+}
+
+// ---------- GCJ02 偏移（wgs84ToGcj02/outOfChina；编辑器高德底图逐瓦片对齐用） ----------
+console.log('gcj02:');
+{
+  const MPLAT = 111320;
+  const pts = [
+    ['人民广场', 121.4737, 31.2304],
+    ['浦东', 121.5655, 31.2089],
+    ['虹桥', 121.3200, 31.1970],
+    ['临港', 121.9100, 30.8700],
+    ['嘉定', 121.2650, 31.3770],
+  ];
+  for (const [nm, lon, lat] of pts) {
+    const [glon, glat] = wgs84ToGcj02(lon, lat);
+    const mE = (glon - lon) * MPLAT * Math.cos(lat * Math.PI / 180);
+    const mN = (glat - lat) * MPLAT;
+    const d = Math.hypot(mE, mN);
+    ok(d > 300 && d < 700, `${nm} 偏移数百米量级（|Δ|=${d.toFixed(0)} m ∈ (300,700)）`);
+    ok(mE > 0 && mN < 0, `${nm} 方向东偏南（东 ${mE.toFixed(0)} m、南 ${(-mN).toFixed(0)} m）`);
+  }
+  // 境外恒等（东京/伦敦/纽约/界外）
+  for (const [lon, lat] of [[139.6917, 35.6895], [-0.1276, 51.5072], [-74.006, 40.7128], [72.0, 31.0]]) {
+    const g = wgs84ToGcj02(lon, lat);
+    ok(g[0] === lon && g[1] === lat, `境外恒等（${lon}, ${lat}）`);
+  }
+  ok(outOfChina(139.69, 35.69) === true && outOfChina(121.47, 31.23) === false, 'outOfChina 境内/境外判定');
+  // 邻近点平滑：0.01°（约 1 km）间距内偏移场变化 < 10 m（逐瓦片常量偏移近似的依据）
+  const a = wgs84ToGcj02(121.47, 31.23);
+  const b = wgs84ToGcj02(121.48, 31.23);
+  const c = wgs84ToGcj02(121.47, 31.24);
+  const dE = Math.abs((b[0] - 0.01) - a[0]) * MPLAT * Math.cos(31.23 * Math.PI / 180);
+  const dN = Math.abs((c[1] - 0.01) - a[1]) * MPLAT;
+  ok(dE < 10 && dN < 10, `邻近点偏移场平滑（${dE.toFixed(1)} m / ${dN.toFixed(1)} m < 10 m）`);
+}
+
 for (const r of ref) {
   const d = byLayer[r.sourceLayer];
   if (!d) { console.log(`FAIL ${r.sourceLayer}: not in import file`); fails++; continue; }
@@ -49,7 +88,7 @@ for (const r of ref) {
   else console.log(`  ok   ${r.sourceLayer}: ${ap.pts.length} pts, len ${ap.length.toFixed(2)}`);
 }
 
-console.log(fails ? `\nFAIL - ${fails} path(s) differ` : '\nPASS - geom.js matches svg_parse.py');
+console.log(fails ? `\nFAIL - ${fails} assertion(s)` : '\nPASS - geom.js matches svg_parse.py');
 process.exit(fails ? 1 : 0);
 
 // 重新生成参考值：

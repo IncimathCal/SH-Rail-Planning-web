@@ -253,7 +253,46 @@
     return new ArcPath(flatten(parsePath(d)));
   }
 
-  const SHGeom = { parsePath, flatten, ArcPath, pathFromD, PathError, FLAT_TOL, ARC_MIN_DEPTH };
+  // ---------- GCJ02 偏移（公开标准算法，纯数学；编辑器高德底图对齐用） ----------
+  // 国测局加偏为公开近似式，单向：WGS84 → GCJ02（无精确逆式，本项目也用不到逆）。
+  // 克拉索夫斯基椭球长半轴 a=6378245、第一偏心率平方 ee=0.00669342162296594323。
+  const GCJ_A = 6378245.0;
+  const GCJ_EE = 0.00669342162296594323;
+  function gcjTransformLat(x, y) {
+    let ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+    ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
+    ret += (20.0 * Math.sin(y * Math.PI) + 40.0 * Math.sin(y / 3.0 * Math.PI)) * 2.0 / 3.0;
+    ret += (160.0 * Math.sin(y / 12.0 * Math.PI) + 320 * Math.sin(y * Math.PI / 30.0)) * 2.0 / 3.0;
+    return ret;
+  }
+  function gcjTransformLon(x, y) {
+    let ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+    ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
+    ret += (20.0 * Math.sin(x * Math.PI) + 40.0 * Math.sin(x / 3.0 * Math.PI)) * 2.0 / 3.0;
+    ret += (150.0 * Math.sin(x / 12.0 * Math.PI) + 300.0 * Math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0;
+    return ret;
+  }
+  /** 中国境外判定（算法自带的粗略界守卫；true = 境外，恒等无偏移） */
+  function outOfChina(lon, lat) {
+    return !(lon > 72.004 && lon < 137.8347 && lat > 0.8293 && lat < 55.8271);
+  }
+  /** WGS84 → GCJ02：返回 [lon, lat]；境外或非有限输入恒等返回 */
+  function wgs84ToGcj02(lon, lat) {
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return [lon, lat];
+    if (outOfChina(lon, lat)) return [lon, lat];
+    let dLat = gcjTransformLat(lon - 105.0, lat - 35.0);
+    let dLon = gcjTransformLon(lon - 105.0, lat - 35.0);
+    const radLat = (lat / 180.0) * Math.PI;
+    let magic = Math.sin(radLat);
+    magic = 1 - GCJ_EE * magic * magic;
+    const sqrtMagic = Math.sqrt(magic);
+    dLat = (dLat * 180.0) / ((GCJ_A * (1 - GCJ_EE)) / (magic * sqrtMagic) * Math.PI);
+    dLon = (dLon * 180.0) / (GCJ_A / sqrtMagic * Math.cos(radLat) * Math.PI);
+    return [lon + dLon, lat + dLat];
+  }
+
+  const SHGeom = { parsePath, flatten, ArcPath, pathFromD, PathError, FLAT_TOL, ARC_MIN_DEPTH,
+    outOfChina, wgs84ToGcj02 };
   global.SHGeom = SHGeom;
   if (typeof module !== 'undefined' && module.exports) module.exports = SHGeom;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

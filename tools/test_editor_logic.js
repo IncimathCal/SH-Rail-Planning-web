@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// editor.js 纯逻辑层单测：分段簿记（加站/删站/环线环绕）、stopSeq 水位、status 修正、lineIssues、批量命名、
-// 站圆预置批量落站（planStopImport/applyStopImport/suggestForStop）。
+// editor.js 纯逻辑层单测：分段实体（fmt/line@2：加删站索引簿记、切分/并段/区间/约束检测、@1→@2 迁移）、
+// stopSeq 水位、status 修正、lineIssues、批量命名、站圆预置批量落站（planStopImport/applyStopImport/suggestForStop）。
 // 用法：node tools/test_editor_logic.js
 
 const L = require(path_join('src', 'editor.js'));
@@ -13,7 +13,7 @@ function ok(cond, msg) {
 function eq(a, b, msg) { ok(JSON.stringify(a) === JSON.stringify(b), `${msg}（got ${JSON.stringify(a)} want ${JSON.stringify(b)}）`); }
 
 function mkLine(loop) {
-  return { id: 'l0001', loop, stops: [], segments: [], status: 'future',
+  return { id: 'l0001', loop, stops: [], segments: [], sections: [], status: 'future',
     meta: { stopSeq: 0 }, role: 'standalone', groupId: null, connects: [] };
 }
 function ins(line, i, seq) {  // 模拟 addStop 的簿记部分
@@ -26,154 +26,300 @@ function del(line, i) {
   line.stops.splice(i, 1);
   L.fixStatusField(line);
 }
-function segLen(line) { return line.loop ? line.stops.length : Math.max(line.stops.length - 1, 0); }
+function segLen(line) { return line.stops.length >= 2 ? (line.loop ? line.stops.length : line.stops.length - 1) : 0; }
+/** 按段状态数组构造分段实体（借用 @1→@2 迁移：连续同状态并段、name 全空） */
+function setSecs(line, arr) {
+  line.segments = arr.slice();
+  line.schema = 'fmt/line@1';
+  L.migrateLineToV2(line);
+  return line;
+}
+/** 造 n 站线（t 均布）再按段状态数组设分段（非环线站数 = 段数+1；环线站数 = 段数） */
+function mkSecLine(loop, arr) {
+  const l = mkLine(loop);
+  const nStops = loop ? arr.length : arr.length + 1;
+  l.stops = Array.from({ length: nStops }, (_, k) =>
+    ({ id: `l0001-s${String(k + 1).padStart(2, '0')}`, name: 'x', t: k / nStops, geo: null }));
+  setSecs(l, arr);
+  l.status = null;
+  return l;
+}
+const secStatuses = (l) => (l.sections || []).map((s) => s.status);
 
-// ---------- 非环线：加站 ----------
+// ---------- 非环线：加站（索引簿记＋端部继承相邻段） ----------
 console.log('non-loop insert:');
 let ln = mkLine(false);
 ins(ln, 0, 1);
-eq(ln.segments, [], '1 站 0 段');
+eq(ln.segments, [], '1 站 0 段（站数<2 分段为空）');
+eq(ln.sections, [], '1 站 sections 空');
 ins(ln, 1, 2);
-eq(ln.segments, ['existing'], '2 站 1 段（末端延伸默认 existing）');
-ln.segments = ['approved'];
-ins(ln, 0, 3);                                    // 首位延伸
-eq(ln.segments, ['existing', 'approved'], '首位延伸 unshift');
-ln.segments = ['future', 'approved'];
-ins(ln, 2, 4);                                    // 末端延伸（3 站时 i=2 是中间！）
-// 修正：3 站 [A,B,C] 插 i=2 → 位于 B,C 之间，是中间插入
-eq(ln.segments, ['future', 'approved', 'approved'], '中间插入 i=2 分裂继承');
-// 真正的末端延伸：4 站插 i=3
+eq(ln.segments, [0], '2 站 1 段（<2→≥2 跨界建默认分段，segments 全 0）');
+eq(ln.sections, [{ name: '', status: 'future' }], '默认分段 name 空、状态继承线路级');
+eq(ln.status, null, '站数≥2 status=null');
+setSecs(ln, ['approved']);                       // 改成 1 段已批复
+eq(ln.sections, [{ name: '', status: 'approved' }], 'setSecs 构造');
+ins(ln, 0, 3);                                   // 首位延伸
+eq(ln.segments, [0, 0], '首位延伸继承相邻段（旧版默认 existing 已废除）');
+eq(secStatuses(ln), ['approved'], '延伸不开新段');
 let ln2 = mkLine(false);
-ins(ln2, 0, 1); ins(ln2, 1, 2); ln2.segments = ['approved'];
-ins(ln2, 2, 3);
-eq(ln2.segments, ['approved', 'existing'], '末端延伸 push');
-
-// ---------- 非环线：删站 ----------
-console.log('non-loop delete:');
+ins(ln2, 0, 1); ins(ln2, 1, 2); setSecs(ln2, ['approved']);
+ins(ln2, 2, 3);                                  // 末端延伸
+eq(ln2.segments, [0, 0], '末端延伸继承相邻段');
 let ln3 = mkLine(false);
-for (let k = 0; k < 4; k++) ins(ln3, k, k + 1);
-ln3.segments = ['existing', 'approved', 'future'];
-del(ln3, 0);
-eq(ln3.segments, ['approved', 'future'], '删首站 shift');
+for (let k = 0; k < 3; k++) ins(ln3, k, k + 1);
+setSecs(ln3, ['future', 'approved']);
+ins(ln3, 2, 4);                                  // 3 站 [A,B,C] 插 i=2 → B,C 之间＝中间插入
+eq(ln3.segments, [0, 1, 1], '中间插入分裂继承（两半保留原索引）');
+
+// ---------- 非环线：删站（合并＋空段清理重编号） ----------
+console.log('non-loop delete:');
 let ln4 = mkLine(false);
 for (let k = 0; k < 4; k++) ins(ln4, k, k + 1);
-ln4.segments = ['existing', 'approved', 'future'];
-del(ln4, 3);
-eq(ln4.segments, ['existing', 'approved'], '删末站 pop');
-del(ln4, 1);
-eq(ln4.segments, ['approved'], '删中间站合并（保留 seg[i]）');
+setSecs(ln4, ['existing', 'approved', 'future']);   // 段 [0,1,2]
+del(ln4, 0);
+eq(ln4.segments, [0, 1], '删首站 shift＋重编号');
+eq(secStatuses(ln4), ['approved', 'future'], '失去引用的首段被清理');
+let ln5 = mkLine(false);
+for (let k = 0; k < 4; k++) ins(ln5, k, k + 1);
+setSecs(ln5, ['existing', 'approved', 'future']);
+del(ln5, 3);                                    // 删末站：pop 掉 future 段
+eq(ln5.segments, [0, 1], '删末站 pop（末段被清理）');
+eq(secStatuses(ln5), ['existing', 'approved'], '清理后段状态');
+del(ln5, 1);                                    // 删中间站：existing 与 approved 合并（保留 seg[i]=approved）
+eq(ln5.segments, [0], '删中间站合并＋级联空段清理');
+eq(secStatuses(ln5), ['approved'], '合并保留 seg[i] 段、另一段级联清理');
 
 // ---------- 环线 ----------
 console.log('loop:');
 let lo = mkLine(true);
 ins(lo, 0, 1);
-eq(lo.segments, ['existing'], '环线 1 站 1 段');
-lo.segments = ['approved'];
+eq(lo.segments, [], '环线 1 站 0 段（站数<2 分段为空）');
 ins(lo, 0, 2);
-eq(lo.segments, ['approved', 'approved'], '环线 2 站（分裂环绕段继承）');
+eq(lo.segments, [0, 0], '环线 2 站（原环绕段分裂，两半继承默认段）');
+setSecs(lo, ['approved', 'future']);
+ins(lo, 0, 3);                                  // 分裂环绕段（新站 t 小于首站）
+eq(lo.segments, [1, 0, 1], '环绕段分裂：尾半占首位、头半留末位，中间整体后移（[W,old..,W]）');
+// 回归（2026-11-21）：环线插/删首站簿记曾整体错位一格（旧 [old..,W,W] / [old 原地]）
+let lo3 = mkSecLine(true, ['existing', 'approved', 'future']);   // 3 站 [0,1,2]
+ins(lo3, 0, 4);                                                  // t < 首站 → 落环绕弧
+eq(lo3.segments, [2, 0, 1, 2], '环线 i=0 插站：[W,old0,old1,W]（旧版错位为 [0,1,2,2]）');
+eq(L.sectionIssuesOf(lo3).length, 0, '环线 i=0 插站后约束仍成立（W 跨环绕成块）');
+let lo4 = mkSecLine(true, ['existing', 'approved', 'future', 'existing']);   // 4 站 [0,1,2,3]
+del(lo4, 0);
+eq(lo4.segments, [1, 2, 0], '环线 i=0 删站：[g1..g(n-2),g0]，合并环绕段落末位（旧版错位为 [0,1,2]）');
+eq(L.sectionIssuesOf(lo4).length, 0, '环线 i=0 删站后约束仍成立');
 let lo2 = mkLine(true);
 for (let k = 0; k < 3; k++) ins(lo2, k, k + 1);
-lo2.segments = ['existing', 'approved', 'future'];
+setSecs(lo2, ['existing', 'approved', 'future']);
 del(lo2, 0);
 eq(lo2.segments.length, 2, '环线 3→2 站段数');
+eq(L.sectionIssuesOf(lo2).length, 0, '环线删站后分段约束仍成立');
 del(lo2, 0);
-eq(lo2.segments.length, 1, '环线 2→1 站段数');
+eq(lo2.segments, [], '环线 2→1 站（站数<2 分段清空）');
 del(lo2, 0);
-eq(lo2.segments, [], '环线 1→0 站段数');
+eq(lo2.segments, [], '环线 1→0 站分段保持空');
 
-// ---------- 分段状态区间设定 applySegRange / 区间汇总 segRangeSummary（2026-11-21 撤点段循环改左栏区间） ----------
-console.log('applySegRange:');
-// 非环线站数 = 段数+1；环线站数 = 段数
-function mkSegLine(loop, segs) {
-  const nStops = loop ? segs.length : segs.length + 1;
-  const l = mkLine(loop);
-  l.stops = Array.from({ length: nStops }, (_, k) =>
-    ({ id: `l0001-s${String(k + 1).padStart(2, '0')}`, name: 'x', t: k / nStops, geo: null }));
-  l.segments = segs.slice();
-  l.status = null;
-  return l;
-}
-// 非环线普通区间：站 2→4 覆盖 seg[1..2]
-let sr = mkSegLine(false, ['existing', 'existing', 'existing', 'existing']);
-ok(L.applySegRange(sr, 2, 4, 'approved') === true, '非环线普通区间成功');
-eq(sr.segments, ['existing', 'approved', 'approved', 'existing'], '站 2→4 只改中间两段');
-// 非环线 a>=b 拒绝（反向与 a===b），拒绝时数据不动
-sr = mkSegLine(false, ['existing', 'existing', 'existing']);
-ok(L.applySegRange(sr, 3, 2, 'future') === false, '非环线 a>b 拒绝');
-ok(L.applySegRange(sr, 2, 2, 'future') === false, '非环线 a===b 拒绝');
-eq(sr.segments, ['existing', 'existing', 'existing'], '拒绝时数据不动');
-// 环线 a>b＝跨环绕段方向：n=5，站 5→2 覆盖 seg[4]（环绕段）与 seg[0]
-let sl = mkSegLine(true, ['existing', 'existing', 'existing', 'existing', 'existing']);
-ok(L.applySegRange(sl, 5, 2, 'future') === true, '环线 a>b 跨环绕成功');
-eq(sl.segments, ['future', 'existing', 'existing', 'existing', 'future'], '5→2 恰覆盖环绕段＋首段');
-ok(L.applySegRange(sl, 3, 3, 'approved') === false, '环线 a===b 拒绝');
-// 环线 a<b 不跨环绕段
-sl = mkSegLine(true, ['existing', 'existing', 'existing']);
-ok(L.applySegRange(sl, 1, 3, 'approved') === true, '环线 a<b 成功');
-eq(sl.segments, ['approved', 'approved', 'existing'], '环线 1→3 不动环绕段 seg[2]');
-// 越界拒绝（0 / n+1；环线与非环线各一）
-ok(L.applySegRange(mkSegLine(false, ['existing']), 0, 2, 'future') === false, '非环线 a=0 越界拒绝');
-ok(L.applySegRange(mkSegLine(false, ['existing']), 1, 3, 'future') === false, '非环线 b=n+1 越界拒绝');
-ok(L.applySegRange(mkSegLine(true, ['existing', 'existing']), 6, 1, 'future') === false, '环线 a=n+1 越界拒绝');
-// 端点全区间
-sr = mkSegLine(false, ['existing', 'approved', 'future']);
-ok(L.applySegRange(sr, 1, 4, 'future') === true, '非环线端点全区间成功');
-eq(sr.segments, ['future', 'future', 'future'], '站 1→末站覆盖全部段');
-sl = mkSegLine(true, ['existing', 'approved', 'future']);
-ok(L.applySegRange(sl, 2, 1, 'approved') === true, '环线跨环绕端点区间成功（2→1）');
-eq(sl.segments, ['existing', 'approved', 'approved'], '环线 2→1 覆盖 seg[1]＋环绕段（任意 a≠b 至多 n-1 段）');
-// 其余非法：枚举 / 非整数 / 0 站 / 段表长度不符
-ok(L.applySegRange(mkSegLine(false, ['existing']), 1, 2, 'weird') === false, '非法枚举拒绝');
-ok(L.applySegRange(mkSegLine(false, ['existing']), 1.5, 2, 'future') === false, '非整数站序拒绝');
-ok(L.applySegRange(mkLine(false), 1, 2, 'future') === false, '0 站拒绝');
-let sBad = mkSegLine(false, ['existing', 'existing', 'existing']);
-sBad.segments = ['existing'];
-ok(L.applySegRange(sBad, 1, 2, 'future') === false, '段表长度与站数不符拒绝');
+// ---------- @1→@2 迁移 migrateLineToV2 ----------
+console.log('migrateLineToV2:');
+let mg = mkSecLine(false, ['existing', 'existing', 'approved']);
+eq(mg.schema, 'fmt/line@2', '@1 迁移后写 @2');
+eq(mg.sections, [{ name: '', status: 'existing' }, { name: '', status: 'approved' }], '连续同状态并段、name 全空');
+eq(mg.segments, [0, 0, 1], 'segments 改为块索引');
+eq(L.migrateLineToV2(mg), 0, '已是 @2 再跑不动');
+eq(mg.segments, [0, 0, 1], '重跑幂等（数据不变）');
+let mg2 = mkLine(false);
+mg2.schema = 'fmt/line@1';
+eq(L.migrateLineToV2(mg2), 0, '空 segments 迁移 0 段');
+eq([mg2.schema, mg2.sections, mg2.segments], ['fmt/line@2', [], []], '空线迁移结果');
+let mg3 = mkSecLine(true, ['existing', 'future', 'existing']);
+eq(mg3.sections.length, 3, '环线环绕两端同状态不自动跨环绕合并（合法，可手动并段）');
+let mg4 = mkLine(false);
+mg4.schema = 'fmt/line@2';
+mg4.segments = ['existing', 'future'];
+L.migrateLineToV2(mg4);
+eq([mg4.schema, mg4.segments, secStatuses(mg4)], ['fmt/line@2', [0, 1], ['existing', 'future']], '@2 但混入字符串元素仍迁移');
+let mg5 = mkLine(false);
+mg5.schema = 'fmt/line@1';
+mg5.segments = ['weird', 'future'];
+L.migrateLineToV2(mg5);
+eq(secStatuses(mg5), ['existing', 'future'], '非法枚举按 existing 兜底');
+eq(mg5.segments, [0, 1], '兜底后索引正常');
 
-console.log('segRangeSummary:');
-eq(L.segRangeSummary(mkSegLine(false, ['existing', 'approved', 'approved', 'future'])),
-  '1–2 既有；2–4 已批复；4–5 远期', '非环线相邻同状态段合并为区间');
-eq(L.segRangeSummary(mkSegLine(true, ['approved', 'future', 'future', 'existing'])),
-  '2–4 远期；4–1 既有（含环绕段）；1–2 已批复', '环线跨环绕合并并标注环绕段');
-eq(L.segRangeSummary(mkSegLine(true, ['existing', 'existing'])), '全线 既有（含环绕段）', '环线全线同状态');
-ok(L.segRangeSummary(mkSegLine(false, [])) === null, '站数<2 返回 null');
+// ---------- 切分 planSectionSplit ----------
+console.log('planSectionSplit:');
+let sp = mkSecLine(false, ['existing', 'existing', 'existing']);   // 4 站
+ok(L.planSectionSplit(sp, 2) === true, '非环线站 2 切分成功');
+eq(sp.segments, [0, 1, 1], '右半块改挂新段（自边界至块尾）');
+eq(sp.sections, [{ name: '', status: 'existing' }, { name: '', status: 'existing' }], '新段名空、状态继承原段');
+eq(L.sectionIssuesOf(sp).length, 0, '切分后约束成立');
+ok(L.planSectionSplit(sp, 2) === false, '站 2 两侧已不同段：无操作');
+eq(sp.segments, [0, 1, 1], '无操作数据不动');
+ok(L.planSectionSplit(sp, 1) === false, '非环线 k=1 越界拒绝');
+ok(L.planSectionSplit(sp, 4) === false, '非环线 k=n 越界拒绝');
+ok(L.planSectionSplit(mkLine(false), 1) === false, '站数<2 拒绝');
+ok(L.planSectionSplit(sp, 1.5) === false, '非整数站序拒绝');
+// 连续切分：新段插在原段之后（段序＝线路序），更大索引整体 +1
+let sp2 = mkSecLine(false, ['existing', 'existing', 'existing']);
+L.planSectionSplit(sp2, 3);   // → 段 [0,0,1]
+L.planSectionSplit(sp2, 2);   // 再在站 2 切中段
+eq(sp2.segments, [0, 1, 2], '连续切分索引重排（插入式而非 append）');
+eq(secStatuses(sp2), ['existing', 'existing', 'existing'], '三段状态继承');
+eq(L.sectionSpanOf(sp2, 0), [1, 2], '段 0 覆盖站 1–2');
+eq(L.sectionSpanOf(sp2, 1), [2, 3], '段 1 覆盖站 2–3');
+eq(L.sectionSpanOf(sp2, 2), [3, 4], '段 2 覆盖站 3–4');
+eq(L.sectionIssuesOf(sp2).length, 0, '连续切分后约束成立');
+// 环线：k=1＝环绕段与首段分家（含覆盖全环的单段——右半块不得吞掉环绕段成空段）
+let sl = mkSecLine(true, ['existing', 'existing', 'existing']);
+ok(L.planSectionSplit(sl, 1) === true, '环线 k=1（全环单段在环绕边界切分）成功');
+eq(sl.segments, [1, 1, 0], '环绕段独留原段、其余改挂新段');
+eq(L.sectionIssuesOf(sl).length, 0, '全环切分后无空段');
+eq(L.sectionSpanOf(sl, 1), [1, 3], '新段覆盖站 1–3');
+eq(L.sectionSpanOf(sl, 0), [3, 1], '原段覆盖站 3–1（经环绕段）');
+let sl2 = mkSecLine(true, ['existing', 'existing', 'existing', 'existing']);   // 全环单段
+L.planSectionSplit(sl2, 3);   // 站 3 切：右半块自 seg2 起绕环绕段到 seg1 → segs [1,0,1,1]（NEW 块跨环绕）
+eq(sl2.segments, [1, 0, 1, 1], '全环切分后右半块可绕环绕段成块');
+ok(L.planSectionSplit(sl2, 1) === true, '环线 k=1（跨环绕块在环绕边界再切）成功');
+eq(sl2.segments, [2, 0, 1, 1], '再切只改右半块首段（新段插在原段后）');
+eq(secStatuses(sl2), ['existing', 'existing', 'existing'], '三段全继承 existing');
+eq(L.sectionIssuesOf(sl2).length, 0, '跨环绕两次切分后约束成立');
+let sl3 = mkSecLine(true, ['approved', 'existing', 'existing', 'existing']);   // 段 [0,1,1,1]
+ok(L.planSectionSplit(sl3, 4) === true, '环线 k=n（末段边界）成功');
+eq(sl3.segments, [0, 1, 1, 2], '右半块＝环绕段独立成新段');
+eq(L.sectionIssuesOf(sl3).length, 0, '环线末段边界切分后约束成立');
+eq(L.sectionSpanOf(sl3, 2), [4, 1], '新段覆盖站 4–1（经环绕段）');
 
-// ---------- 随机不变量 ----------
+// ---------- 并段 applySectionMerge ----------
+console.log('applySectionMerge:');
+let mr = mkSecLine(false, ['existing', 'approved', 'future']);
+ok(L.applySectionMerge(mr, 0) === true, '段 0 并段 1 成功');
+eq(mr.segments, [0, 0, 1], '下一段索引改写为 0、更大索引减一');
+eq(mr.sections, [{ name: '', status: 'existing' }, { name: '', status: 'future' }], '删下一段、名称与状态取段 0');
+ok(L.applySectionMerge(mr, 1) === false, '非环线末段无下一段拒绝');
+eq(mr.segments, [0, 0, 1], '拒绝时数据不动');
+ok(L.applySectionMerge(mkSecLine(false, ['existing']), 0) === false, '仅 1 段无可并拒绝');
+ok(L.applySectionMerge(mr, -1) === false, '段号越界拒绝');
+ok(L.applySectionMerge(mr, 9) === false, '段号超界拒绝');
+// 环线末段的下一段＝段 0（并完删段 0、全体减一）
+let ml = mkSecLine(true, ['existing', 'approved', 'future']);
+ml.sections[2].name = '丙段';
+ok(L.applySectionMerge(ml, 2) === true, '环线末段并首段成功');
+eq(ml.segments, [1, 0, 1], '原段 0 改挂末段（落到新 1）、其余减一');
+eq(ml.sections, [{ name: '', status: 'approved' }, { name: '丙段', status: 'future' }], '保留末段名/状态、删段 0');
+eq(L.sectionIssuesOf(ml).length, 0, '环线环绕并段后约束成立');
+// 切分后并段（段序＝线路序下相邻段恒线路相邻）
+let mp = mkSecLine(false, ['existing', 'existing', 'existing']);
+L.planSectionSplit(mp, 3);
+L.planSectionSplit(mp, 2);   // 段 [A,NEW,A2] = [0,1,2,2]
+ok(L.applySectionMerge(mp, 1) === true, '中段并末段成功');
+eq(mp.segments, [0, 1, 1], '并段后仍连续成块');
+eq(L.sectionIssuesOf(mp).length, 0, '并段后约束成立');
+
+// ---------- 区间汇总 sectionSpanOf ----------
+console.log('sectionSpanOf:');
+let ss = mkSecLine(false, ['existing', 'existing', 'approved']);   // 4 站
+eq(L.sectionSpanOf(ss, 0), [1, 3], '非环线段 0：站 1–3');
+eq(L.sectionSpanOf(ss, 1), [3, 4], '非环线段 1：站 3–4');
+let ss2 = mkSecLine(true, ['approved', 'existing', 'existing']);   // 环线 3 站
+eq(L.sectionSpanOf(ss2, 0), [1, 2], '环线段 0：站 1–2');
+eq(L.sectionSpanOf(ss2, 1), [2, 1], '环线段 1：站 2–1（经环绕段）');
+let ss3 = mkSecLine(true, ['existing', 'existing', 'existing']);
+eq(L.sectionSpanOf(ss3, 0), [1, 1], '环线全环单段：站 1–1（经环绕段＝全线）');
+ok(L.sectionSpanOf(ss, -1) === null, '段号负拒绝');
+ok(L.sectionSpanOf(ss, 9) === null, '段号超界拒绝');
+ok(L.sectionSpanOf(mkLine(false), 0) === null, '站数<2 拒绝');
+
+// ---------- 约束检测 sectionIssuesOf（越界/空段/分离块/<2 非空） ----------
+console.log('sectionIssuesOf:');
+eq(L.sectionIssuesOf(mkSecLine(false, ['existing', 'approved'])), [], '合法多段无 issue');
+eq(L.sectionIssuesOf(mkSecLine(true, ['existing', 'approved'])), [], '合法环线多段无 issue');
+eq(L.sectionIssuesOf(mkSecLine(true, ['approved', 'existing', 'existing'])), [], '环线跨环绕连续块合法');
+let c1 = mkSecLine(false, ['existing', 'approved']);
+c1.segments = [0, 5];
+ok(L.sectionIssuesOf(c1).some((x) => x.includes('越界')), '分段索引越界检出');
+let c2 = mkSecLine(false, ['existing', 'approved']);
+c2.sections.push({ name: '', status: 'future' });
+ok(L.sectionIssuesOf(c2).some((x) => x.includes('空段')), '空段检出');
+let c3 = mkSecLine(false, ['existing', 'approved', 'existing']);
+c3.sections = c3.sections.slice(0, 2);
+c3.segments = [0, 1, 0];
+ok(L.sectionIssuesOf(c3).some((x) => x.includes('不连续')), '非环线分离块检出');
+let c4 = mkSecLine(true, ['existing', 'approved', 'existing', 'approved']);
+c4.sections = c4.sections.slice(0, 2);   // [existing, approved]
+c4.segments = [0, 1, 0, 1];              // 环形序下两段各分离为两块
+ok(L.sectionIssuesOf(c4).some((x) => x.includes('不连续')), '环线分离块检出');
+let c5 = mkLine(false);
+c5.sections = [{ name: '', status: 'existing' }];
+ok(L.sectionIssuesOf(c5).some((x) => x.includes('sections 应为空')), '站数<2 sections 非空检出');
+let c6 = mkLine(false);
+c6.segments = [0];
+ok(L.sectionIssuesOf(c6).some((x) => x.includes('segments 应为空')), '站数<2 segments 非空检出');
+let c7 = mkSecLine(false, ['existing', 'existing']);
+c7.segments = [0];                       // 长度不符
+ok(L.sectionIssuesOf(c7).some((x) => x.includes('segments 长度')), '段表长度不符检出');
+let c8 = mkSecLine(false, ['existing']);
+c8.sections = [];
+ok(L.sectionIssuesOf(c8).some((x) => x.includes('sections 不得为空')), '站数≥2 sections 空检出');
+
+// ---------- fixStatusField 跨界回落 ----------
+console.log('fixStatusField:');
+let fx = mkSecLine(false, ['approved', 'future']);   // 3 站
+del(fx, 2); del(fx, 1);                               // 从末尾删到 1 站（首段 approved 保留到回落）
+eq(fx.status, 'approved', '≥2→<2 状态回落取原第一个分段');
+eq([fx.sections, fx.segments], [[], []], '跨界清空分段');
+ins(fx, 1, 9);                                        // → 2 站
+eq(fx.status, null, '回 ≥2 status 置 null');
+eq(fx.sections, [{ name: '', status: 'approved' }], '<2→≥2 以线路级 status 重建默认分段');
+eq(fx.segments, [0], '重建段 segments 全 0');
+
+// ---------- 随机不变量（簿记＋切分/并段混合扰动） ----------
 console.log('randomized invariant:');
 for (const loop of [false, true]) {
   let rand = 42; const rnd = () => (rand = (rand * 1103515245 + 12345) % 2147483648) / 2147483648;
-  let ln5 = mkLine(loop); let seq = 0; let ops = 0;
+  let ln6 = mkLine(loop); let seq = 0; let ops = 0;
   for (let step = 0; step < 500; step++) {
-    if (ln5.stops.length === 0 || rnd() < 0.55) {
-      const i = Math.floor(rnd() * (ln5.stops.length + 1));
-      ins(ln5, i, ++seq); ops++;
-    } else {
-      del(ln5, Math.floor(rnd() * ln5.stops.length)); ops++;
+    const roll = rnd();
+    if (ln6.stops.length === 0 || roll < 0.5) {
+      const i = Math.floor(rnd() * (ln6.stops.length + 1));
+      ins(ln6, i, ++seq); ops++;
+    } else if (roll < 0.85) {
+      del(ln6, Math.floor(rnd() * ln6.stops.length)); ops++;
+    } else if (ln6.stops.length >= 2) {
+      // 随机切分/并段扰动（非法参数自然返回 false，只验不变量不被破坏）
+      if (roll < 0.93) L.planSectionSplit(ln6, 1 + Math.floor(rnd() * ln6.stops.length));
+      else L.applySectionMerge(ln6, Math.floor(rnd() * (ln6.sections.length + 1)));
+      ops++;
     }
-    ok(ln5.segments.length === segLen(ln5),
-      `step${step} loop=${loop} stops=${ln5.stops.length} segs=${ln5.segments.length}`);
-    ok(ln5.segments.every((s) => L.SEG_ORDER.includes(s)), `step${step} 枚举合法`);
-    if (ln5.stops.length >= 2) ok(ln5.status === null, `step${step} status=null`);
-    else ok(!!ln5.status, `step${step} status 非空`);
+    ok(ln6.segments.length === segLen(ln6),
+      `step${step} loop=${loop} stops=${ln6.stops.length} segs=${ln6.segments.length}（got ${JSON.stringify(ln6.segments)}）`);
+    if (ln6.stops.length >= 2) {
+      const iss = L.sectionIssuesOf(ln6);
+      ok(iss.length === 0, `step${step} 分段约束（${iss.join('；')}，sections=${JSON.stringify(ln6.sections)}）`);
+      ok(ln6.status === null, `step${step} status=null`);
+      ok((ln6.sections || []).every((s) => L.SEG_ORDER.includes(s.status) && typeof s.name === 'string'),
+        `step${step} 段字段合法`);
+    } else {
+      ok(!!ln6.status, `step${step} status 非空`);
+      ok((ln6.sections || []).length === 0 && (ln6.segments || []).length === 0, `step${step} <2 分段为空`);
+    }
   }
   ok(ops > 400, '操作数足够');
 }
 
 // ---------- stopSeq 水位 ----------
 console.log('stopSeq:');
-let ln6 = mkLine(false);
-delete ln6.meta.stopSeq;
-ln6.stops = [{ id: 'l0001-s01' }, { id: 'l0001-s03' }];
-eq(L.nextStopSeq(ln6), 4, '无水位时按最大后缀');
-eq(L.nextStopSeq(ln6), 5, '递增');
-ln6.meta.stopSeq = 10;
-eq(L.nextStopSeq(ln6), 11, '水位优先于后缀');
-// 删除最大后缀站后不复用
 let ln7 = mkLine(false);
-ln7.meta.stopSeq = 5;
-ln7.stops = [{ id: 'l0001-s05' }];
-ln7.stops.pop();
-eq(L.nextStopSeq(ln7), 6, '删除后不复用已分配编号');
+delete ln7.meta.stopSeq;
+ln7.stops = [{ id: 'l0001-s01' }, { id: 'l0001-s03' }];
+eq(L.nextStopSeq(ln7), 4, '无水位时按最大后缀');
+eq(L.nextStopSeq(ln7), 5, '递增');
+ln7.meta.stopSeq = 10;
+eq(L.nextStopSeq(ln7), 11, '水位优先于后缀');
+// 删除最大后缀站后不复用
+let ln8 = mkLine(false);
+ln8.meta.stopSeq = 5;
+ln8.stops = [{ id: 'l0001-s05' }];
+ln8.stops.pop();
+eq(L.nextStopSeq(ln8), 6, '删除后不复用已分配编号');
 
 // ---------- lineIssues ----------
 console.log('lineIssues:');
@@ -184,6 +330,7 @@ bad.stops = [
   { id: 'l0001-s03', name: 'c', t: 0.15 },
 ];
 bad.segments = ['existing'];
+bad.sections = [];
 bad.status = 'future';
 const iss = L.lineIssues(bad);
 ok(iss.some((x) => x.includes('站名为空')), '检出空站名');
@@ -196,9 +343,20 @@ good.stops = [
   { id: 'l0001-s01', name: 'a', t: 0.1 },
   { id: 'l0001-s02', name: 'b', t: 0.2 },
 ];
-good.segments = ['existing'];
+good.segments = [0];
+good.sections = [{ name: '既有段', status: 'existing' }];
 good.status = null;
 eq(L.lineIssues(good), [], '合格线路无 issue');
+let goodLoop = mkLine(true);
+goodLoop.stops = [
+  { id: 'l0001-s01', name: 'a', t: 0.1 },
+  { id: 'l0001-s02', name: 'b', t: 0.5 },
+  { id: 'l0001-s03', name: 'c', t: 0.9 },
+];
+goodLoop.segments = [0, 0, 1];
+goodLoop.sections = [{ name: '', status: 'existing' }, { name: '东段', status: 'future' }];
+goodLoop.status = null;
+eq(L.lineIssues(goodLoop), [], '环线合格（环绕段与首段同段跨环绕连续）无 issue');
 
 let conn = mkLine(false);
 conn.role = 'connector'; conn.status = 'future';
@@ -257,22 +415,25 @@ pa.status = null;
 const plan2 = L.planStopImport(pa, [{ t: 0.2, nameSuggestion: '甲' }, { t: 0.7, nameSuggestion: '乙' }]);
 const added = L.applyStopImport(pa, plan2);
 eq(pa.stops.map((s) => s.t), [0.2, 0.5, 0.7], '插入后 t 严格递增');
-eq(pa.segments, ['existing', 'existing'], '段数 = 站数-1');
+eq(pa.segments, [0, 0], '段数 = 站数-1（单一默认分段全 0）');
+eq(pa.sections, [{ name: '', status: 'future' }], '跨界自动建默认分段（status 取线路级 null→future）');
 eq(pa.status, null, '站数≥2 status=null');
 eq(added.map((s) => s.id), ['l0001-s10', 'l0001-s11'], '编号从 max(水位,最大后缀)+1 递增');
 ok(added.every((s) => s.name === '' && s.geo === null), '新站一律空名（建议不写入）');
 ok(pa.stops[1].name === '已有名', '已有站名不被覆盖');
-ok(!L.lineIssues({ ...pa, segments: pa.segments }).some((x) => x.includes('t 未递增')), 't 合法');
+ok(!L.lineIssues(pa).some((x) => x.includes('t 未递增')), 't 合法');
 // 6) 环线：段数 = 站数
 let pl = mkLine(true);
 L.applyStopImport(pl, L.planStopImport(pl, [{ t: 0.1 }, { t: 0.4 }, { t: 0.8 }]));
 eq(pl.segments.length, pl.stops.length, '环线预置落站后段数=站数');
+eq(L.sectionIssuesOf(pl).length, 0, '环线预置落站后分段约束成立');
 eq(pl.status, null, '环线 status=null');
 // 7) 幂等：再跑全 exists
 plan = L.planStopImport(pa, [{ t: 0.2 }, { t: 0.7 }]);
 eq([plan.inserts.length, plan.skippedExist], [0, 2], '重复导入全部跳过');
 // 8) 删一站后簿记仍成立（与 segRemove 联动）
 del(pa, pa.stops.findIndex((s) => s.t === 0.5));
+eq(L.sectionIssuesOf(pa).length, 0, '预置站+删站后分段约束成立');
 eq(pa.segments.length, pa.stops.length - 1, '预置站+删站后段数不变量');
 // 9) 整批撤销等价（快照字符串往返）
 let pu = mkLine(false);
@@ -346,7 +507,8 @@ bl3.stops = [
   { id: 'l0001-s02', kind: 'block', name: '', t: 0.2 },
   { id: 'l0001-s03', name: '', t: 0.3 },
 ];
-bl3.segments = ['existing', 'existing'];
+bl3.segments = [0, 0];
+bl3.sections = [{ name: '', status: 'existing' }];
 bl3.status = null;
 ok(!L.lineIssues(bl3).some((x) => x.includes('s02')), '线路所空名不报 issue');
 ok(L.lineIssues(bl3).some((x) => x.includes('s03 站名为空')), '普通站空名照报');

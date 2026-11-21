@@ -12,31 +12,47 @@
   const ROLE_LABEL = { standalone: '独立', main: '主线', branch: '支线', connector: '联络线' };
   const EPS = 1e-4;          // t 最小间隔
 
-  /** 加站后的分段表调整（stops 已含新站，i 为其下标）。
-   *  中间插入分裂原段（继承状态）；端部延伸新增段默认 existing；环线环绕段同理。
-   *  判定一律以站数为准（段数不变量：非环线 = 站数-1，环线 = 站数）。 */
+  /** 加站后的分段表调整（stops 已含新站，i 为其下标）——分段实体（fmt/line@2，2026-11-21）。
+   *  segments 元素是分段索引：中间插入分裂原段（两半继承原索引）；端部延伸**继承相邻段**
+   *  （首位 unshift(segs[0])、末端 push(末值)；环线 0→1 站 push(segs[0]||0)）——
+   *  旧版端部默认 'existing' 的语义废除（铺满模型下端部必须归段；空表兜底 0，
+   *  对应的分段 sections 由 fixStatusField 在跨界时创建）。
+   *  段数不变量：非环线 = 站数-1，环线 = 站数（站数<2 时一律为空，见 fixStatusField）。 */
   function segInsert(line, i) {
     const segs = line.segments;
     const n = line.stops.length;   // 已含新站
     if (line.loop) {
-      if (n === 1) segs.push('existing');
-      else if (i === 0) segs.splice(segs.length - 1, 1, segs[segs.length - 1], segs[segs.length - 1]); // 分裂环绕段（两半均继承）
-      else segs.splice(i - 1, 1, segs[i - 1], segs[i - 1]);
+      if (n === 1) segs.push(segs[0] || 0);
+      else if (i === 0) {
+        // 新站落在环绕弧上（t 小于首站 t）：环绕段一分为二，尾半（t→s0）占首位、
+        // 头半（s(n-1)→t）留末位，中间各段整体后移一格——即 [W, old0..old(n-2), W]
+        const w = segs.length ? segs[segs.length - 1] : 0;
+        segs.unshift(w);
+        if (segs.length === 1) segs.push(w);   // 1 站环线空表兜底：两半同段 [0,0]
+      }
+      else segs.splice(i - 1, 1, segs[i - 1] || 0, segs[i - 1] || 0);   // 1→2 站时段表尚空，兜底 0
     } else {
-      if (n === 1) { /* 非环线 1 站 = 0 段 */ }
-      else if (i === 0) segs.unshift('existing');          // 首位延伸，新段在最前
-      else if (i === n - 1) segs.push('existing');         // 末端延伸
-      else segs.splice(i - 1, 1, segs[i - 1], segs[i - 1]);
+      if (n === 1) { /* 非环线 1 站 = 0 段（站数<2 时 segments/sections 均为空） */ }
+      else if (i === 0) segs.unshift(segs[0] || 0);          // 首位延伸，新段继承原首段
+      else if (i === n - 1) segs.push(segs[segs.length - 1] || 0);   // 末端延伸，继承原末段
+      else segs.splice(i - 1, 1, segs[i - 1] || 0, segs[i - 1] || 0);
     }
   }
 
   /** 删站前的分段表调整（stops 尚未移除，i 为待删下标）。
-   *  相邻两段合并，保留 seg[i] 状态；环线 n=1 清空。 */
+   *  相邻两段合并，保留 seg[i] 的分段索引；删后站数仍 ≥2 时清理失去全部引用的分段（防空段/断号），
+   *  跌破 2 站则不清理——留给 fixStatusField 先从 sections[0] 收回落选状态再整体清空。 */
   function segRemove(line, i) {
     const segs = line.segments;
     const n = line.stops.length;
     if (line.loop) {
       if (n === 1) segs.length = 0;
+      else if (i === 0) {
+        // 删首站：新站序自原 s1 起，中间各段整体前移一格；环绕段（旧 wrap∪旧 g0
+        // 合并弧）落到末位，值按「保留被删站下游段」规则取 g0 —— 即 [g1..g(n-2), g0]
+        segs.splice(segs.length - 1, 1);
+        segs.push(segs.shift());
+      }
       else {
         // seg[j] 连接 stop j → (j+1)%n；删 stop i 合并 seg[(i-1+n)%n] 与 seg[i]
         const other = (i - 1 + n) % n;
@@ -49,62 +65,195 @@
       else if (i === n - 1) segs.pop();
       else { const merged = segs[i]; segs.splice(i - 1, 2, merged); }
     }
+    if (n >= 3) pruneSections(line);
   }
 
-  /** 按站序区间批量设定分段状态（左栏「分段状态」面板；2026-11-21 撤画布点段循环改区间设定）。
-   *  a/b 为 1-based 站序（含两端）：设定 a 站→b 站之间沿线路走向的全部段（seg[i] 连接站 i+1 与站 i+2）。
-   *  非环线要求 a<b；环线允许 a>b＝正向跨环绕段（如 n=5 时 5→2 覆盖 seg[4]（环绕段）与 seg[0]，即 5→1→2）；
-   *  a===b、越界、非整数、站数<2、非法枚举、段表长度与站数不符，一律返回 false 不改数据。 */
-  function applySegRange(line, a, b, status) {
+  /** 分段清理：删除失去全部 segment 引用的分段（空段），更大索引整体减一（防断号）。
+   *  段序与线路序一致（切分插入式维护），空段只会在并段/删站/切换环线后出现。 */
+  function pruneSections(line) {
+    if (!line.sections) return;
+    const usedOf = () => { const u = new Set(); for (const v of line.segments || []) u.add(v); return u; };
+    let used = usedOf();
+    let k = 0;
+    while (k < line.sections.length) {
+      if (used.has(k)) { k++; continue; }
+      line.sections.splice(k, 1);
+      line.segments = (line.segments || []).map((v) => (v > k ? v - 1 : v));
+      used = usedOf();   // 索引整体变化，引用集重算；不递增 k＝接着检查挪到当前位置的原下一段
+    }
+  }
+
+  /** 站数跨过 2 的边界时的状态与分段表修正（每次加/删站后调用，幂等）。
+   *  ≥2：status 置 null；sections 尚空（<2→≥2 跨界）则以线路级 status 建单一分段
+   *      （name ""、status 继承，即「建新线默认分段」；segments 已由 segInsert 铺好，
+   *       跨界时其空表兜底 0 与新 sections[0] 恰好对齐）。
+   *  <2：sections/segments 清空，status 从原第一个分段继承（≥2→<2 跨界回落），空则补 future。 */
+  function fixStatusField(line) {
     const n = line.stops.length;
-    if (!Number.isInteger(a) || !Number.isInteger(b)) return false;
-    if (a < 1 || b < 1 || a > n || b > n) return false;
-    if (a === b) return false;
-    if (SEG_ORDER.indexOf(status) < 0) return false;
-    if (!line.loop && a > b) return false;
+    if (n >= 2) {
+      const prev = line.status;
+      line.status = null;
+      if (!line.sections || !line.sections.length) {
+        line.sections = [{ name: '', status: SEG_ORDER.includes(prev) ? prev : 'future' }];
+      }
+    } else {
+      if (line.sections && line.sections.length) {
+        const st0 = line.sections[0] && line.sections[0].status;
+        if (SEG_ORDER.includes(st0)) line.status = st0;
+      }
+      if (!line.status) line.status = 'future';
+      line.sections = [];
+      line.segments = [];
+    }
+  }
+
+  /** fmt/line@1 → @2 迁移：segments 由状态字符串数组改为分段索引数组，
+   *  按连续同状态块生成 sections（name 一律 ""——先建后补，绝不自动起名；status 取块状态），
+   *  schema 写 @2。就地修改并返回生成分段数；非 @1 形态（schema 已 @2 且无字符串元素）返回 0 不动。
+   *  注：环线环绕两端同状态的块按线性扫描仍生成两个分段（合法，可一键并段），不自动跨环绕合并。 */
+  function migrateLineToV2(line) {
+    if (!line || !Array.isArray(line.segments)) {
+      if (line && line.schema === 'fmt/line@1') { line.schema = 'fmt/line@2'; if (!line.sections) line.sections = []; }
+      return 0;
+    }
+    const isV1 = line.schema === 'fmt/line@1' || line.segments.some((v) => typeof v === 'string');
+    if (!isV1) return 0;
+    const norm = (v) => (SEG_ORDER.includes(v) ? v : 'existing');
+    const sections = [];
+    let prev = null;
+    for (const v of line.segments) {
+      const st = norm(v);
+      if (st !== prev) { sections.push({ name: '', status: st }); prev = st; }
+    }
+    let idx = -1;
+    prev = null;
+    line.segments = line.segments.map((v) => {
+      const st = norm(v);
+      if (st !== prev) { idx++; prev = st; }
+      return idx;
+    });
+    line.sections = sections;
+    line.schema = 'fmt/line@2';
+    return sections.length;
+  }
+
+  /** 在站 k（1-based 站序）设分段边界：使 seg[k-2]（站 k-1→k）与 seg[k-1]（站 k→k+1）分属两段。
+   *  两者已不同段返回 false（无操作）；否则右半块（自 seg[k-1] 起沿站序的连续同段块，环线可跨环绕）
+   *  改挂新分段（name ""、status 继承原段）并返回 true。
+   *  新分段在 sections 中插到原分段之后（而非 append 到末尾）：维持「段序＝线路序」不变量，
+   *  之后更大的索引整体 +1——这使并段（applySectionMerge）的「下一段」恒为线路相邻段，面板行序恒与线路序一致。
+   *  非环线合法 k∈[2,n-1]；环线 k∈[1,n]（k=1＝环绕段 seg[n-1] 与 seg[0] 分家）。 */
+  function planSectionSplit(line, k) {
+    const n = line.stops.length;
+    if (n < 2 || !Number.isInteger(k)) return false;
+    if (line.loop ? (k < 1 || k > n) : (k < 2 || k > n - 1)) return false;
+    const segs = line.segments;
     const want = line.loop ? n : n - 1;
-    if (n < 2 || (line.segments || []).length !== want) return false;
-    if (line.loop && a > b) {              // 环绕方向：seg[a-1..n-1] ＋ seg[0..b-2]
-      for (let i = a - 1; i <= n - 1; i++) line.segments[i] = status;
-      for (let i = 0; i <= b - 2; i++) line.segments[i] = status;
-    } else {                               // a<b：seg[a-1..b-2]（环线不跨环绕段）
-      for (let i = a - 1; i <= b - 2; i++) line.segments[i] = status;
+    if (segs.length !== want || !(line.sections || []).length) return false;
+    const right = (k - 1) % n;            // 右半块起点（环线 k=n 时 =n-1）
+    const left = (k - 2 + n) % n;         // 左侧相邻段（环线 k=1 时 =n-1 环绕段）
+    if (segs[left] !== segs[right]) return false;   // 已不同段：无操作
+    const oldIdx = segs[right];
+    if (!line.sections[oldIdx]) return false;       // 索引越界（数据异常）防御
+    const newIdx = oldIdx + 1;
+    line.sections.splice(newIdx, 0, { name: '', status: line.sections[oldIdx].status });
+    for (let j = 0; j < segs.length; j++) if (segs[j] > oldIdx) segs[j] += 1;
+    // 右半块＝自 right 起沿站序的连续同段块；p 到 left（左半块末位）必停——
+    // 覆盖全环的单段在环绕边界切分时，右半块恰为「除环绕段外全部」（否则会吞掉左半块成空段）
+    let p = right, guard = 0;
+    while (guard++ < segs.length && segs[p] === oldIdx && p !== left) {
+      segs[p] = newIdx;
+      if (line.loop) p = (p + 1) % segs.length; else p++;
     }
     return true;
   }
 
-  /** 分段状态区间汇总（面板展示用，纯逻辑可单测）：相邻同状态段合并为一个区间、按站序显示
-   *  （如「1–3 既有；3–7 已批复」——区间指站序）；环线含环绕段（seg[n-1]，站 n→1）的区间
-   *  标注「含环绕段」，跨环绕的同状态段合并为一个区间（如「4–1 既有（含环绕段）」），
-   *  全线同状态显示「全线 X」。缺失段按 'existing' 兜底（与画布渲染一致）；站数<2 返回 null。 */
-  function segRangeSummary(line) {
+  /** 段 k（0-based 段序）与下一段并段：下一段的 segments 改写为 k，sections 删下一段、
+   *  更大索引减一；名称与状态取段 k（下一段的名字弃用——绝不自动拼接起名）。
+   *  非环线末段无下一段返回 false；环线末段的下一段＝段 0（并完删段 0、更大索引减一）。
+   *  依赖「段序＝线路序」不变量（planSectionSplit 插入式维护），两段恒线路相邻、并完仍连续成块。 */
+  function applySectionMerge(line, k) {
+    const secs = line.sections || [];
+    if (line.stops.length < 2 || !Array.isArray(line.segments)) return false;
+    if (!Number.isInteger(k) || k < 0 || k >= secs.length) return false;
+    if (secs.length < 2) return false;
+    if (!line.loop && k === secs.length - 1) return false;
+    if (line.loop && k === secs.length - 1) {
+      // 环线末段并首段：保留 k 的名/状态；删段 0，原值 0 →k、其余整体减一（k 落到新 k-1）
+      line.sections.splice(0, 1);
+      line.segments = line.segments.map((v) => (v === 0 ? k - 1 : v - 1));
+    } else {
+      const del = k + 1;
+      line.sections.splice(del, 1);
+      line.segments = line.segments.map((v) => (v === del ? k : (v > del ? v - 1 : v)));
+    }
+    return true;
+  }
+
+  /** 段 k 覆盖的站序区间（面板汇总用）：返回 [起站, 讫站]（1-based，含端；seg f..l 对应站 f+1..l+2）。
+   *  环线块跨环绕段时讫站绕回（如 [4,1]，全线单段为 [1,1]），环绕与否由调用方判定；
+   *  站数<2、段号越界、空段、段表长度不符返回 null。 */
+  function sectionSpanOf(line, k) {
     const n = line.stops.length;
-    if (n < 2) return null;
     const segs = line.segments || [];
-    const segCount = line.loop ? n : n - 1;
-    const segAt = (i) => segs[i] || 'existing';
-    // 环线：扫描起点挪到第一个状态变化点，跨环绕两端的同状态段才能并成一个区间
-    let start = 0;
-    if (line.loop) {
-      for (let k = 1; k < segCount; k++) { if (segAt(k) !== segAt(0)) { start = k; break; } }
+    if (n < 2 || !Number.isInteger(k) || k < 0 || !(line.sections || [])[k]) return null;
+    const want = line.loop ? n : n - 1;
+    if (segs.length !== want) return null;
+    let f = -1;
+    for (let i = 0; i < segs.length; i++) { if (segs[i] === k) { f = i; break; } }
+    if (f < 0) return null;
+    let l = f, p = f, guard = 0;
+    while (guard++ < segs.length && segs[p] === k) {
+      l = p;
+      if (line.loop) p = (p + 1) % segs.length; else p++;
     }
-    const runs = [];
-    let k = 0;
-    while (k < segCount) {
-      const s = segAt((start + k) % segCount);
-      let len = 1;
-      while (k + len < segCount && segAt((start + k + len) % segCount) === s) len++;
-      runs.push({ i0: (start + k) % segCount, len, s });
-      k += len;
+    return [f + 1, line.loop ? (((l + 1) % n) + 1) : l + 2];
+  }
+
+  /** 分段约束检测（纯逻辑，lineIssues 调用＋单测覆盖）：返回中文问题描述数组（空＝合格）。
+   *  站数<2：sections/segments 均须为空（线路级 status 接管）；
+   *  站数≥2：segments 长度＝环线站数/非环线站数-1、值均为 [0,sections.length) 的整数、
+   *  每个分段至少被 1 个 segment 引用（无空段）、同一分段的 segments 连续成块
+   *  （沿站序不分离；环线按环形序判定——跨环绕的同段仍算连续）。 */
+  function sectionIssuesOf(l) {
+    const issues = [];
+    const n = l.stops.length;
+    const segs = l.segments || [];
+    const secs = l.sections || [];
+    if (n < 2) {
+      if (secs.length) issues.push('站数<2 时 sections 应为空');
+      if (segs.length) issues.push('站数<2 时 segments 应为空');
+      return issues;
     }
-    return runs.map((r) => {
-      const i0 = r.i0, i1 = (i0 + r.len - 1) % segCount;
-      if (r.len === segCount && line.loop) return `全线 ${SEG_LABEL[r.s]}（含环绕段）`;
-      const st1 = i0 + 1;                       // 起始站（1-based）
-      const st2 = ((i1 + 1) % n) + 1;           // 终止站：末段环绕时（i1=n-1）回到站 1
-      const wrap = line.loop && ((segCount - 1 - i0 + segCount) % segCount) < r.len;
-      return `${st1}–${st2} ${SEG_LABEL[r.s]}${wrap ? '（含环绕段）' : ''}`;
-    }).join('；');
+    const want = l.loop ? n : n - 1;
+    if (segs.length !== want) { issues.push(`segments 长度 ${segs.length} ≠ 应为 ${want}`); return issues; }
+    if (!secs.length) { issues.push('站数≥2 时 sections 不得为空'); return issues; }
+    const used = new Set();
+    segs.forEach((v, i) => {
+      if (!Number.isInteger(v) || v < 0 || v >= secs.length) issues.push(`segments[${i}]=${v} 分段索引越界`);
+      else used.add(v);
+    });
+    for (let k = 0; k < secs.length; k++) {
+      if (!used.has(k)) issues.push(`分段 ${k} 未被任何 segment 引用（空段）`);
+    }
+    // 连续成块：扫描起点挪到（环形）首个值变化处，之后每段只允许出现一次连续块
+    if (!issues.length) {
+      const arr = segs;
+      let start = 0;
+      if (l.loop && arr.length > 1) {
+        for (let i = 1; i < arr.length; i++) { if (arr[i] !== arr[0]) { start = i; break; } }
+      }
+      const seen = new Set();
+      let cur = null;
+      for (let t = 0; t < arr.length; t++) {
+        const v = arr[(start + t) % arr.length];
+        if (v !== cur) {
+          if (seen.has(v)) { issues.push(`分段 ${v} 的区间不连续（沿站序分离）`); break; }
+          seen.add(cur = v);
+        }
+      }
+    }
+    return issues;
   }
 
   /** 分配下一个设站序号（水位 = max(meta.stopSeq, 现有最大后缀) + 1，编号永不复用） */
@@ -118,12 +267,6 @@
     return line.meta.stopSeq;
   }
 
-  /** 站数跨过 2 的边界时，线路级 status 字段自动修正 */
-  function fixStatusField(line) {
-    if (line.stops.length >= 2) line.status = null;
-    else if (!line.status) line.status = 'future';
-  }
-
   /** 保存前客户端自检（与 validate.py 规则对应的子集） */
   function lineIssues(l) {
     const issues = [];
@@ -132,8 +275,7 @@
       if (st.kind !== 'block' && (!st.name || !st.name.trim())) issues.push(`${st.id} 站名为空`);
       if (i > 0 && st.t <= l.stops[i - 1].t) issues.push(`${st.id} t 未递增`);
     });
-    const want = l.loop ? l.stops.length : Math.max(l.stops.length - 1, 0);
-    if (l.segments.length !== want) issues.push(`segments 长度 ${l.segments.length} ≠ 应为 ${want}`);
+    for (const si of sectionIssuesOf(l)) issues.push(si);
     if (l.stops.length < 2 && !l.status) issues.push('站数<2 但未设线路级 status');
     if (l.stops.length >= 2 && l.status) issues.push('站数≥2 时 status 应为 null');
     if ((l.role === 'main' || l.role === 'branch') && !l.groupId) issues.push('main/branch 必须有线组');
@@ -390,7 +532,7 @@
   }
 
   const SHLogic = { SEG_ORDER, SEG_LABEL, ROLE_LABEL, EPS, segInsert, segRemove,
-    applySegRange, segRangeSummary,
+    pruneSections, migrateLineToV2, planSectionSplit, applySectionMerge, sectionSpanOf, sectionIssuesOf,
     nextStopSeq, fixStatusField, lineIssues, planBulkFill,
     planStopImport, applyStopImport, suggestForStop,
     layerGroupsOf, junctionStroke, planStationGroup,
@@ -429,7 +571,7 @@
     imports: [],             // {source, imported, paths:[{sourceLayer,color,path}]}
     stationPresets: [],      // fmt/stations-import@1 的 items（站圆预置，只读参考数据，不进撤销/暂存）
     calib: null,             // fmt/calibration@2（model:"tps"，手动标定 TPS v2；svg→经纬度）。渲染恒用现行 calibration.json
-    basemapOn: false,        // OSM 底图开关（偏好存 localStorage）
+    basemap: 'off',          // 底图三态：'off'｜'osm'｜'amap'（高德，GCJ02 逐瓦片偏移；偏好存 localStorage）
     arcs: new Map(),         // lid -> SHGeom.ArcPath
     view: null,              // {x,y,w,h}，null = 待适配内容
     mode: 'select',
@@ -497,6 +639,8 @@
     const snap = S.undo.pop();
     if (!snap) { setStatus('没有可撤销的操作。'); return; }
     const d = JSON.parse(snap);
+    // 快照可能是升级前的 @1 数据：还原后重跑迁移（幂等），防旧格式流入渲染/保存
+    for (const l of d.lines) migrateLineToV2(l);
     S.lines = new Map(d.lines.map((l) => [l.id, l]));
     S.groups = d.groups; S.imports = d.imports;
     S.arcs = new Map();
@@ -532,6 +676,12 @@
     $('bannerTime').textContent = new Date(snap.savedAt).toLocaleString();
     $('banner').classList.add('show');
     $('btnRestore').onclick = () => {
+      const notes = [];
+      snap.lines = snap.lines.map((l) => {
+        const note = migrateLineNote(l);   // 暂存可能是升级前存的 @1 数据
+        if (note) notes.push(note);
+        return l;
+      });
       S.lines = new Map(snap.lines.map((l) => [l.id, l]));
       S.groups = snap.groups;
       // 导入记录：同名来源以刚从 import/ 磁盘载入的为准（可能比暂存新），其余保留暂存里的
@@ -539,7 +689,8 @@
       S.imports = (snap.imports || []).filter((i) => !diskSources.has(i.source)).concat(S.imports);
       S.activeLine = snap.activeLine && S.lines.has(snap.activeLine) ? snap.activeLine : null;
       $('banner').classList.remove('show');
-      syncCountersWithLoaded(); renderAll(); setStatus('已恢复本地暂存。');
+      syncCountersWithLoaded(); renderAll();
+      setStatus('已恢复本地暂存。' + (notes.length ? ' ' + notes.join('；') + '。' : ''));
     };
     $('btnDiscard').onclick = () => {
       localStorage.removeItem(LS_KEY);
@@ -557,6 +708,17 @@
     S.imports = S.imports.filter((i) => i.source !== rec.source);
     S.imports.push(rec);
   }
+
+  /** 线路对象载入统一入口的迁移环节：@1（segments 为状态字符串数组）→@2 分段实体，
+   *  就地转换；返回 null（已是 @2）或中文提示（「l0001：旧版分段已转换为分段实体（N 段），保存后生效」）。
+   *  覆盖路径：拖入/选择 .json（loadDataObject）、工作区直读/目录读（applyWorkspace）、
+   *  http 自动拉取 data/（bootFetchData）、本地暂存恢复（offerRestore）、撤销还原（undo）。 */
+  function migrateLineNote(obj) {
+    const n = migrateLineToV2(obj);
+    return n ? `${obj.id}：旧版分段已转换为分段实体（${n} 段），保存后生效` : null;
+  }
+  const isLineObj = (o) => o && /^l\d{4}$/.test(o.id || '')
+    && (o.schema === 'fmt/line@1' || o.schema === 'fmt/line@2');
 
   /** 站圆预置（fmt/stations-import@1）载入：items 并入 S.stationPresets，同源替换。只读参考数据。
    *  去重键用 obj.source（内容级标识）——boot 自动拉取与手动载入同一文件不会重复堆积。 */
@@ -611,7 +773,7 @@
       setStatus(`已载入站圆预置 ${n} 条（${fileName || obj.source}）——在线路属性面板「从预置导入车站」。`);
       return;
     }
-    if (obj && obj.schema === 'fmt/line@1' && /^l\d{4}$/.test(obj.id || '')) {
+    if (isLineObj(obj)) {
       const prev = S.lines.get(obj.id);
       if (prev && !confirm(`线路 ${obj.id} 已在编辑（${prev.name || '未命名'}，${prev.stops.length} 站）。`
         + `载入「${fileName || obj.id + '.json'}」将覆盖当前版本，继续？`)) {
@@ -619,10 +781,11 @@
         return;
       }
       snapshot();   // 载入前快照：覆盖可撤销（防误选旧文件静默冲掉当前编辑）
+      const note = migrateLineNote(obj);   // @1 → @2 分段实体（保存后生效）
       S.lines.set(obj.id, obj);
       S.arcs.delete(obj.id);
       if (!S.activeLine) S.activeLine = obj.id;
-      setStatus(`已载入线路 ${obj.id}${prev ? '（覆盖旧版，Ctrl+Z 可撤销）' : ''}。`);
+      setStatus(`已载入线路 ${obj.id}${prev ? '（覆盖旧版，Ctrl+Z 可撤销）' : ''}。` + (note ? ' ' + note + '。' : ''));
       return;
     }
     if (obj && obj.schema === 'fmt/groups@1') { snapshot(); S.groups = obj; return; }
@@ -634,7 +797,7 @@
     }
     if (obj && obj.schema === 'fmt/calibration@2') {
       takeCalibration(obj);
-      $('btnBasemap').classList.toggle('primary', S.basemapOn);
+      $('btnBasemap').classList.toggle('primary', S.basemap !== 'off');
       renderWorld();
       setStatus('已载入标定参数（手动标定 TPS v2），底图可用。');
       return;
@@ -660,13 +823,17 @@
       if (r.ok) {
         const html = await r.text();
         const names = [...html.matchAll(/href="(l\d{4}\.json)"/g)].map((m) => m[1]);
+        const notes = [];
         for (const n of new Set(names)) {
           const obj = await get('data/lines/' + n);
-          if (obj && obj.schema === 'fmt/line@1') {
+          if (isLineObj(obj)) {
+            const note = migrateLineNote(obj);   // @1 → @2 分段实体（保存后生效）
+            if (note) notes.push(note);
             S.lines.set(obj.id, obj);
             if (!S.activeLine) S.activeLine = obj.id;
           }
         }
+        if (notes.length) setTimeout(() => setStatus(notes.join('；') + '。', true), 0);
       }
     } catch (e) { /* file:// 等，忽略 */ }
     // import/ 目录：svg_parse --import 的产物自动载入（导入源开箱即见）
@@ -757,7 +924,10 @@
     return [w.x, w.y];
   }
 
-  // ---------- OSM 底图（瓦片垫层，仅本地参考；需标定 fmt/calibration@1/@2） ----------
+  // ---------- 底图瓦片垫层（三态：关 / OSM / 高德；仅本地对位参考；需标定 fmt/calibration@2） ----------
+  // OSM 瓦片为 WGS84，直接按标定逆变换放置；高德瓦片为 GCJ02——逐瓦片常量偏移对齐：
+  // 对每片取其中心经纬度（WGS84）算 wgs84ToGcj02 偏移，加到该片四角经纬度后再逆变换放置
+  // （偏移场平滑，单瓦片 256px 内误差米级，远小于标定本身 RMS 108 m）。
   let basemapG = null;
   const basemapTiles = new Map();   // "z/x/y" -> <image>
   let basemapEpoch = 0;             // 标定方案/参数变化计数：瓦片 transform 只在跨 epoch 重算
@@ -767,15 +937,23 @@
     clearTimeout(basemapTimer);
     basemapTimer = setTimeout(updateBasemap, 120);
   }
+  /** 底图源切换后清空全部瓦片（URL 与放置偏移随源不同，旧片不可复用） */
+  function clearBasemapTiles() {
+    basemapTiles.clear();
+    if (basemapG) basemapG.textContent = '';
+    basemapEpoch++;
+  }
   function updateBasemap() {
     if (!basemapG) return;
-    if (!S.basemapOn || !S.calib || !S.view) {
+    if (S.basemap === 'off' || !S.calib || !S.view) {
       basemapTiles.clear();
       basemapG.textContent = '';
       $('osmAttr').style.display = 'none';
       return;
     }
+    const amap = S.basemap === 'amap';
     $('osmAttr').style.display = 'block';
+    $('osmAttr').textContent = amap ? '底图 © 高德地图' : '底图 © OpenStreetMap contributors';
     // 视野四角 → 经纬度范围（标定前向）
     const cs = [[S.view.x, S.view.y], [S.view.x + S.view.w, S.view.y],
       [S.view.x, S.view.y + S.view.h], [S.view.x + S.view.w, S.view.y + S.view.h]];
@@ -811,7 +989,14 @@
         let img = basemapTiles.get(key);
         if (!img) {
           img = el('image', { width: 256, height: 256, class: 'basemap-tile' }, basemapG);
-          img.setAttribute('href', `https://tile.openstreetmap.org/${z}/${tx}/${ty}.png`);
+          if (amap) {
+            // 高德矢量底图 style=8：四子域轮询（webrd01~04）
+            const sub = 1 + ((tx + ty) % 4);
+            img.setAttribute('href',
+              `https://webrd0${sub}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x=${tx}&y=${ty}&z=${z}`);
+          } else {
+            img.setAttribute('href', `https://tile.openstreetmap.org/${z}/${tx}/${ty}.png`);
+          }
           img.addEventListener('error', () => {   // 加载失败重试一次（删元素重发）；仍失败仅提示一次
             if (img.dataset.retry) {
               if (!tileWarned) { tileWarned = true; setStatus('部分底图瓦片加载失败（网络受限？），重试无效。', true); }
@@ -824,13 +1009,20 @@
           basemapTiles.set(key, img);
         }
         // 瓦片像素 → SVG 世界：三点仿射（(0,0)(256,0)(0,256)），标定在小范围内近似线性；
-        // transform 只在标定方案变化（跨 epoch）时重算（TPS 反演较贵，避免平移高频重算）
+        // transform 只在标定方案变化（跨 epoch）时重算（TPS 反演较贵，避免平移高频重算）。
+        // 高德（GCJ02）：以本片中心（WGS84）的 wgs84ToGcj02 偏移平移四角——常量偏移近似
         if (img.dataset.epoch !== String(basemapEpoch)) {
           const lonW = tileXToLon(tx, z), lonE = tileXToLon(tx + 1, z);
           const latN = tileYToLat(ty, z), latS = tileYToLat(ty + 1, z);
-          const p00 = calibInverse(S.calib, lonW, latN);
-          const p10 = calibInverse(S.calib, lonE, latN);
-          const p01 = calibInverse(S.calib, lonW, latS);
+          let dLon = 0, dLat = 0;
+          if (amap) {
+            const cLon = tileXToLon(tx + 0.5, z), cLat = tileYToLat(ty + 0.5, z);
+            const g = G.wgs84ToGcj02(cLon, cLat);
+            dLon = g[0] - cLon; dLat = g[1] - cLat;
+          }
+          const p00 = calibInverse(S.calib, lonW + dLon, latN + dLat);
+          const p10 = calibInverse(S.calib, lonE + dLon, latN + dLat);
+          const p01 = calibInverse(S.calib, lonW + dLon, latS + dLat);
           if (!p00 || !p10 || !p01) continue;
           const a = (p10[0] - p00[0]) / 256, b = (p01[0] - p00[0]) / 256;
           const d = (p10[1] - p00[1]) / 256, e2 = (p01[1] - p00[1]) / 256;
@@ -930,7 +1122,11 @@
         // 环线仅 1 站：环绕段 = 整条闭合路径
         const dstr = (line.loop && n === 1) ? line.path : segPathString(ap, t1, t2);
         if (!dstr) continue;
-        const st = segs[i] || 'existing';
+        // 段样式派生：分段实体（fmt/line@2）——sections[segments[i]].status；
+        // 站数<2（分段为空、状态由线路级 status 接管）或数据异常时逐级兜底
+        const sec = line.sections && line.sections[segs[i]];
+        const st = sec && SEG_ORDER.includes(sec.status) ? sec.status
+          : (n < 2 && SEG_ORDER.includes(line.status) ? line.status : 'existing');
         el('path', { d: dstr, class: `seg-common seg-${st}`,
           'vector-effect': 'non-scaling-stroke' }, gLine);
         const hit = el('path', { d: dstr, class: 'seg-hit',
@@ -1173,7 +1369,7 @@
         <label>状态</label><select id="lfStatus" style="flex:1">
         ${SEG_ORDER.map((s2) => `<option value="${s2}" ${l.status === s2 ? 'selected' : ''}>${SEG_LABEL[s2]}</option>`).join('')}
         </select><span style="color:var(--dim);font-size:11px">（站数&lt;2 时必填）</span></div>` : `
-      <div class="fld" id="lfStatusRow"><label>状态</label><span style="flex:1;color:var(--dim);font-size:11px">≥2 站后整线状态停用——状态按分段设置：在左侧「设站」面板按站区间设定（如 1 到 2 已批复）</span></div>`}
+      <div class="fld" id="lfStatusRow"><label>状态</label><span style="flex:1;color:var(--dim);font-size:11px">≥2 站后整线状态停用——状态挂在分段上：在左侧「设站」面板「分段（铺满全线）」区命名/切分/并段、整段改状态</span></div>`}
       <div class="fld"><label>分类</label><select id="lfLayer" style="flex:1"
         title="＝源图 Line 直属子图层名（如 市区线/市域线/联络线）；建线时自动带入，可改">${layerOpts.join('')}</select></div>
       <div class="fld"><label>源图层</label><input type="text" value="${esc((l.meta && l.meta.sourceLayer) || '')}" disabled></div>
@@ -1201,7 +1397,7 @@
     const l = S.lines.get(S.activeLine);
     if (!l || !l.stops.length) {
       box.innerHTML = '<div style="color:var(--dim)">在「加站」模式下点击线路加站；站名在此录入。加站类型（车站/线路所）用上方按钮切换。</div>';
-      renderSegRange();
+      renderSections();
       return;
     }
     const preset = matchPresetForLine(l);   // 站名建议来源（无匹配则无 chips）
@@ -1226,38 +1422,70 @@
         <button class="mini danger" data-del="${st.id}" title="删除设站">✕</button>
       </div>`;
     }).join('');
-    renderSegRange();
+    renderSections();
   }
 
-  /** 左栏「分段状态（按站区间设定）」面板：站序下拉＋应用按钮＋区间汇总。
-   *  随 renderStopList 一并刷新——renderStopList 只在加/删站、选线等低频路径上调用
-   *  （改名逐键只更新站圈 title，不进来），此处重建下拉无焦点冲突。 */
-  function renderSegRange() {
-    const fromSel = $('segFrom'), toSel = $('segTo'), stSel = $('segStatus'), btn = $('btnSegApply');
+  /** 左栏「分段（铺满全线）」面板：每段一行（名称/状态/并段）＋覆盖区间小字＋底部按站切分。
+   *  随 renderStopList 一并刷新（低频路径；分段改名逐键只写数据不重渲染，无焦点冲突）。
+   *  分段实体（fmt/line@2）：名称可空、状态挂整段、边界必落站、铺满全线。 */
+  function renderSections() {
+    const rows = $('secRows'), splitSel = $('secSplitAt'), splitBtn = $('btnSecSplit'), hint = $('secHint');
     const line = S.lines.get(S.activeLine);
     const n = line ? line.stops.length : 0;
     if (!line || n < 2) {
-      fromSel.innerHTML = ''; toSel.innerHTML = '';
-      fromSel.disabled = toSel.disabled = stSel.disabled = btn.disabled = true;
-      $('segSummary').textContent = n === 1
-        ? '设站 ≥2 后可用（当前仅 1 站，用属性面板线路级「状态」字段）。'
-        : '设站 ≥2 后可用。';
+      rows.innerHTML = '<div style="color:var(--dim);font-size:11px">'
+        + '设站 ≥2 后可用（当前用属性面板线路级状态）。</div>';
+      splitSel.innerHTML = '';
+      splitSel.disabled = splitBtn.disabled = true;
+      hint.textContent = '';
       return;
     }
-    fromSel.disabled = toSel.disabled = stSel.disabled = btn.disabled = false;
+    splitSel.disabled = splitBtn.disabled = false;   // 下方按候选重定
+    // 每段一行（段序＝线路序）：名称输入（可空）＋状态三档＋并段 ✕；
+    // 末段 ✕ 仅环线显示（并首段，跨环绕）；行下小字＝覆盖区间
+    rows.innerHTML = (line.sections || []).map((sec, k) => {
+      const span = sectionSpanOf(line, k);
+      const spanTxt = !span ? '' : `站 ${span[0]}–${span[1]}`
+        + (line.loop && span[1] <= span[0] ? (span[0] === span[1] ? '（经环绕段，全线）' : '（经环绕段）') : '');
+      const last = k === line.sections.length - 1;
+      const mergeBtn = line.loop || !last
+        ? `<button class="mini danger" data-secmerge="${k}" title="${last && line.loop
+          ? '与首段并段（跨环绕相邻）' : '与下一段并段'}——名称与状态取本段，下一段名字弃用">✕</button>`
+        : '<span style="width:26px;flex:none"></span>';   // 非环线末段无下一段：占位对齐
+      return `
+      <div class="sec-row" data-seck="${k}">
+        <div class="sec-main">
+          <input type="text" data-secname="${k}" value="${esc(sec.name || '')}"
+            placeholder="（分段名，可空）" title="分段名称，可先建后补">
+          <select data-secstatus="${k}" title="分段状态（挂整段）">
+            ${SEG_ORDER.map((s2) => `<option value="${s2}" ${sec.status === s2 ? 'selected' : ''}>${SEG_LABEL[s2]}</option>`).join('')}
+          </select>
+          ${mergeBtn}
+        </div>
+        <div class="sec-span">${k + 1}. ${spanTxt}</div>
+      </div>`;
+    }).join('');
+    // 切分站下拉：只列「两侧同段」的有意义边界（已不同段的站切了也是无操作）
     const label = (st) => {
       if (st.kind === 'block') return st.name && st.name.trim() ? `（线路所）${st.name.trim()}` : '（线路所）';
       return st.name && st.name.trim() ? st.name.trim() : '（未命名）';
     };
-    const opts = line.stops.map((st, i) => `<option value="${i + 1}">${i + 1} ${esc(label(st))}</option>`).join('');
-    const keep = (sel, dflt) => {
-      const old = sel.value;
-      sel.innerHTML = opts;
-      sel.value = [...sel.options].some((o) => o.value === old) ? old : dflt;
-    };
-    keep(fromSel, '1');
-    keep(toSel, '2');
-    $('segSummary').textContent = segRangeSummary(line) || '';
+    const segs = line.segments || [];
+    const cand = [];
+    const lo = line.loop ? 1 : 2, hi = line.loop ? n : n - 1;
+    for (let k = lo; k <= hi; k++) {
+      const left = segs[(k - 2 + n) % n], right = segs[(k - 1) % n];
+      if (segs.length && left === right) cand.push(k);
+    }
+    const old = splitSel.value;
+    splitSel.innerHTML = cand.length
+      ? cand.map((k) => `<option value="${k}">${k} ${esc(label(line.stops[k - 1]))}</option>`).join('')
+      : '<option value="">（无——各站边界已在段界上）</option>';
+    splitSel.value = [...splitSel.options].some((o) => o.value === old) ? old : splitSel.value;
+    splitSel.disabled = splitBtn.disabled = !cand.length;
+    hint.textContent = cand.length
+      ? '在所选站设边界：该站两侧分属两段（新段名空、状态继承原段）。'
+      : '每个站间边界都已是段界——要加段请先到相邻段中间站切分。';
   }
 
   function stopLabel(sid) {
@@ -1348,14 +1576,16 @@
     const lid = allocLid();
     const line = {
       // name 留空待人工录入（不擅自命名）；源图匹配文字只作属性面板里的建议名
-      schema: 'fmt/line@1', id: lid, name: '',
+      schema: 'fmt/line@2', id: lid, name: '',
       groupId: null, role: 'standalone', color: p.color,
       loop: /z/i.test(p.path), path: p.path, connects: [],
-      stops: [], segments: [], status: 'future',
+      stops: [], segments: [], sections: [], status: 'future',
       info: {},
       meta: { created: today(), updated: today(), archived: false,
         aliases: [], sourceLayer: sourceLayer, stopSeq: 0 },
     };
+    // 站数<2 时分段为空（线路级 status 接管）；默认分段 [{name:"",status:"future"}]
+    // 在第 2 站落位时由 fixStatusField 依 line.status 生成（语义同「建新线默认分段」）。
     // 分类继承：path 记录带 layer 字段（.ai Line 直属子图层名，可能不存在——防御式读取）则原样带入。
     // 「更新path」不回写分类——layer 只在建线时作初始值，此后属人工设定（renderLineForm 分类下拉改）。
     if (typeof p.layer === 'string' && p.layer) line.meta.layer = p.layer;
@@ -1725,7 +1955,7 @@
     }
     const segEl = hitEl.closest('.seg-hit');
     if (segEl) {
-      // 2026-11-21 撤点段循环：分段状态改在左栏「设站」面板按站区间设定；
+      // 2026-11-21 撤点段循环：分段为实体（命名/切分/并段在左栏「设站」面板的分段区管理）；
       // 段命中与底 path 命中同语义＝选中该线（双击＝左栏定位线路行，保持可用）
       const lid = segEl.dataset.lid;
       S.activeLine = lid; S.selStop = null;
@@ -2025,28 +2255,78 @@
       + (stillEmpty ? `；仍有 ${stillEmpty} 站未命名。` : '；当前线全部站已命名。'));
   });
 
-  // 分段状态按站区间设定（2026-11-21：撤画布点段循环，改左栏「分段状态」面板批量设定）
-  $('btnSegApply').addEventListener('click', () => {
+  // ---------- 分段（铺满全线）面板交互：分段实体（fmt/line@2，2026-11-21 替区间刷状态方案） ----------
+  // 分段改名逐键只写数据＋autosave（照站名输入做法，不重渲染——撤销粒度留给切分/并段/改状态）；
+  // 改状态/切分/并段＝snapshot()→改→renderAll()→状态栏中文反馈；无操作的红字提示不压撤销栈。
+  $('secRows').addEventListener('input', (e) => {
+    const k = e.target.dataset.secname;
+    if (k === undefined) return;
     const line = S.lines.get(S.activeLine);
-    if (!line) { setStatus('没有当前线路，无法设定分段状态。', true); return; }
-    const a = parseInt($('segFrom').value, 10), b = parseInt($('segTo').value, 10);
-    const s = $('segStatus').value;
-    // 先验后快照：非法区间不压撤销栈（applySegRange 内还会再验一遍兜底）
-    const n = line.stops.length;
-    const bad = !(Number.isInteger(a) && Number.isInteger(b) && a >= 1 && b >= 1 && a <= n && b <= n)
-      || a === b || (!line.loop && a > b);
-    if (bad) {
-      setStatus('区间无效：从站/到站须为两个不同的站序（非环线须正向）。', true);
-      return;
-    }
+    const sec = line && line.sections && line.sections[+k];
+    if (!sec) return;
+    sec.name = e.target.value;   // 可空，绝不自动生成
+    line.meta.updated = today();
+    autosave();
+  });
+  $('secRows').addEventListener('change', (e) => {
+    const k = e.target.dataset.secstatus;
+    if (k === undefined || !SEG_ORDER.includes(e.target.value)) return;
+    const line = S.lines.get(S.activeLine);
+    const sec = line && line.sections && line.sections[+k];
+    if (!sec) return;
     snapshot();
-    if (!applySegRange(line, a, b, s)) {   // 段表长度与站数不符等（校验把门的数据不会触发）
-      setStatus('分段表与站数不符，请先修正数据（保存校验会拦截）。', true);
-      return;
-    }
+    sec.status = e.target.value;
     line.meta.updated = today();
     renderAll();
-    setStatus(`${line.id} 段 ${a}–${b} → ${SEG_LABEL[s]}` + (line.loop && a > b ? '（经环绕段）' : ''));
+    const span = sectionSpanOf(line, +k);
+    setStatus(`${line.id} 分段 ${+k + 1}${span ? `（站 ${span[0]}–${span[1]}）` : ''} → ${SEG_LABEL[sec.status]}（状态挂整段）。`);
+  });
+  $('secRows').addEventListener('click', (e) => {
+    const k = e.target.dataset.secmerge;
+    if (k === undefined) return;
+    const line = S.lines.get(S.activeLine);
+    if (!line) return;
+    const kk = +k, secs = line.sections || [];
+    // 先验后快照：无下一段可并不压撤销栈
+    if (secs.length < 2 || (!line.loop && kk === secs.length - 1)) {
+      setStatus(!line.loop && kk === secs.length - 1
+        ? '非环线末段没有下一段，无法并段。' : '当前没有可并的相邻分段。', true);
+      return;
+    }
+    const target = line.loop && kk === secs.length - 1 ? kk - 1 : kk;   // 环线末段并首段后落到 kk-1
+    snapshot();
+    if (!applySectionMerge(line, kk)) { setStatus('并段失败（数据异常，未改动）。', true); return; }
+    line.meta.updated = today();
+    renderAll();
+    const span = sectionSpanOf(line, target);
+    setStatus(`${line.id} 已并段：分段 ${target + 1}${span ? `（站 ${span[0]}–${span[1]}）` : ''}`
+      + '吸收其下一段（名称与状态取本段，下一段名字弃用）。');
+  });
+  $('btnSecSplit').addEventListener('click', () => {
+    const line = S.lines.get(S.activeLine);
+    if (!line) { setStatus('没有当前线路，无法切分分段。', true); return; }
+    const k = parseInt($('secSplitAt').value, 10);
+    const n = line.stops.length;
+    const segs = line.segments || [];
+    // 先验后快照：站序无效或两侧已不同段（无操作）不压撤销栈；planSectionSplit 内部再验一遍兜底
+    const bad = n < 2 || !Number.isInteger(k)
+      || (line.loop ? (k < 1 || k > n) : (k < 2 || k > n - 1))
+      || segs.length !== (line.loop ? n : n - 1)
+      || !(line.sections || []).length
+      || segs[(k - 2 + n) % n] !== segs[(k - 1) % n];
+    if (bad) {
+      setStatus('该站两侧已在不同分段（或站序无效），无需切分。', true);
+      return;
+    }
+    const newK = segs[(k - 1) % n] + 1;   // 新分段插在原分段之后（段序＝线路序）
+    snapshot();
+    if (!planSectionSplit(line, k)) { setStatus('切分失败（数据异常，未改动）。', true); return; }
+    line.meta.updated = today();
+    renderAll();
+    const span = sectionSpanOf(line, newK);
+    setStatus(`${line.id} 已在站 ${k} 设分段边界：新分段 ${newK + 1}`
+      + `${span ? `（站 ${span[0]}–${span[1]}${line.loop && span[1] <= span[0] ? '，经环绕段' : ''}）` : ''}`
+      + '（名空、状态继承原段）。');
   });
 
   // 属性面板逐键渲染合帧（每帧至多一次；名称等不影响画布的字段跳过 renderWorld）——满规模防逐键全量重绘卡顿
@@ -2138,7 +2418,10 @@
     l.loop = loop;
     const want = loop ? n : Math.max(n - 1, 0);
     while (l.segments.length > want) l.segments.pop();
-    while (l.segments.length < want) l.segments.push('existing');
+    // 新增环绕段继承相邻（末）段——铺满模型下端部必须归段；空表兜底 0
+    while (l.segments.length < want) l.segments.push(l.segments.length ? l.segments[l.segments.length - 1] : 0);
+    pruneSections(l);        // 去环可能使原环绕段独占的分段失去全部引用
+    fixStatusField(l);       // 站数<2 时归空（分段/线路级 status 接管）
   }
 
   function newLineGroupFor(line) {
@@ -2229,25 +2512,40 @@
   }
 
   // ---------- 模式与撤销 ----------
-  S.basemapOn = localStorage.getItem('shrail.basemap') === '1';
+  // 底图三态偏好：'osm'｜'amap'｜'off'（旧布尔键 '1' 视作 osm、'0'/缺失视作 off）
+  S.basemap = (() => {
+    const v = localStorage.getItem('shrail.basemap');
+    if (v === 'osm' || v === 'amap') return v;
+    return v === '1' ? 'osm' : 'off';
+  })();
+  /** 底图按钮文案/高亮随三态同步（关→OSM→高德→关循环切换） */
+  function syncBasemapButton() {
+    const b = $('btnBasemap');
+    b.textContent = S.basemap === 'amap' ? '底图：高德' : S.basemap === 'osm' ? '底图：OSM' : '底图：关';
+    b.classList.toggle('primary', S.basemap !== 'off');
+  }
   $('btnUndo').addEventListener('click', () => undo());   // 顶栏撤销按钮（此前仅 Ctrl+Z，按钮未接线）
   $('btnBasemap').addEventListener('click', () => {
-    if (!S.basemapOn && !S.calib) {
+    const next = S.basemap === 'off' ? 'osm' : (S.basemap === 'osm' ? 'amap' : 'off');
+    if (next !== 'off' && !S.calib) {
       setStatus('无标定参数：先运行 python -X utf8 tools/calib_manual_fit.py（手动标定）或 python tools/georef.py <svg> <kml> --emit'
         + ' 生成 data/calibration.json（或用「数据文件」按钮载入），再开底图。', true);
       return;
     }
-    S.basemapOn = !S.basemapOn;
-    localStorage.setItem('shrail.basemap', S.basemapOn ? '1' : '0');
-    $('btnBasemap').classList.toggle('primary', S.basemapOn);
+    S.basemap = next;
+    localStorage.setItem('shrail.basemap', next);
+    syncBasemapButton();
+    clearBasemapTiles();   // 源切换：瓦片 URL 与放置偏移不同，旧片不可复用
     renderWorld();
-    setStatus(S.basemapOn
-      ? '底图已开启：© OpenStreetMap contributors（手动标定 TPS v2；对位精度≈标定残差：38 控点，LOO 全图 108 m）。'
-      : '底图已关闭。');
+    setStatus(next === 'osm'
+      ? '底图已开启（OSM）：© OpenStreetMap contributors（手动标定 TPS v2；对位精度≈标定残差：38 控点，LOO 全图 108 m）。'
+      : next === 'amap'
+        ? '底图已开启（高德）：© 高德地图（GCJ02 逐瓦片常量偏移对齐，单瓦片内误差米级；仅本地对位参考）。'
+        : '底图已关闭。');
   });
 
   const MODE_HINT = {
-    select: '选择：点击设站选中（左侧改名）、点击线路选中；分段状态在左侧「设站」面板按站区间设定（如 1 到 2 已批复）；左键拖动平移、滚轮缩放；拖动改站位置请切加站模式。',
+    select: '选择：点击设站选中（左侧改名）、点击线路选中；分段在左侧「设站」面板管理（命名/切分/并段，状态挂整段、铺满全线）；左键拖动平移、滚轮缩放；拖动改站位置请切加站模式。',
     add: '加站：点击线路附近即可加站（吸附半径 40px，自动记弧长 t）；按住已有站圈可直接拖动改位置（没按到则照常拖画布）。加站类型（车站/线路所）用左侧设站面板顶部按钮切换；可以先一路点完，再展开「批量命名」一次贴入站名（线路所跳过）。',
     group: '编组：任意处拉框直接建组（框内 ≥2 站即建，已在其他组的跳过）；也可点选站圈攒待编组后点「编组」；中键拖动平移。',
   };
@@ -2301,6 +2599,12 @@
     const cur = S.lines.size;
     if (!confirm(`载入工作区：将以 ${lineFiles.size} 条线路替换当前 ${cur} 条（编组一并替换，Ctrl+Z 可撤销）。继续？`)) return;
     snapshot();
+    // @1 → @2 分段实体迁移（工作区里可能有升级前保存的旧文件；保存后生效）
+    const migNotes = [];
+    for (const l of lineFiles.values()) {
+      const note = migrateLineNote(l);
+      if (note) migNotes.push(note);
+    }
     S.lines = new Map(lineFiles);
     // 整体替换语义要彻底：工作区缺 groups.json/manifest.json 时清空而非沿用当前值，
     // 否则旧组的 stationGroups 会悬挂引用新工作区不存在的线路/站 id
@@ -2312,10 +2616,12 @@
     S.selStop = null; S.pending = [];
     syncCountersWithLoaded();
     renderAll();
-    $('btnBasemap').classList.toggle('primary', S.basemapOn && !!S.calib);
+    syncBasemapButton();
+    $('btnBasemap').classList.toggle('primary', S.basemap !== 'off' && !!S.calib);
     setStatus(`已载入工作区（${label}）：线路 ${lineFiles.size} 条`
       + (groups ? '＋groups' : '') + (manifest ? '＋manifest' : '') + (calib ? '＋标定' : '')
-      + (writable ? '。保存工作区将直写该文件夹。' : '。本浏览器不支持目录直写——保存工作区将走多文件下载。'));
+      + (writable ? '。保存工作区将直写该文件夹。' : '。本浏览器不支持目录直写——保存工作区将走多文件下载。')
+      + (migNotes.length ? ' ' + migNotes.join('；') + '。' : ''));
   }
 
   async function readHandleJson(fh) {
@@ -2337,7 +2643,7 @@
               if (lfh.kind !== 'file' || !/^l\d{4}\.json$/.test(ln)) continue;
               try {
                 const obj = await readHandleJson(lfh);
-                if (obj.schema === 'fmt/line@1' && obj.id) lineFiles.set(obj.id, obj);
+                if (isLineObj(obj)) lineFiles.set(obj.id, obj);
               } catch (e) { setStatus(`工作区 lines/${ln} 解析失败，已跳过：${e.message}`, true); }
             }
           }
@@ -2362,7 +2668,7 @@
       try {
         if (/^l\d{4}\.json$/.test(base)) {
           const obj = JSON.parse(await f.text());
-          if (obj.schema === 'fmt/line@1' && obj.id) lineFiles.set(obj.id, obj);
+          if (isLineObj(obj)) lineFiles.set(obj.id, obj);
         } else if (base === 'manifest.json') { const o = JSON.parse(await f.text()); if (o.schema === 'fmt/manifest@1') manifest = o; }
         else if (base === 'groups.json') { const o = JSON.parse(await f.text()); if (o.schema === 'fmt/groups@1') groups = o; }
         else if (base === 'calibration.json') { const o = JSON.parse(await f.text()); if (o.schema === 'fmt/calibration@2') calib = o; }
@@ -2539,7 +2845,8 @@
     await bootFetchData();
     syncCountersWithLoaded();
     syncAddKindButtons();
-    $('btnBasemap').classList.toggle('primary', S.basemapOn && !!S.calib);
+    syncBasemapButton();
+    $('btnBasemap').classList.toggle('primary', S.basemap !== 'off' && !!S.calib);
     offerRestore();
     if (!S.view) fitView();
     setStatus(MODE_HINT.select);

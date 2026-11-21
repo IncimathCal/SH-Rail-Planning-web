@@ -38,7 +38,7 @@
   input[type=text], input[type=color] { background: var(--bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
   label { color: var(--dim); }
-  #bulkName summary, #segRange summary { cursor: pointer; color: var(--dim); font-size: 12px; user-select: none; }
+  #bulkName summary, #secPanel summary { cursor: pointer; color: var(--dim); font-size: 12px; user-select: none; }
   #bulkNames { width: 100%; margin-top: 4px; min-height: 70px; resize: vertical;
     background: var(--bg); color: var(--fg); border: 1px solid var(--border);
     border-radius: 4px; padding: 3px 6px; font: inherit; }
@@ -113,6 +113,13 @@
   .stop-row.pend { background: #4a3a10; border-radius: 3px; }
   .stop-row input.warn { border-color: var(--err); }
 
+  .sec-row { padding: 2px 0; border-bottom: 1px dashed var(--border); }
+  .sec-row:last-child { border-bottom: none; }
+  .sec-main { display: flex; align-items: center; gap: 4px; }
+  .sec-main input { flex: 1; min-width: 0; }
+  .sec-main select { flex: none; }
+  .sec-span { color: var(--dim); font-size: 11px; padding: 0 2px 1px; }
+
   .grp-row { padding: 3px 2px; border-bottom: 1px dashed var(--border); font-size: 12px; }
   .grp-row .m { color: var(--dim); }
 
@@ -159,7 +166,7 @@
   </div>
   <div class="tb-group">
     <button id="btnUndo" title="Ctrl+Z">撤销</button>
-    <button id="btnBasemap" title="下垫 OpenStreetMap 瓦片底图（需 data/calibration*.json 与网络；仅本地对位参考）">底图 OSM</button>
+    <button id="btnBasemap" title="底图三态循环：关→OSM→高德→关（需 data/calibration*.json 与网络；高德为 GCJ02 逐瓦片偏移对齐；仅本地对位参考）">底图：关</button>
   </div>
   <div class="tb-group">
     <div class="seg-legend">
@@ -213,19 +220,14 @@
           <span style="color:var(--dim);font-size:11px">逐站命名照常可用，两种方式可混用</span>
         </div>
       </details>
-      <details id="segRange" open>
-        <summary>分段状态（按站区间设定）</summary>
-        <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:4px">
-          <label>从站</label><select id="segFrom" style="max-width:118px"></select>
-          <label>到站</label><select id="segTo" style="max-width:118px"></select>
-          <select id="segStatus">
-            <option value="existing">既有</option>
-            <option value="approved">已批复</option>
-            <option value="future">远期</option>
-          </select>
-          <button class="mini primary" id="btnSegApply">应用</button>
+      <details id="secPanel" open>
+        <summary>分段（铺满全线）</summary>
+        <div id="secRows" style="margin-top:4px"></div>
+        <div id="secSplitRow" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:5px">
+          <label>在站</label><select id="secSplitAt" style="max-width:170px"></select>
+          <button class="mini primary" id="btnSecSplit" title="在该站设分段边界：两侧分属两段（新段名空、状态继承原段）">切分</button>
         </div>
-        <div id="segSummary" style="margin-top:3px;font-size:11px;color:var(--dim)"></div>
+        <div id="secHint" style="margin-top:3px;font-size:11px;color:var(--dim)"></div>
       </details>
       <div id="stopList"><div style="color:var(--dim)">在「加站」模式下点击线路加站；站名在此录入（逐站或批量）。</div></div>
     </div>
