@@ -525,8 +525,9 @@
 
   async function bootFetchData() {
     // 经 http 服务打开时自动尝试拉取 data/（file:// 打开时静默跳过）
+    // cache:'no-cache'＝每次向本地服务重新验证——标定/数据刚重生成时避免浏览器吃旧缓存
     const get = async (u) => {
-      try { const r = await fetch(u); if (!r.ok) return null; return await r.json(); } catch (e) { return null; }
+      try { const r = await fetch(u, { cache: 'no-cache' }); if (!r.ok) return null; return await r.json(); } catch (e) { return null; }
     };
     const groups = await get('data/groups.json');
     if (groups) S.groups = groups;
@@ -540,7 +541,7 @@
     const calibOld = await get('data/calibration-deg3-backup.json');
     if (calibOld && calibOld.schema === 'fmt/calibration@1') takeCalibration(calibOld);
     try {
-      const r = await fetch('data/lines/');
+      const r = await fetch('data/lines/', { cache: 'no-cache' });
       if (r.ok) {
         const html = await r.text();
         const names = [...html.matchAll(/href="(l\d{4}\.json)"/g)].map((m) => m[1]);
@@ -555,7 +556,7 @@
     } catch (e) { /* file:// 等，忽略 */ }
     // import/ 目录：svg_parse --import 的产物自动载入（导入源开箱即见）
     try {
-      const r = await fetch('import/');
+      const r = await fetch('import/', { cache: 'no-cache' });
       if (r.ok) {
         const html = await r.text();
         // 目录列表 href 为 URL 编码后的文件名（含中文），取单段 *.json、排除 ../ 等路径
