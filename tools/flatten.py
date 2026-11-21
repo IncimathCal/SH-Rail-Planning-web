@@ -12,7 +12,9 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
                         （sectionName＝所属分段名，空名段省略该键）
   <out>/stops.geojson  设站，每 feature 一个 Point
                         properties: sid / name / lineId / lineName / t /
-                        groupId / groupType
+                        groupId / groupType；出省箭头（v1.5 kind:"arrow"，
+                        非真正站点）保留输出并额外带 kind:"arrow" 键，
+                        普通站不写该键（geo 定位与其他站同口径）；
                         kind:"block"（线路所）整条剔除——正式网页隐藏。
 
 复用（绝不重推导）：
@@ -203,7 +205,7 @@ def flatten_line(line, ap, tps, group_color, stop_group):
             "geometry": {"type": "LineString", "coordinates": coords},
         })
 
-    # ---- 设站（线路所 kind:"block" 整条剔除）----
+    # ---- 设站（线路所 kind:"block" 整条剔除；出省箭头 kind:"arrow" 保留输出）----
     stop_feats = []
     for st in stops:
         if st.get("kind") == "block":
@@ -214,17 +216,21 @@ def flatten_line(line, ap, tps, group_color, stop_group):
         else:
             lon, lat = to_lonlat(*ap.point_at(st["t"]))
         gid, gtype = stop_group.get(st["id"], (None, None))
+        props = {
+            "sid": st["id"],
+            "name": st.get("name") or "",
+            "lineId": lid,
+            "lineName": line.get("name") or "",
+            "t": st["t"],
+            "groupId": gid,
+            "groupType": gtype,
+        }
+        # 出省箭头（v1.5，非真正站点）：仅 arrow 写 kind 键，普通站无该键
+        if st.get("kind") == "arrow":
+            props["kind"] = "arrow"
         stop_feats.append({
             "type": "Feature",
-            "properties": {
-                "sid": st["id"],
-                "name": st.get("name") or "",
-                "lineId": lid,
-                "lineName": line.get("name") or "",
-                "t": st["t"],
-                "groupId": gid,
-                "groupType": gtype,
-            },
+            "properties": props,
             "geometry": {"type": "Point",
                          "coordinates": [round(lon, LONLAT_DECIMALS),
                                          round(lat, LONLAT_DECIMALS)]},

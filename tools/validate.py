@@ -22,7 +22,7 @@ from pathlib import Path
 SEG_STATUS = {"existing", "approved", "future"}
 ROLES = {"main", "branch", "connector", "standalone"}
 GROUP_TYPES = {"same-station", "out-of-station", "junction"}  # v1.3 取消 passage；v1.4 增 junction（接轨站）
-STOP_KINDS = {"block"}  # v1.4 线路所：kind 缺省＝普通站，仅 block 合法
+STOP_KINDS = {"block", "arrow"}  # v1.4 线路所 block；v1.5 出省箭头 arrow（kind 缺省＝普通站）
 
 RE_LINE_ID = re.compile(r"^l\d{4}$")
 RE_STOP_ID = re.compile(r"^l\d{4}-s\d{2,}$")
@@ -266,13 +266,14 @@ def main():
         else:
             check_path_syntax(path_str, fname, bool(d.get("loop")))
 
-        # 规则 3：stops / t / 站名
+        # 规则 3：stops / t / 站名（loop 供 arrow 端点约束与规则 2 复用）
+        loop = bool(d.get("loop"))
         stops = d.get("stops")
         if not isinstance(stops, list):
             err(fname, "stops must be a list")
             stops = []
         prev_t = None
-        for st in stops:
+        for idx, st in enumerate(stops):
             sid = st.get("id")
             if not isinstance(sid, str) or not RE_STOP_ID.match(sid):
                 err(fname, f"bad stop id: {sid!r}")
@@ -285,9 +286,18 @@ def main():
                 stop_kinds[sid] = st.get("kind")
             kind = st.get("kind")
             if kind is not None and kind not in STOP_KINDS:
-                err(fname, f"stop {sid}: bad kind {kind!r} (only 'block' allowed)")
-            if kind != "block" and (not isinstance(st.get("name"), str) or not st.get("name", "").strip()):
+                err(fname, f"stop {sid}: bad kind {kind!r} (want one of {sorted(STOP_KINDS)})")
+            # 站名必填仅对普通站（kind 缺省）；block / arrow 名可空
+            if kind not in STOP_KINDS and (not isinstance(st.get("name"), str) or not st.get("name", "").strip()):
                 err(fname, f"stop {sid}: empty name")
+            # v1.5 出省箭头：仅非环线的首站（下标 0）或尾站（最末）可为 arrow；
+            # 环线（无端点）与中间位置均非法。@1/@2 同查。
+            if kind == "arrow":
+                if loop:
+                    err(fname, f"stop {sid}: kind 'arrow' 不允许出现在环线（出省箭头只在非环线端点）")
+                elif idx not in (0, len(stops) - 1):
+                    err(fname, f"stop {sid}: kind 'arrow' 只允许在首站或尾站"
+                               f"（当前为第 {idx + 1} 站，共 {len(stops)} 站）")
             t = st.get("t")
             if not isinstance(t, (int, float)) or not (0 <= t <= 1):
                 err(fname, f"stop {sid}: t out of range [0,1]: {t!r}")
@@ -300,7 +310,7 @@ def main():
                 err(fname, f"stop {sid}: geo must be null or [lon, lat]")
 
         # 规则 2：sections / segments / status（v1.5 分段一等实体；@1 兼容 WARN）
-        check_segmentation(d, fname, stops, bool(d.get("loop")))
+        check_segmentation(d, fname, stops, loop)
 
         # meta
         meta = d.get("meta")
