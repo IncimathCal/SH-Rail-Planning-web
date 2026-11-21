@@ -142,8 +142,11 @@
   .seg-hit { fill: none; stroke: transparent; stroke-width: 40; cursor: pointer; }
   .stop-c { fill: #fff; cursor: pointer; }
   .stop-c.pend { fill: var(--warn); }
+  .stop-arrow { stroke-linejoin: round; }   /* 出省箭头三角（fill/stroke 走内联样式盖过 .stop-c 白底） */
   .stop-merge { fill: #fff; cursor: pointer; }
   .stop-merge.pend { fill: var(--warn); }
+  .grp-pill { fill: none; cursor: pointer; }         /* 多线换乘药丸面层（白底，pend 走内联描边色） */
+  .grp-pill-under { fill: none; pointer-events: none; }  /* 药丸黑边垫层（不参与命中） */
   .stop-ring { fill: none; stroke: var(--acc); }
   .hint-ring { fill: none; stroke: var(--warn); stroke-dasharray: 3 3; }
 </style>
@@ -205,11 +208,13 @@
   <section id="secStops">
     <h3>设站（当前线）</h3>
     <div class="body">
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">
         <label>加站类型</label>
         <button id="akStop" class="mini primary" title="普通设站：需站名">车站</button>
         <button id="akBlock" class="mini"
           title="线路所：中途接轨点（不在车站的接轨），虚线圆、可无名，仅编辑器可见（正式网页隐藏）；只能与线路所编为接轨站组">线路所</button>
+        <button id="akArrow" class="mini"
+          title="出省箭头：出省方向指示（非站点），线色箭头指向线路外侧、可无名，编辑器与正式网页都显示；只能放在非环线的头/尾（中间落点拒绝），不可编组">出省箭头</button>
         <span style="color:var(--dim);font-size:11px">仅「加站」模式落站生效</span>
       </div>
       <details id="bulkName">

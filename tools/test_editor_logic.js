@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // editor.js 纯逻辑层单测：分段实体（fmt/line@2：加删站索引簿记、切分/并段/区间/约束检测、@1→@2 迁移）、
-// stopSeq 水位、status 修正、lineIssues、批量命名、站圆预置批量落站（planStopImport/applyStopImport/suggestForStop）。
+// stopSeq 水位、status 修正、lineIssues、批量命名、站圆预置批量落站（planStopImport/applyStopImport/suggestForStop）、
+// 出省箭头（kind:'arrow' 落位/编组/命名/校验）、多线换乘药丸串法（planGroupPillChain 确定性）。
 // 用法：node tools/test_editor_logic.js
 
 const L = require(path_join('src', 'editor.js'));
@@ -518,6 +519,89 @@ eq(bp3.pairs.map((p) => p[1]), ['甲'], '名字不被线路所消耗');
 let bl4 = mkLine(false);
 bl4.stops = [{ id: 'l0001-s01', kind: 'block', name: '', t: 0.5 }];
 eq(L.planBulkFill(bl4, ['甲']).pairs.length, 0, '全线仅线路所时批量命名无可配对');
+
+// ---------- 出省箭头 stop.kind:'arrow'（2026-11-21）：落位/编组/命名/校验 ----------
+console.log('arrow stop:');
+// 落位 canPlaceArrow：仅非环线头（i=0）/尾（i=末位之后）
+let aw = mkLine(false);
+aw.stops = [
+  { id: 'l0001-s01', name: 'a', t: 0.1 },
+  { id: 'l0001-s02', name: 'b', t: 0.5 },
+  { id: 'l0001-s03', name: 'c', t: 0.9 },
+];
+ok(L.canPlaceArrow(aw, 0) === true, '非环线 i=0（头）可放');
+ok(L.canPlaceArrow(aw, 3) === true, '非环线 i=末位之后（尾）可放');
+ok(L.canPlaceArrow(aw, 1) === false, '非环线 i=1（中间）拒绝');
+ok(L.canPlaceArrow(aw, 2) === false, '非环线 i=2（中间）拒绝');
+ok(L.canPlaceArrow(mkLine(false), 0) === true, '空线 i=0 可放（头）');
+ok(L.canPlaceArrow(mkLine(true), 0) === false, '环线一律拒绝（头位也不行）');
+ok(L.canPlaceArrow(mkLine(true), 3) === false, '环线尾位也拒绝');
+// 编组：含箭头一律拒绝（全箭头也不行——箭头不是站点）
+eq(L.planStationGroup([null, 'arrow']), { ok: false, reason: 'arrow' }, '箭头＋普通站混选拒绝');
+eq(L.planStationGroup(['arrow', 'arrow']), { ok: false, reason: 'arrow' }, '全箭头同样拒绝');
+eq(L.planStationGroup(['block', 'arrow']), { ok: false, reason: 'arrow' }, '箭头检查先于线路所混选');
+eq(L.planStationGroup(['block', null]), { ok: false, reason: 'mixed' }, '无箭头时线路所混选逻辑不变');
+eq(L.planStationGroup([null, undefined, '']), { ok: true, type: 'same-station', allBlock: false }, '无箭头时普通站判定不变');
+// 批量命名跳过箭头（同线路所处理）
+let awb = mkLine(false);
+awb.stops = [
+  { id: 'l0001-s01', kind: 'arrow', name: '', t: 0.05 },
+  { id: 'l0001-s02', name: '', t: 0.3 },
+  { id: 'l0001-s03', kind: 'arrow', name: '', t: 0.95 },
+];
+let abp = L.planBulkFill(awb, ['甲', '乙', '丙']);
+eq(abp.pairs.map((p) => p[0].id), ['l0001-s02'], '批量命名跳过出省箭头');
+eq(abp.pairs.map((p) => p[1]), ['甲'], '名字不被箭头消耗');
+// lineIssues：箭头站名可空＋「必须在非环线头/尾」校验（保存链把门）
+let awl = mkLine(false);
+awl.stops = [
+  { id: 'l0001-s01', kind: 'arrow', name: '', t: 0.05 },
+  { id: 'l0001-s02', name: 'a', t: 0.3 },
+  { id: 'l0001-s03', name: 'b', t: 0.6 },
+  { id: 'l0001-s04', kind: 'arrow', name: '', t: 0.95 },
+];
+awl.segments = [0, 0, 0];
+awl.sections = [{ name: '', status: 'existing' }];
+awl.status = null;
+eq(L.lineIssues(awl), [], '头尾箭头＋空名合法（不报 issue）');
+let awm = mkLine(false);
+awm.stops = [
+  { id: 'l0001-s01', kind: 'arrow', name: '', t: 0.05 },
+  { id: 'l0001-s02', kind: 'arrow', name: '', t: 0.3 },   // 中间箭头
+  { id: 'l0001-s03', name: 'a', t: 0.6 },
+];
+awm.segments = [0, 0];
+awm.sections = [{ name: '', status: 'existing' }];
+awm.status = null;
+ok(L.lineIssues(awm).some((x) => x.includes('出省箭头须在非环线头/尾')), '中间箭头检出');
+ok(!L.lineIssues(awm).some((x) => x.includes('站名为空')), '箭头空名不报');
+let awl2 = mkLine(true);
+awl2.stops = [
+  { id: 'l0001-s01', kind: 'arrow', name: '', t: 0.05 },
+  { id: 'l0001-s02', name: 'a', t: 0.5 },
+  { id: 'l0001-s03', name: 'b', t: 0.9 },
+];
+awl2.segments = [0, 0, 0];
+awl2.sections = [{ name: '', status: 'existing' }];
+awl2.status = null;
+ok(L.lineIssues(awl2).some((x) => x.includes('出省箭头须在非环线头/尾')), '环线箭头检出');
+
+// ---------- 多线换乘药丸串法 planGroupPillChain（同站组 ≥3 线；确定性） ----------
+console.log('planGroupPillChain:');
+eq(L.planGroupPillChain([]), [], '空集返回空');
+eq(L.planGroupPillChain([[0, 0]]), [0], '单点返回 [0]');
+eq(L.planGroupPillChain([[0, 0], [5, 5]]), [0, 1], '两点返回原序');
+// 正方形四点：四个起点总长全等（3）→ 取 order 字典序最小 [0,1,3,2]
+const sq = [[0, 0], [1, 0], [0, 1], [1, 1]];
+eq(L.planGroupPillChain(sq), [0, 1, 3, 2], '正方形平手取字典序最小链');
+eq(L.planGroupPillChain(sq), L.planGroupPillChain(sq.slice()), '同输入重跑结果一致（确定性）');
+// 共线四点（0,10,20,5）：最优 [0,3,1,2]（0→5→10→20 总长 20；与 s=2 的 [2,1,3,0] 平手，字典序小者胜）
+eq(L.planGroupPillChain([[0, 0], [10, 0], [20, 0], [5, 0]]), [0, 3, 1, 2], '共线点贪心最近邻链');
+// 最优起点非 0：孤远点在 index 3——s=2 的 [2,1,0,3] 与 s=3 的 [3,0,1,2] 总长 12 平手，字典序小者胜
+eq(L.planGroupPillChain([[0, 0], [1, 0], [2, 0], [-10, 0]]), [2, 1, 0, 3], '最优起点可为非 0（平手取字典序）');
+// 返回值为下标的完整排列
+const rp = [[3, 1], [-2, -2], [7, 5], [0, 9], [4, 4]];
+eq([...L.planGroupPillChain(rp)].sort((a, b) => a - b), [0, 1, 2, 3, 4], '五点返回完整排列');
 
 // ---------- 标定变换与瓦片数学（fmt/calibration@1 deg3 / @2 tps，文件存在时） ----------
 console.log('calibration:');

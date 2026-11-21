@@ -267,13 +267,25 @@
     return line.meta.stopSeq;
   }
 
+  /** 出省箭头（stop.kind:'arrow'）落位判定（纯逻辑，addStop 守卫＋单测共用）：
+   *  仅非环线的头（i===0）/尾（i===stops.length，即末位之后）可放；环线一律不允许（无出省端点）。 */
+  function canPlaceArrow(line, i) {
+    if (!line || line.loop) return false;
+    return i === 0 || i === (line.stops || []).length;
+  }
+
   /** 保存前客户端自检（与 validate.py 规则对应的子集） */
   function lineIssues(l) {
     const issues = [];
     l.stops.forEach((st, i) => {
-      // 线路所（kind:'block'）站名可空；普通站空名仍报
-      if (st.kind !== 'block' && (!st.name || !st.name.trim())) issues.push(`${st.id} 站名为空`);
+      const isBlk = st.kind === 'block', isArr = st.kind === 'arrow';
+      // 线路所（block）/出省箭头（arrow）站名可空；普通站空名仍报
+      if (!isBlk && !isArr && (!st.name || !st.name.trim())) issues.push(`${st.id} 站名为空`);
       if (i > 0 && st.t <= l.stops[i - 1].t) issues.push(`${st.id} t 未递增`);
+      // 出省箭头必须在非环线头/尾（保存校验链把门；编辑器落站/切环线另有前置守卫）
+      if (isArr && (l.loop || (i !== 0 && i !== l.stops.length - 1))) {
+        issues.push(`${st.id} 出省箭头须在非环线头/尾`);
+      }
     });
     for (const si of sectionIssuesOf(l)) issues.push(si);
     if (l.stops.length < 2 && !l.status) issues.push('站数<2 但未设线路级 status');
@@ -285,7 +297,7 @@
   }
 
   /** 批量命名规划：names 每行一个，按序配给 line.stops 中站名为空（含纯空白）的普通站；
-   *  已命名的站与线路所（kind:'block'，可无名）都跳过不动——
+   *  已命名的站、线路所（kind:'block'，可无名）与出省箭头（kind:'arrow'，非站点）都跳过不动——
    *  「先点完设站再一次贴名」与逐站命名两种方式并存。
    *  返回 {pairs:[[stop,name]...], total}；写入由调用方执行（便于先快照后改）。 */
   function planBulkFill(line, names) {
@@ -293,7 +305,7 @@
     const pairs = [];
     let k = 0;
     for (const st of line.stops) {
-      if (st.kind === 'block') continue;
+      if (st.kind === 'block' || st.kind === 'arrow') continue;
       if (st.name && st.name.trim()) continue;
       if (k >= clean.length) break;
       pairs.push([st, clean[k++]]);
@@ -392,16 +404,59 @@
   }
 
   /** 建组类型判定（拉框/点选攒组共用；node 单测覆盖）。
-   *  kinds＝候选成员的 stop.kind 列表（'block'＝线路所，其余/null＝普通车站）：
+   *  kinds＝候选成员的 stop.kind 列表（'block'＝线路所，'arrow'＝出省箭头，其余/null＝普通车站）：
+   *  含出省箭头 → 一律拒绝（ok:false, reason:'arrow'——箭头不是站点，不可编组，全箭头也不行）；
    *  含线路所 → 组类型强制 junction（接轨站）且成员必须全为线路所；
    *  线路所与普通车站混选 → 拒绝（ok:false, reason:'mixed'）；
    *  全普通车站 → 默认 same-station（既有行为不变）。 */
   function planStationGroup(kinds) {
     const arr = kinds || [];
+    if (arr.some((k) => k === 'arrow')) return { ok: false, reason: 'arrow' };
     const nBlock = arr.filter((k) => k === 'block').length;
     if (nBlock > 0 && nBlock < arr.length) return { ok: false, reason: 'mixed' };
     if (nBlock > 0) return { ok: true, type: 'junction', allBlock: true };
     return { ok: true, type: 'same-station', allBlock: false };
+  }
+
+  /** 多线换乘药丸串法（同站组 ≥3 线画药丸用；确定性，与查看器侧逐字节同规格——两边必须一致）。
+   *  对每个起点 s∈[0,n) 各跑一次贪心最近邻：每步取距链尾最近的未入链点（按欧氏距离，
+   *  平手取下标小者），得链 order 与总长 total（相邻点欧氏距离之和，n 点连线 n-1 次，非两两相连）；
+   *  取 total 最小者，平手取 order 序列字典序最小者。返回下标顺序数组；n≤2 返回原序 [0..n-1]。 */
+  function planGroupPillChain(pts) {
+    const arr = pts || [];
+    const n = arr.length;
+    if (n <= 2) return Array.from({ length: n }, (_, k) => k);
+    const d2 = (a, b) => {
+      const dx = arr[a][0] - arr[b][0], dy = arr[a][1] - arr[b][1];
+      return dx * dx + dy * dy;   // 贪心步内比较与真距离同序（单调），免开方
+    };
+    const lexLess = (u, v) => {
+      for (let k = 0; k < u.length; k++) { if (u[k] !== v[k]) return u[k] < v[k]; }
+      return false;
+    };
+    let best = null;
+    for (let s = 0; s < n; s++) {
+      const order = [s];
+      const used = new Set([s]);
+      let total = 0;
+      while (order.length < n) {
+        const tail = order[order.length - 1];
+        let bi = -1, bd = Infinity;
+        for (let j = 0; j < n; j++) {          // j 升序＋严格 < ＝平手取下标小者
+          if (used.has(j)) continue;
+          const d = d2(tail, j);
+          if (d < bd) { bd = d; bi = j; }
+        }
+        order.push(bi);
+        used.add(bi);
+        total += Math.sqrt(bd);                // 总长按真欧氏距离累计（与查看器同式）
+      }
+      if (!best || total < best.total
+        || (total === best.total && lexLess(order, best.order))) {
+        best = { order, total };
+      }
+    }
+    return best.order;
   }
 
   // ---------- 标定变换与瓦片数学（fmt/calibration@1 deg3 / fmt/calibration@2 tps；node 单测覆盖往返与 Python 对拍） ----------
@@ -533,6 +588,7 @@
 
   const SHLogic = { SEG_ORDER, SEG_LABEL, ROLE_LABEL, EPS, segInsert, segRemove,
     pruneSections, migrateLineToV2, planSectionSplit, applySectionMerge, sectionSpanOf, sectionIssuesOf,
+    canPlaceArrow, planGroupPillChain,
     nextStopSeq, fixStatusField, lineIssues, planBulkFill,
     planStopImport, applyStopImport, suggestForStop,
     layerGroupsOf, junctionStroke, planStationGroup,
@@ -575,7 +631,7 @@
     arcs: new Map(),         // lid -> SHGeom.ArcPath
     view: null,              // {x,y,w,h}，null = 待适配内容
     mode: 'select',
-    addKind: null,           // 加站拍放类型：null＝车站（缺省），'block'＝线路所（中途接轨点）
+    addKind: null,           // 加站拍放类型：null＝车站（缺省），'block'＝线路所（中途接轨点），'arrow'＝出省箭头
     activeLine: null,        // lid
     selStop: null,           // sid
     selImport: null,         // {source, sourceLayer}
@@ -1046,9 +1102,11 @@
   /** 站圈 <title> 提示文本（渲染与改名/拖站局部更新共用，保持一致） */
   function stopTitle(line, st, idx, grp) {
     const isBlk = st.kind === 'block';
+    const isArr = st.kind === 'arrow';
     const oos = grp && grp.type === 'out-of-station';
-    return `${idx + 1}. ${st.name || (isBlk ? '（线路所）' : '（未命名）')}  t=${st.t.toFixed(4)}`
+    return `${idx + 1}. ${st.name || (isBlk ? '（线路所）' : isArr ? '（出省箭头）' : '（未命名）')}  t=${st.t.toFixed(4)}`
       + (isBlk ? '  线路所：仅编辑器可见，正式网页隐藏' : '')
+      + (isArr ? '  出省箭头：非站点、指向线路外侧，编辑器与正式网页都显示；不可编组' : '')
       + (oos ? `  ${grp.id}（出闸换乘）` : '');
   }
 
@@ -1062,12 +1120,20 @@
     const scale = S.view ? Math.max(svg.clientWidth, 1) / S.view.w : 1;
     const rStop = 5.5 / scale, ringR = 8.5 / scale, hintR = 12 / scale;
 
-    // 换乘组索引：同站/接轨组成员隐藏小圈（画合并圈）；出闸组成员圈描黑边
+    // 换乘组索引：同站/接轨组成员隐藏小圈（画合并圈）；出闸组成员圈描黑边；
+    // 同站组 ≥3 线改画药丸（成员圈保留照画、药丸垫底，见下方合并图形段）——恰好 2 线维持大圈
     const stationGroups = (S.groups && S.groups.stationGroups) || [];
     const grpOf = new Map();               // sid -> 组对象
+    const lineOfStop = new Map();          // sid -> lid（组内线数统计用）
+    for (const [lid0, line0] of S.lines) for (const st0 of line0.stops) lineOfStop.set(st0.id, lid0);
+    const pillGroups = new Set();          // same-station 且 ≥3 线的组 id
     const mergedHidden = new Set();        // 同站/接轨组成员 sid
     for (const g of stationGroups) {
       for (const sid of g.stops) grpOf.set(sid, g);
+      if (g.type === 'same-station') {
+        const nLines = new Set(g.stops.map((sid) => lineOfStop.get(sid)).filter(Boolean)).size;
+        if (nLines >= 3) { pillGroups.add(g.id); continue; }   // 成员圈不隐藏，画药丸
+      }
       if (g.type === 'same-station' || g.type === 'junction') for (const sid of g.stops) mergedHidden.add(sid);
     }
 
@@ -1089,6 +1155,10 @@
         hit.dataset.impLayer = p.sourceLayer;
       }
     }
+
+    // 多线换乘药丸垫层（同站组 ≥3 线）：先建组占位（位于线路组之前＝画在成员站圈下层），
+    // 具体胶囊在下方合并图形段填充（与合并圈共用成员收集）
+    const pillG = el('g', { id: 'pillG' }, world);
 
     // 线路
     for (const [lid, line] of S.lines) {
@@ -1135,7 +1205,8 @@
       }
 
       // 设站（同站/接轨组成员的独立小圈不画，统一画合并圈；出闸换乘描黑边；
-      // 线路所 kind:'block'＝虚线圆（同尺寸、线色），仅编辑器可见、正式网页隐藏）
+      // 线路所 kind:'block'＝虚线圆（同尺寸、线色），仅编辑器可见、正式网页隐藏；
+      // 出省箭头 kind:'arrow'＝线色实心三角指向线路外侧，编辑器与正式网页都显示）
       stops.forEach((st, idx) => {
         if (mergedHidden.has(st.id)) return;
         const [x, y] = ap.pointAt(st.t);
@@ -1146,6 +1217,32 @@
         const isBlk = st.kind === 'block';
         if (isSel) el('circle', { cx: x, cy: y, r: ringR, class: 'stop-ring',
           'vector-effect': 'non-scaling-stroke' }, gLine);
+        if (st.kind === 'arrow') {
+          // 切向：t 处沿正向的单位切向量（邻点差分；t≈1 用向后差分）。
+          // 头站（idx===0）箭头取切线反方向、尾站取正方向＝一律指向线路外侧
+          const dt = 2e-3;
+          let a = st.t, b = st.t + dt;
+          if (b > 1) { b = st.t; a = Math.max(0, st.t - dt); }
+          const p1 = ap.pointAt(a), p2 = ap.pointAt(b);
+          let dx = p2[0] - p1[0], dy = p2[1] - p1[1];
+          const dl = Math.hypot(dx, dy) || 1;
+          dx /= dl; dy /= dl;
+          if (idx === 0) { dx = -dx; dy = -dy; }
+          const px = -dy, py = dx;                          // 垂直方向（基线展开用）
+          const tipL = 9 / scale, halfW = 6 / scale;        // 屏幕恒定尺寸（视觉档≈站圈 5.5px）
+          const dstr = `M${(x + dx * tipL).toFixed(2)},${(y + dy * tipL).toFixed(2)}`
+            + `L${(x - dx * tipL + px * halfW).toFixed(2)},${(y - dy * tipL + py * halfW).toFixed(2)}`
+            + `L${(x - dx * tipL - px * halfW).toFixed(2)},${(y - dy * tipL - py * halfW).toFixed(2)}Z`;
+          // 复用 .stop-c 类获得指针/命中/拖动交互；fill/stroke 走内联样式盖过类默认白底
+          const tri = el('path', { d: dstr, class: 'stop-c stop-arrow' + (isPend ? ' pend' : '') }, gLine);
+          tri.style.fill = isPend ? 'var(--warn)' : line.color;
+          tri.style.stroke = '#fff';
+          tri.style.strokeWidth = (1.2 / scale) + 'px';
+          tri.dataset.lid = lid; tri.dataset.sid = st.id;
+          const tt = el('title', {}, tri);
+          tt.textContent = stopTitle(line, st, idx, grp);
+          return;
+        }
         const c = el('circle', { cx: x, cy: y, r: rStop, class: 'stop-c' + (isPend ? ' pend' : ''),
           stroke: oos ? '#000' : line.color, 'stroke-width': 2 / scale }, gLine);
         if (isBlk) c.setAttribute('stroke-dasharray', `${3 / scale} ${3 / scale}`);   // 屏幕恒定虚线（同 hint-ring 3 3 习惯）
@@ -1156,9 +1253,13 @@
     }
 
     // 同站换乘/接轨站合并圈：位置取距所有成员线路最近点（投影质心迭代收敛）。
+    // 同站组 ≥3 线改画药丸（pillGroups）：白底黑边胶囊沿成员站圈位置的贪心最近邻链
+    // （planGroupPillChain，n 点连线 n-1 次），厚度＝双线大圈直径、垫在成员站圈下层
+    // （成员圈保留各自线色描边照画）；恰好 2 线维持大圈不变。
     // 接轨站（junction，支线/联络线接轨用）：尺寸与普通设站圆一致（不做换乘大圈）、
     // 不画黑边（黑边是换乘语义），描边色按成员线角色优先级 main > standalone > branch > connector
     // 取（junctionStroke；取不到成员线颜色退 '#000'）；fill 仍白底。就近提示/点选/编组交互复用既有机制。
+    // 出闸组/junction 组渲染不涉及药丸。
     for (const g of stationGroups) {
       if (g.type !== 'same-station' && g.type !== 'junction') continue;
       const members = [];
@@ -1172,6 +1273,25 @@
         }
       }
       if (!members.length) continue;
+      if (pillGroups.has(g.id)) {
+        // 药丸：双描边法——黑垫层（厚＋2×边宽）＋白面层，圆帽圆角＝胶囊；命中/提示挂在面层
+        const pts = members.map((m) => m.ap.pointAt(m.st.t));
+        const chain = planGroupPillChain(pts);
+        const dstr = 'M' + chain.map((k) => `${pts[k][0].toFixed(2)},${pts[k][1].toFixed(2)}`).join('L');
+        const anyPendP = g.stops.some((sid) => S.pending.includes(sid));
+        const thick = (7.5 * 2) / scale;      // ＝双线大圈直径（2×7.5），视觉等宽
+        const border = 2.2 / scale;           // ＝双线大圈黑边宽
+        el('path', { d: dstr, class: 'grp-pill-under', fill: 'none', stroke: '#000',
+          'stroke-width': thick + 2 * border, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, pillG);
+        const pill = el('path', { d: dstr, class: 'grp-pill', fill: 'none',
+          'stroke-width': thick, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, pillG);
+        pill.style.stroke = anyPendP ? 'var(--warn)' : '#fff';
+        pill.dataset.grp = g.id;
+        const tp = el('title', {}, pill);
+        const nLinesP = new Set(members.map((m) => m.line.id)).size;
+        tp.textContent = `${g.id} 同站换乘（${nLinesP} 线药丸）：${g.stops.map((sid) => stopLabel(sid)).join('；')}`;
+        continue;
+      }
       let px = 0, py = 0;
       for (const m of members) { const p = m.ap.pointAt(m.st.t); px += p[0]; py += p[1]; }
       px /= members.length; py /= members.length;
@@ -1396,7 +1516,7 @@
     const box = $('stopList');
     const l = S.lines.get(S.activeLine);
     if (!l || !l.stops.length) {
-      box.innerHTML = '<div style="color:var(--dim)">在「加站」模式下点击线路加站；站名在此录入。加站类型（车站/线路所）用上方按钮切换。</div>';
+      box.innerHTML = '<div style="color:var(--dim)">在「加站」模式下点击线路加站；站名在此录入。加站类型（车站/线路所/出省箭头）用上方按钮切换。</div>';
       renderSections();
       return;
     }
@@ -1404,21 +1524,24 @@
     box.innerHTML = l.stops.map((st, i) => {
       const prev = i > 0 ? l.stops[i - 1].t : null;
       const next = i < l.stops.length - 1 ? l.stops[i + 1].t : null;
-      const tBad = st.t < 0 || st.t > 1 || (prev !== null && st.t <= prev) || (next !== null && st.t >= next);
       const isBlk = st.kind === 'block';
-      // 站名建议 chip：仅普通空名站展示（源图就近文字，点选才写入；绝不自动命名；线路所不参与）
-      const sug = preset && !isBlk && !(st.name && st.name.trim()) ? suggestForStop(preset, st.t) : null;
+      const isArr = st.kind === 'arrow';
+      const tBad = st.t < 0 || st.t > 1 || (prev !== null && st.t <= prev) || (next !== null && st.t >= next)
+        || (isArr && !(i === 0 || i === l.stops.length - 1));   // 箭头离开头尾即标红
+      // 站名建议 chip：仅普通空名站展示（源图就近文字，点选才写入；绝不自动命名；线路所/出省箭头不参与）
+      const sug = preset && !isBlk && !isArr && !(st.name && st.name.trim()) ? suggestForStop(preset, st.t) : null;
       return `
       <div class="stop-row ${S.selStop === st.id ? 'sel' : ''} ${S.pending.includes(st.id) ? 'pend' : ''}" data-sid="${st.id}">
         <span class="idx">${i + 1}</span>
         <input type="text" value="${esc(st.name)}" data-ren="${st.id}"
-          class="${(st.name || isBlk) ? '' : 'warn'}" placeholder="${isBlk ? '（线路所，可无名）' : '（站名）'}">
+          class="${(st.name || isBlk || isArr) ? '' : 'warn'}"
+          placeholder="${isBlk ? '（线路所，可无名）' : isArr ? '（出省箭头，可无名）' : '（站名）'}">
         ${sug ? `<span class="namehint stop-suggest" data-sugsid="${st.id}" data-sugname="${esc(sug.name)}"
           title="源图就近文字（距站圆 ${sug.dist}pt），仅供参考、不保证正确；点击采用">${esc(sug.name)}</span>` : ''}
         <input type="text" value="${st.t.toFixed(6)}" data-tedit="${st.id}"
           class="tin${tBad ? ' warn' : ''}" title="弧长位置 t∈[0,1]，可手改（如起点改 0、开线终点改 1）">
-        <button class="mini kind-tgl ${isBlk ? 'primary' : ''}" data-kind="${st.id}"
-          title="${isBlk ? '转回普通车站（有名、正式网页可见）' : '转为线路所：中途接轨点，虚线圆、可无名，仅编辑器可见（正式网页隐藏）；只能与线路所编为接轨站组'}">所</button>
+        <button class="mini kind-tgl ${isBlk ? 'primary' : ''}" data-kind="${st.id}" ${isArr ? 'disabled' : ''}
+          title="${isBlk ? '转回普通车站（有名、正式网页可见）' : isArr ? '出省箭头：如需改为其他类型，请删除后按所需类型重新放置（仅头/尾可放）' : '转为线路所：中途接轨点，虚线圆、可无名、仅编辑器可见（正式网页隐藏）；只能与线路所编为接轨站组'}">所</button>
         <button class="mini danger" data-del="${st.id}" title="删除设站">✕</button>
       </div>`;
     }).join('');
@@ -1491,16 +1614,16 @@
   function stopLabel(sid) {
     for (const l of S.lines.values()) {
       const st = l.stops.find((x) => x.id === sid);
-      if (st) return `${l.id} ${st.name || (st.kind === 'block' ? '（线路所）' : '（未命名）')}`;
+      if (st) return `${l.id} ${st.name || (st.kind === 'block' ? '（线路所）' : st.kind === 'arrow' ? '（出省箭头）' : '（未命名）')}`;
     }
     return sid;
   }
 
-  /** sid → 设站类型（'block'＝线路所；null＝普通车站；找不到站也返回 null） */
+  /** sid → 设站类型（'block'＝线路所；'arrow'＝出省箭头；null＝普通车站；找不到站也返回 null） */
   function stopKindOf(sid) {
     for (const l of S.lines.values()) {
       const st = l.stops.find((x) => x.id === sid);
-      if (st) return st.kind === 'block' ? 'block' : null;
+      if (st) return st.kind === 'block' ? 'block' : st.kind === 'arrow' ? 'arrow' : null;
     }
     return null;
   }
@@ -1641,10 +1764,11 @@
     if (!l) { setStatus('没有当前线路，无法采用建议名。', true); return; }
     const preset = matchPresetForLine(l);
     if (!preset) { setStatus('当前线路没有匹配的站圆预置（预置按几何签名绑定，与 path-NN 命名无关）。', true); return; }
-    let named = 0, noSug = 0, blk = 0;
+    let named = 0, noSug = 0, blk = 0, arr = 0;
     const pairs = [];
     for (const st of l.stops) {
-      if (st.kind === 'block') { blk++; continue; }   // 线路所可无名，不参与建议名
+      if (st.kind === 'block') { blk++; continue; }       // 线路所可无名，不参与建议名
+      if (st.kind === 'arrow') { arr++; continue; }       // 出省箭头非站点，不参与建议名
       if (st.name && st.name.trim()) { named++; continue; }
       const sug = suggestForStop(preset, st.t);
       if (sug) pairs.push([st, sug]);
@@ -1662,12 +1786,14 @@
     setStatus(`已采用 ${pairs.length} 个建议名（空名站按 t 就近写入，可手动修改）`
       + `、跳过 ${named} 个已有名`
       + (blk ? `、${blk} 个线路所` : '')
+      + (arr ? `、${arr} 个出省箭头` : '')
       + (noSug ? `、${noSug} 个空名站无就近建议（|Δt|>0.002）` : '')
       + '；撤销一次回退整批。');
   }
 
   // ---------- 设站操作 ----------
-  /** kind：null＝车站（缺省，stop 不写 kind 字段——老数据零迁移），'block'＝线路所（中途接轨点） */
+  /** kind：null＝车站（缺省，stop 不写 kind 字段——老数据零迁移），'block'＝线路所（中途接轨点），
+   *  'arrow'＝出省箭头（非站点，仅非环线头/尾可放） */
   function addStop(lid, t, kind) {
     const line = S.lines.get(lid);
     const ap = arcOf(lid);
@@ -1676,6 +1802,13 @@
     // 找插入位置（t 严格递增）
     let i = 0;
     while (i < line.stops.length && line.stops[i].t < t) i++;
+    // 出省箭头落位约束（先于快照：拒绝不压撤销栈）——环线一律不允许、非头尾拒绝不落站
+    if (kind === 'arrow' && !canPlaceArrow(line, i)) {
+      setStatus(line.loop
+        ? '出省箭头不能放在环线上（环线无出省端点），未添加。'
+        : '出省箭头只能放在线路的头/尾（当前落点算出在中间），未添加。', true);
+      return;
+    }
     const prevT = i > 0 ? line.stops[i - 1].t : null;
     const nextT = i < line.stops.length ? line.stops[i].t : null;
     if (prevT !== null && t - prevT < EPS) t = prevT + EPS;
@@ -1690,6 +1823,7 @@
     const sid = `${lid}-s${String(seq).padStart(2, '0')}`;
     const st = { id: sid, name: '', t: t, geo: null };
     if (kind === 'block') st.kind = 'block';
+    else if (kind === 'arrow') st.kind = 'arrow';
     line.stops.splice(i, 0, st);
     segInsert(line, i);
     fixStatusField(line);
@@ -1698,7 +1832,9 @@
     renderAll();
     setStatus(kind === 'block'
       ? `已加线路所 ${sid}（t=${t}，可无名；虚线圆，仅编辑器可见）。`
-      : `已加站 ${sid}（t=${t}）。请在左侧录入站名。`);
+      : kind === 'arrow'
+        ? `已加出省箭头 ${sid}（t=${t}，非站点、可无名；箭头指向线路外侧）。`
+        : `已加站 ${sid}（t=${t}）。请在左侧录入站名。`);
     const input = document.querySelector(`#stopList input[data-ren="${sid}"]`);
     if (input) input.focus();
   }
@@ -1866,11 +2002,12 @@
       const [wx, wy] = toWorld(e);
       if (moveStop(drag.lid, drag.sid, nearestTOnLine(drag.lid, wx, wy))) {
         drag.moved = true;
-        // 拖动中只挪该站圆＋选中环＋title（松手再全量对齐列表 t 值/排序）——满规模防逐帧全量重建卡顿
+        // 拖动中只挪该站圆＋选中环＋title（松手再全量对齐列表 t 值/排序）——满规模防逐帧全量重建卡顿；
+        // 出省箭头是 <path>（挪 cx/cy 无效、方向还随位置变），走全量重绘分支
         const line = S.lines.get(drag.lid);
         const st = line && line.stops.find((x) => x.id === drag.sid);
         const ap = st && arcOf(drag.lid);
-        if (st && ap && drag.el && drag.el.isConnected) {
+        if (st && ap && drag.el && drag.el.isConnected && drag.el.tagName !== 'path') {
           const [x, y] = ap.pointAt(st.t);
           drag.el.setAttribute('cx', x); drag.el.setAttribute('cy', y);
           if (drag.ring && drag.ring.isConnected) { drag.ring.setAttribute('cx', x); drag.ring.setAttribute('cy', y); }
@@ -1925,7 +2062,7 @@
     }
 
     if (S.mode === 'group') {
-      const mgEl = hitEl.closest('.stop-merge');
+      const mgEl = hitEl.closest('.stop-merge, .grp-pill');
       if (mgEl) {
         const g = S.groups.stationGroups.find((x) => x.id === mgEl.dataset.grp);
         if (g) {
@@ -1940,6 +2077,10 @@
       const stopEl = hitEl.closest('.stop-c');
       if (stopEl) {
         const sid = stopEl.dataset.sid;
+        if (stopKindOf(sid) === 'arrow') {   // 出省箭头不可编组（点选拒绝，同 block 混选拒绝风格）
+          setStatus('出省箭头不是站点，不可编组。', true);
+          return;
+        }
         S.pending = S.pending.includes(sid) ? S.pending.filter((x) => x !== sid) : [...S.pending, sid];
         renderAll();
         return;
@@ -1947,7 +2088,7 @@
     }
 
     // select 模式的点击
-    const mgSel = hitEl.closest('.stop-merge');
+    const mgSel = hitEl.closest('.stop-merge, .grp-pill');
     if (mgSel) {
       const g = S.groups.stationGroups.find((x) => x.id === mgSel.dataset.grp);
       if (g) setStatus(`${g.id} ${g.type === 'junction' ? '接轨站' : g.type === 'out-of-station' ? '出闸换乘' : g.type ? '同站换乘' : '类型未定'}组：${g.stops.map((sid) => stopLabel(sid)).join('；')}`);
@@ -2030,12 +2171,15 @@
         + (skipped.length ? `（${skipped.length} 站已在其他组，先拆组再框）` : '') + '，不足 2 站，未建组。', true);
       return;
     }
-    // 线路所编组约束（planStationGroup）：混选拒绝；全线路所强制 junction；全普通站默认同站
+    // 编组约束（planStationGroup）：出省箭头一律拒绝；线路所混选拒绝；全线路所强制 junction
     const plan = planStationGroup(fresh.map((sid) => stopKindOf(sid)));
     if (!plan.ok) {
-      setStatus(`框内可建组的 ${fresh.length} 站中线路所与普通车站混选，未建组`
-        + '（线路所只能与线路所编为接轨站组）'
-        + (skipped.length ? `；另有 ${skipped.length} 站已在其他组。` : '。'), true);
+      setStatus(plan.reason === 'arrow'
+        ? `框内可建组的 ${fresh.length} 站中含出省箭头，未建组（出省箭头不是站点、不可编组）`
+          + (skipped.length ? `；另有 ${skipped.length} 站已在其他组。` : '。')
+        : `框内可建组的 ${fresh.length} 站中线路所与普通车站混选，未建组`
+          + '（线路所只能与线路所编为接轨站组）'
+          + (skipped.length ? `；另有 ${skipped.length} 站已在其他组。` : '。'), true);
       return;
     }
     if (!S.groups) S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
@@ -2214,17 +2358,20 @@
     const i = line.stops.indexOf(st);
     const prev = i > 0 ? line.stops[i - 1].t : null;
     const next = i < line.stops.length - 1 ? line.stops[i + 1].t : null;
-    const bad = (prev !== null && st.t <= prev) || (next !== null && st.t >= next);
-    e.target.classList.toggle('warn', bad);
+    const tOrderBad = (prev !== null && st.t <= prev) || (next !== null && st.t >= next);
+    const arrowBad = st.kind === 'arrow' && !(i === 0 || i === line.stops.length - 1);
+    e.target.classList.toggle('warn', tOrderBad || arrowBad);
     e.target.value = st.t.toFixed(6);
-    if (bad) setStatus('警告：t 未严格递增（保存线路时会被拦截）。', true);
+    if (arrowBad) setStatus('警告：出省箭头须在非环线头/尾（保存线路时会被拦截）。', true);
+    else if (tOrderBad) setStatus('警告：t 未严格递增（保存线路时会被拦截）。', true);
     else setStatus(`t 已更新为 ${st.t}。`);
   });
 
-  // 加站类型切换（车站/线路所）：只影响「加站」模式落站写入的 stop.kind（默认车站＝不写字段）
+  // 加站类型切换（车站/线路所/出省箭头）：只影响「加站」模式落站写入的 stop.kind（默认车站＝不写字段）
   function syncAddKindButtons() {
-    $('akStop').classList.toggle('primary', S.addKind !== 'block');
+    $('akStop').classList.toggle('primary', S.addKind === null);
     $('akBlock').classList.toggle('primary', S.addKind === 'block');
+    $('akArrow').classList.toggle('primary', S.addKind === 'arrow');
   }
   $('akStop').addEventListener('click', () => {
     S.addKind = null; syncAddKindButtons();
@@ -2233,6 +2380,11 @@
   $('akBlock').addEventListener('click', () => {
     S.addKind = 'block'; syncAddKindButtons();
     setStatus('加站类型：线路所（中途接轨点：虚线圆、可无名、仅编辑器可见；只能与线路所编为接轨站组）。');
+  });
+  $('akArrow').addEventListener('click', () => {
+    S.addKind = 'arrow'; syncAddKindButtons();
+    setStatus('加站类型：出省箭头（非站点：线色箭头指向线路外侧、可无名、编辑器与正式网页都显示；'
+      + '只能放在非环线的头/尾，中间落点拒绝；不可编组）。');
   });
 
   // 批量命名：先点完全线设站、再一次贴入名字（与逐站命名并存，互不破坏）
@@ -2349,10 +2501,17 @@
     switch (e.target.id) {
       case 'lfName': l.name = e.target.value; break;
       case 'lfColor': l.color = e.target.value.toUpperCase(); break;
-      case 'lfLoop':
+      case 'lfLoop': {
+        // 出省箭头守卫：环线无出省端点，线上已有箭头则拒绝切环线（先删箭头）
+        if (e.target.checked && l.stops.some((st) => st.kind === 'arrow')) {
+          e.target.checked = false;
+          setStatus(`${l.id} 上有出省箭头：环线没有出省端点，先删除箭头再切环线。`, true);
+          return;
+        }
         snapshot();
         toggleLoop(l, e.target.checked);
         break;
+      }
       case 'lfRole': {
         snapshot();
         l.role = e.target.value;
@@ -2489,10 +2648,12 @@
         setStatus('冲突：' + conflict.join('；') + '。请先拆组。', true);
         return;
       }
-      // 线路所编组约束（planStationGroup）：混选拒绝；全线路所强制 junction；全普通站默认同站
+      // 编组约束（planStationGroup）：出省箭头一律拒绝；线路所混选拒绝；全线路所强制 junction
       const plan = planStationGroup(S.pending.map((sid) => stopKindOf(sid)));
       if (!plan.ok) {
-        setStatus('编组拒绝：待编组里线路所与普通车站混选（线路所只能与线路所编为接轨站组）。', true);
+        setStatus(plan.reason === 'arrow'
+          ? '编组拒绝：待编组里含出省箭头（出省箭头不是站点、不可编组）。'
+          : '编组拒绝：待编组里线路所与普通车站混选（线路所只能与线路所编为接轨站组）。', true);
         return;
       }
       snapshot();
@@ -2546,7 +2707,7 @@
 
   const MODE_HINT = {
     select: '选择：点击设站选中（左侧改名）、点击线路选中；分段在左侧「设站」面板管理（命名/切分/并段，状态挂整段、铺满全线）；左键拖动平移、滚轮缩放；拖动改站位置请切加站模式。',
-    add: '加站：点击线路附近即可加站（吸附半径 40px，自动记弧长 t）；按住已有站圈可直接拖动改位置（没按到则照常拖画布）。加站类型（车站/线路所）用左侧设站面板顶部按钮切换；可以先一路点完，再展开「批量命名」一次贴入站名（线路所跳过）。',
+    add: '加站：点击线路附近即可加站（吸附半径 40px，自动记弧长 t）；按住已有站圈可直接拖动改位置（没按到则照常拖画布）。加站类型（车站/线路所/出省箭头）用左侧设站面板顶部按钮切换——出省箭头只能落在非环线的头/尾；可以先一路点完，再展开「批量命名」一次贴入站名（线路所/出省箭头跳过）。',
     group: '编组：任意处拉框直接建组（框内 ≥2 站即建，已在其他组的跳过）；也可点选站圈攒待编组后点「编组」；中键拖动平移。',
   };
   for (const btn of document.querySelectorAll('#toolbar [data-mode]')) {
