@@ -1121,18 +1121,19 @@
     const rStop = 5.5 / scale, ringR = 8.5 / scale, hintR = 12 / scale;
 
     // 换乘组索引：同站/接轨组成员隐藏小圈（画合并圈）；出闸组成员圈描黑边；
-    // 同站组 ≥3 线改画药丸（成员圈保留照画、药丸垫底，见下方合并图形段）——恰好 2 线维持大圈
+    // 同站组 ≥3 线改画药丸——成员圈同样隐去（药丸即换乘标识，2026-11-22 用户裁定）；
+    // 恰好 2 线维持大圈
     const stationGroups = (S.groups && S.groups.stationGroups) || [];
     const grpOf = new Map();               // sid -> 组对象
     const lineOfStop = new Map();          // sid -> lid（组内线数统计用）
     for (const [lid0, line0] of S.lines) for (const st0 of line0.stops) lineOfStop.set(st0.id, lid0);
     const pillGroups = new Set();          // same-station 且 ≥3 线的组 id
-    const mergedHidden = new Set();        // 同站/接轨组成员 sid
+    const mergedHidden = new Set();        // 同站/接轨组（含药丸组）成员 sid
     for (const g of stationGroups) {
       for (const sid of g.stops) grpOf.set(sid, g);
       if (g.type === 'same-station') {
         const nLines = new Set(g.stops.map((sid) => lineOfStop.get(sid)).filter(Boolean)).size;
-        if (nLines >= 3) { pillGroups.add(g.id); continue; }   // 成员圈不隐藏，画药丸
+        if (nLines >= 3) pillGroups.add(g.id);   // ≥3 线画药丸（成员圈一并隐去，见下方合并图形段）
       }
       if (g.type === 'same-station' || g.type === 'junction') for (const sid of g.stops) mergedHidden.add(sid);
     }
@@ -1155,10 +1156,6 @@
         hit.dataset.impLayer = p.sourceLayer;
       }
     }
-
-    // 多线换乘药丸垫层（同站组 ≥3 线）：先建组占位（位于线路组之前＝画在成员站圈下层），
-    // 具体胶囊在下方合并图形段填充（与合并圈共用成员收集）
-    const pillG = el('g', { id: 'pillG' }, world);
 
     // 线路
     for (const [lid, line] of S.lines) {
@@ -1252,10 +1249,14 @@
       });
     }
 
+    // 多线换乘药丸层（同站组 ≥3 线）：位于线路之上＝与双线大圈同层级（成员圈已隐去、
+    // 药丸即换乘标识，不能被线身描边压白）；具体胶囊在下方合并图形段填充
+    const pillG = el('g', { id: 'pillG' }, world);
+
     // 同站换乘/接轨站合并圈：位置取距所有成员线路最近点（投影质心迭代收敛）。
     // 同站组 ≥3 线改画药丸（pillGroups）：白底黑边胶囊沿成员站圈位置的贪心最近邻链
-    // （planGroupPillChain，n 点连线 n-1 次），厚度＝双线大圈直径、垫在成员站圈下层
-    // （成员圈保留各自线色描边照画）；恰好 2 线维持大圈不变。
+    // （planGroupPillChain，n 点连线 n-1 次），厚度＝双线大圈直径；成员站圈已隐去
+    // （mergedHidden），药丸即换乘标识——点选/提示/待编组交互挂药丸面层；恰好 2 线维持大圈不变。
     // 接轨站（junction，支线/联络线接轨用）：尺寸与普通设站圆一致（不做换乘大圈）、
     // 不画黑边（黑边是换乘语义），描边色按成员线角色优先级 main > standalone > branch > connector
     // 取（junctionStroke；取不到成员线颜色退 '#000'）；fill 仍白底。就近提示/点选/编组交互复用既有机制。

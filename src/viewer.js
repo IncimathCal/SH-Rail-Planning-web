@@ -151,17 +151,20 @@
     }
     return { type: 'FeatureCollection', features };
   }
-  // ≥3 线同站组药丸折线（view.pills 的 chain 已是贪心最近邻链序；退化共点组画不出胶囊，
-  // 成员圈照常渲染）。胶囊本体是装饰层：不挂任何交互。
+  // ≥3 线同站组药丸折线（view.pills 的 chain 已是贪心最近邻链序；成员圈已隐去、药丸即换乘标识）。
+  // 特性携带 pin 的 key（渲染层据此查 pinByKey 开面板/hover）；坐标并入站点 bbox 供 fitAll 兜底；
+  // 单点退化（共点组）复制端点保 LineString 合法——round 端帽渲染为圆点。
   function renderPillsFC() {
     const features = [];
     for (const pill of S.view.pills || []) {
       const coords = (pill.chain || []).filter((c) => c && Number.isFinite(c[0]) && Number.isFinite(c[1]));
-      if (coords.length < 2) continue;
+      if (!coords.length) continue;
+      if (coords.length === 1) coords.push(coords[0]);
+      for (const c of coords) S.dispStopsBbox = mergeBbox(S.dispStopsBbox, [c[0], c[1], c[0], c[1]]);
       features.push({
         type: 'Feature',
         geometry: { type: 'LineString', coordinates: coords },
-        properties: { key: pill.key },
+        properties: { key: pill.key, name: (pill.pin && pill.pin.name) || '' },
       });
     }
     return { type: 'FeatureCollection', features };
@@ -318,6 +321,16 @@
     map.on('mouseenter', 'stops', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'stops', () => { map.getCanvas().style.cursor = ''; hideStopTip(); });
     map.on('mousemove', 'stops', showStopTip);
+    // 药丸层交互（成员圈已隐去，药丸本体承接点选/hover；两层同源，绑内层＋外层黑边均可命中）
+    for (const id of ['pills-inner', 'pills-outer']) {
+      map.on('click', id, (e) => {
+        const p = e.features && e.features[0] && e.features[0].properties;
+        if (p && p.key) openStopPanel(String(p.key));
+      });
+      map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
+      map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; hideStopTip(); });
+      map.on('mousemove', id, showStopTip);
+    }
     map.on('load', () => { fitAll(); scheduleLabels(); });
   }
   function fitAll() {
@@ -670,6 +683,7 @@
     S.view = V.buildStopView(S.stops);
     S.dispLabels = S.view.labels;   // WGS84 直通（仅进 map.project 定位）
     S.pinByKey = new Map(S.view.pins.map((p) => [p.key, p]));
+    for (const pill of S.view.pills || []) if (pill.pin) S.pinByKey.set(pill.pin.key, pill.pin);
     buildSearchIndex();
 
     buildMap();

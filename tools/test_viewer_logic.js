@@ -92,15 +92,16 @@ eq(st.find((s) => s.sid === 's2').groupType, 'same-station', '合法 groupType �
 // ---------- buildStopView：组归并 ----------
 console.log('buildStopView:');
 const sv = V.buildStopView(st);
-eq(sv.pins.length, 11, 'pin 数＝单站2＋g1药丸成员3＋g2/g4/g5/g6合并各1＋g3成员2');
-const g1pill = sv.pills.find((p) => p.key === 'p:g1');
-ok(g1pill && g1pill.lineIds.join(',') === 'la,lb,lc', 'g1（3 线同站组）产出药丸');
+eq(sv.pins.length, 8, 'pin 数＝单站2＋g2/g4/g5/g6合并各1＋g3成员2（g1 药丸成员圈隐去）');
+const g1pill = sv.pills.find((p) => p.key === 'g:g1');
+ok(g1pill && g1pill.lineIds.join(',') === 'la,lb,lc', 'g1（3 线同站组）产出药丸（key 即组 pin 的 key）');
 eq(g1pill.chain, [[1, 1], [1, 1], [1, 1]], 'g1 药丸链序（共点退化，顺序 [0,1,2]）');
 ok(!sv.pins.some((p) => p.key === 'g:g1'), 'g1 不再画合并大圈（药丸替代）');
-const g1m = sv.pins.filter((p) => p.key === 's2' || p.key === 's3' || p.key === 's4');
-eq(g1m.length, 3, 'g1 成员站圈照常各自出现（叠在药丸上）');
-eq(g1m.every((p) => p.kind === 'stop' && p.big === false && p.groupId === 'g1' && p.groupType === 'same-station'), true,
-  '药丸成员圈普通尺寸、带组号（线色描边走渲染层默认分支）');
+eq(sv.pins.filter((p) => p.key === 's2' || p.key === 's3' || p.key === 's4').length, 0,
+  'g1 成员站圈不再出现（药丸即换乘标识）');
+ok(g1pill.pin && g1pill.pin.kind === 'group' && g1pill.pin.big === true
+  && g1pill.pin.groupType === 'same-station' && g1pill.pin.groupId === 'g1' && g1pill.pin.name === '中央',
+  '药丸条目自带组 pin（面板/hover 单元，不进 pins 不渲染成圈）');
 const g6 = sv.pins.find((p) => p.key === 'g:g6');
 ok(g6 && g6.kind === 'group' && g6.big === true, 'g6 恰 2 线同站组维持合并大圈（现状完全不动）');
 ok(!sv.pills.some((p) => p.groupId === 'g6'), '2 线组不出药丸');
@@ -284,7 +285,7 @@ const lmI = V.normalizeLines(linesFC);
 const stI = V.stopList(stopsFC);
 const svI = V.buildStopView(stI);
 const summI = V.lineSummaries(lmI, stI);
-eq(svI.pins.length, 11, '集成视图 pin 数一致');
+eq(svI.pins.length, 8, '集成视图 pin 数一致（g1 药丸成员圈隐去）');
 eq(summI.get('la').stopCount, 7, '集成摘要站数一致');
 ok([...summI.keys()].sort().join(',') === 'la,lb,lc', '摘要覆盖全部线');
 
@@ -367,7 +368,9 @@ const svP = V.buildStopView(stP);
 const pill9 = svP.pills.find((p) => p.groupId === 'g9') || { chain: null };
 ok(svP.pills.length === 1, 'g9（3 线同站组）恰出一枚药丸');
 eq(pill9.chain, [[8, 0], [9, 0], [9, 1]], '链序＝贪心最近邻（n=3 连 2 段，非两两相连）');
-eq(svP.pins.filter((p) => p.groupId === 'g9').map((p) => p.key).sort(), ['x1', 'y1', 'z1'], '三成员圈照常叠于药丸上');
+eq(svP.pins.filter((p) => p.groupId === 'g9').length, 0, '三成员圈隐去（药丸即换乘标识）');
+ok(pill9.pin && pill9.pin.kind === 'group' && pill9.pin.name === '药丸甲' && pill9.pin.key === 'g:g9',
+  '药丸条目自带组 pin（首个非空名）');
 ok(!svP.pins.some((p) => p.kind === 'group' && p.groupId === 'g9'), '药丸组不再有合并大圈 pin');
 eq(svP.arrows.map((a) => a.key), ['arx'], 'arrow 与药丸并存互不干扰');
 ok(Math.abs(svP.arrows[0].angleDeg - 90) < 1e-9, 'arx 东向 90°（邻站＝x1）');

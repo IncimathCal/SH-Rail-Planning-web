@@ -234,12 +234,13 @@
   //   pins —— circle 图层的渲染与点击单元：
   //     无组站：kind 'stop'（白填充、线色描边）；
   //     same-station 组恰 2 线及以下：合并一个「大圈」（成员坐标均值，big=true，黑边）——现状不动；
-  //     same-station 组 ≥3 线：改画药丸（见 pills），成员站圈照常各自出现叠在其上（线色描边保留）；
+  //     same-station 组 ≥3 线：改画药丸（见 pills），成员个人小圈不再出现（药丸即换乘标识）；
   //     junction 组：合并普通尺寸圈（big=false 不放大——接轨站不出大圈；描边色由渲染层按成员线角色优先级取，不用黑边）；
   //     out-of-station 组：成员各自普通尺寸圈（出闸换乘物理上是两个站，不并点，黑边）；
-  //     除药丸组外，组成员的个人小圈一律不再单独出现。
+  //     除出闸组外，组成员的个人小圈一律不再单独出现。
   //   pills —— ≥3 线 same-station 组的胶囊折线：成员 geo 按 planGroupPillChain 链序串联
-  //（渲染层双层 line＋圆头端帽即得白底黑边胶囊；恰 2 线组不出药丸）。
+  //（渲染层双层 line＋圆头端帽即得白底黑边胶囊；恰 2 线组不出药丸）。条目自带 pin
+  //（组级信息面板/hover 单元，key 'g:<id>'，渲染层并入 pinByKey；不进 pins＝不渲染成圈）。
   //   arrows —— 出省箭头渲染单元（buildArrowViews 产物，非站）。
   //   labels —— HTML 标签与搜索条目单元：无组站各一；组（三种类型）各一（均值位置，同名取首个非空）。
   function buildStopView(stops) {
@@ -274,14 +275,19 @@
       if (grp.type === 'out-of-station') {
         for (const s of grp.members) pins.push(pinOfStop(s, 'out-of-station'));
       } else if (grp.type === 'same-station' && lineIds.length >= 3) {
-        // ≥3 线：药丸替代合并大圈；成员站圈照常叠在药丸上（白填充、线色描边）
+        // ≥3 线：药丸替代一切成员图形——成员个人小圈不再出现（药丸即换乘标识，
+        // 2026-11-22 用户裁定）；组 pin 挂在药丸条目上（不进 pins＝不被渲染成圈），
+        // 渲染层在药丸线上挂点选/hover，用同一 key 查 pinByKey
         const lat0 = grp.members.reduce((acc, s) => acc + num(s.lat), 0) / n;   // 组内共享参考纬度
         const order = planGroupPillChain(grp.members.map((s) => planarOf(s.lon, s.lat, lat0)));
         pills.push({
-          key: 'p:' + grp.groupId, groupId: grp.groupId, lineIds,
+          key: 'g:' + grp.groupId, groupId: grp.groupId, lineIds,
           chain: order.map((i) => [grp.members[i].lon, grp.members[i].lat]),
+          pin: {
+            kind: 'group', key: 'g:' + grp.groupId, groupId: grp.groupId, name, lineNames,
+            lineIds, groupType: grp.type, big: true, lon, lat,
+          },
         });
-        for (const s of grp.members) pins.push(pinOfStop(s, grp.type));
       } else {
         pins.push({
           kind: 'group', key: 'g:' + grp.groupId, groupId: grp.groupId, name, lineNames,
