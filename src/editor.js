@@ -320,10 +320,7 @@
     manifest: null,          // fmt/manifest@1 或 null
     imports: [],             // {source, imported, paths:[{sourceLayer,color,path}]}
     stationPresets: [],      // fmt/stations-import@1 的 items（站圆预置，只读参考数据，不进撤销/暂存）
-    calibTps: null,          // fmt/calibration@2（model:"tps"；svg→经纬度，边缘标定 v2）
-    calibDeg3: null,         // fmt/calibration@1（旧全局 deg3；data/calibration-deg3-backup.json）
-    calibChoice: 'tps',      // 当前标定方案 'tps' | 'deg3'（偏好存 localStorage）
-    get calib() { return this.calibChoice === 'deg3' ? this.calibDeg3 : this.calibTps; },
+    calib: null,             // fmt/calibration@2（model:"tps"，手动标定 TPS v2；svg→经纬度）。渲染恒用现行 calibration.json
     basemapOn: false,        // OSM 底图开关（偏好存 localStorage）
     arcs: new Map(),         // lid -> SHGeom.ArcPath
     view: null,              // {x,y,w,h}，null = 待适配内容
@@ -478,23 +475,14 @@
     return { schema: 'fmt/import@1', source: fileName, imported: today(), paths };
   }
 
-  /** 标定文件归槽：@2/model:"tps" → calibTps，@1(deg3) → calibDeg3。
-   *  当前所选方案仍缺文件时自动切到已有方案（首次启动/备份缺失场景）。 */
+  /** 标定文件归槽：仅认 fmt/calibration@2（model:"tps"，手动标定 TPS v2）→ S.calib。
+   *  渲染恒用现行 data/calibration.json；旧 deg3（@1）切换通道已移除——
+   *  data/calibration-deg3-backup.json 与 calibration-autotps-backup.json 文件保留，回滚走 git 或文件替换。 */
   function takeCalibration(obj) {
-    if (obj && obj.model === 'tps' && obj.schema === 'fmt/calibration@2') {
-      S.calibTps = obj;
-    } else if (obj && obj.schema === 'fmt/calibration@1') {
-      S.calibDeg3 = obj;
-    } else {
-      return false;
-    }
-    if (!S.calib) S.calibChoice = S.calibTps ? 'tps' : 'deg3';
+    if (!(obj && obj.model === 'tps' && obj.schema === 'fmt/calibration@2')) return false;
+    S.calib = obj;
     basemapEpoch++;
-    if (typeof refreshCalibBtn === 'function') refreshCalibBtn();
     return true;
-  }
-  function calibLabel(obj) {
-    return obj && obj.model === 'tps' ? 'TPS 标定 v2' : 'deg3 旧全局三阶';
   }
 
   function loadDataObject(obj, fileName) {
@@ -513,11 +501,16 @@
     }
     if (obj && obj.schema === 'fmt/groups@1') { S.groups = obj; return; }
     if (obj && obj.schema === 'fmt/manifest@1') { S.manifest = obj; return; }
-    if (obj && (obj.schema === 'fmt/calibration@1' || obj.schema === 'fmt/calibration@2')) {
+    if (obj && obj.schema === 'fmt/calibration@1') {
+      setStatus('旧 deg3 标定已停用：渲染恒用手动标定 TPS v2（data/calibration.json）。'
+        + '备份文件仍保留在 data/，回滚请走 git 或直接替换 calibration.json。', true);
+      return;
+    }
+    if (obj && obj.schema === 'fmt/calibration@2') {
       takeCalibration(obj);
       $('btnBasemap').classList.toggle('primary', S.basemapOn);
       renderWorld();
-      setStatus('已载入标定参数（' + calibLabel(obj) + '），底图可用。');
+      setStatus('已载入标定参数（手动标定 TPS v2），底图可用。');
       return;
     }
     throw new Error(fileName + '：无法识别的数据文件（schema 不匹配）');
@@ -533,13 +526,9 @@
     if (groups) S.groups = groups;
     const manifest = await get('data/manifest.json');
     if (manifest) S.manifest = manifest;
-    // 标定两方案都拉取（新 TPS 主用 + 旧 deg3 备份，供「标定方案」切换/回退）
+    // 标定：恒用现行 data/calibration.json（手动标定 TPS v2；旧 deg3 备份文件保留但不再载入，回滚走 git）
     const calib = await get('data/calibration.json');
-    if (calib && (calib.schema === 'fmt/calibration@1' || calib.schema === 'fmt/calibration@2')) {
-      takeCalibration(calib);
-    }
-    const calibOld = await get('data/calibration-deg3-backup.json');
-    if (calibOld && calibOld.schema === 'fmt/calibration@1') takeCalibration(calibOld);
+    if (calib) takeCalibration(calib);
     try {
       const r = await fetch('data/lines/', { cache: 'no-cache' });
       if (r.ok) {
@@ -975,10 +964,12 @@
       <div class="fld" id="lfConnRow" style="display:${l.role === 'connector' ? 'flex' : 'none'}">
         <label>联络</label><input type="text" id="lfConnects" placeholder="l0001,l0002"
           value="${esc((l.connects || []).join(','))}"></div>
-      <div class="fld" id="lfStatusRow" style="display:${needStatus ? 'flex' : 'none'}">
+      ${needStatus ? `
+      <div class="fld" id="lfStatusRow">
         <label>状态</label><select id="lfStatus" style="flex:1">
         ${SEG_ORDER.map((s2) => `<option value="${s2}" ${l.status === s2 ? 'selected' : ''}>${SEG_LABEL[s2]}</option>`).join('')}
-        </select><span style="color:var(--dim);font-size:11px">（站数&lt;2 时必填）</span></div>
+        </select><span style="color:var(--dim);font-size:11px">（站数&lt;2 时必填）</span></div>` : `
+      <div class="fld" id="lfStatusRow"><label>状态</label><span style="flex:1;color:var(--dim);font-size:11px">≥2 站后整线状态停用——状态按分段设置：点击画布分段循环 既有→已批复→远期</span></div>`}
       <div class="fld"><label>源图层</label><input type="text" value="${esc((l.meta && l.meta.sourceLayer) || '')}" disabled></div>
       ${(() => {
         const it = matchPresetForLine(l);
@@ -1721,38 +1712,9 @@
     $('btnBasemap').classList.toggle('primary', S.basemapOn);
     renderWorld();
     setStatus(S.basemapOn
-      ? `底图已开启：© OpenStreetMap contributors（${calibLabel(S.calib)}；对位精度≈标定残差`
-        + (S.calib && S.calib.model === 'tps' ? '：手动标定 38 点，LOO 全图 108 m）' : ' 80 m，仅中4线控区）') + '。'
+      ? '底图已开启：© OpenStreetMap contributors（手动标定 TPS v2；对位精度≈标定残差：38 控点，LOO 全图 108 m）。'
       : '底图已关闭。');
   });
-
-  // 标定方案切换（TPS v2 ↔ 旧 deg3）：可视化 A/B 与回退通道；偏好记 localStorage
-  S.calibChoice = localStorage.getItem('shrail.calib') === 'deg3' ? 'deg3' : 'tps';
-  function refreshCalibBtn() {
-    $('btnCalib').textContent = S.calibChoice === 'deg3' ? '标定 deg3' : '标定 TPS';
-    $('btnCalib').classList.toggle('primary', S.calibChoice === 'tps');
-    $('btnCalib').disabled = !S.calibTps && !S.calibDeg3;   // 两方案都缺才禁用
-  }
-  $('btnCalib').addEventListener('click', () => {
-    const other = S.calibChoice === 'tps' ? 'deg3' : 'tps';
-    const target = other === 'deg3' ? S.calibDeg3 : S.calibTps;
-    if (!target) {
-      setStatus(`标定方案「${other === 'tps' ? 'TPS' : 'deg3'}」的文件未载入`
-        + (other === 'deg3' ? '（data/calibration-deg3-backup.json 缺失？用「数据文件」载入或 git 历史找回）'
-          : '（data/calibration.json 不是 fmt/calibration@2？运行 python -X utf8 tools/calib_manual_fit.py 重生成）'), true);
-      return;
-    }
-    S.calibChoice = other;
-    localStorage.setItem('shrail.calib', other);
-    basemapEpoch++;
-    basemapTiles.clear();
-    if (basemapG) basemapG.textContent = '';   // 旧方案瓦片全部作废（epoch 已变）
-    refreshCalibBtn();
-    renderWorld();
-    setStatus(`标定方案已切换为「${calibLabel(target)}」` + (S.basemapOn ? '，底图已按新方案重摆。' : '。')
-      + (other === 'deg3' ? '（回退通道：旧模型仅中4线控区准，郊区漂移 km 级）' : '（边缘标定 v2：郊区大幅改善，中4线 33~105 m）'));
-  });
-  refreshCalibBtn();
 
   const MODE_HINT = {
     select: '选择：点击设站选中（左侧改名）、拖动设站沿线移动、点击线段循环切换状态；左键拖动平移、滚轮缩放。',
@@ -1820,6 +1782,16 @@
     renderAll();
   });
 
+  // ---------- 重置本地暂存 ----------
+  $('btnReset').addEventListener('click', () => {
+    if (!confirm('重置：将清空本地暂存（线路/组/导入记录）与线/组编号水位，测试数据不保留，页面随即刷新。\n确定继续？')) return;
+    clearTimeout(lsTimer);                    // 防清空后 400ms 防抖又把暂存写回
+    localStorage.removeItem(LS_KEY);           // 主暂存 shrail.editor.v1
+    localStorage.removeItem('shrail.counters'); // 线/组编号水位
+    localStorage.removeItem('shrail.calib');   // 旧标定偏好键（切换功能已移除，兼容清理无害）
+    location.reload();
+  });
+
   // ---------- 保存（下载） ----------
   function download(name, obj) {
     const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json;charset=utf-8' });
@@ -1880,7 +1852,6 @@
     await bootFetchData();
     syncCountersWithLoaded();
     $('btnBasemap').classList.toggle('primary', S.basemapOn && !!S.calib);
-    refreshCalibBtn();
     offerRestore();
     if (!S.view) fitView();
     setStatus(MODE_HINT.select);

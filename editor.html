@@ -150,7 +150,6 @@
   <div class="tb-group">
     <button id="btnUndo" title="Ctrl+Z">撤销</button>
     <button id="btnBasemap" title="下垫 OpenStreetMap 瓦片底图（需 data/calibration*.json 与网络；仅本地对位参考）">底图 OSM</button>
-    <button id="btnCalib" title="切换标定方案：TPS（边缘标定 v2，data/calibration.json）↔ deg3（旧全局三阶，data/calibration-deg3-backup.json）；影响底图摆位与地理派生，偏好记入浏览器">标定 TPS</button>
   </div>
   <div class="tb-group">
     <div class="seg-legend">
@@ -164,6 +163,9 @@
     <button id="btnSaveAll">保存全部线路</button>
     <button id="btnSaveGroups">保存 groups</button>
     <button id="btnSaveManifest">保存 manifest</button>
+  </div>
+  <div class="tb-group">
+    <button id="btnReset" class="mini danger" title="清空本地暂存与线/组编号水位（测试数据不保留）并刷新页面">重置</button>
   </div>
 </header>
 
