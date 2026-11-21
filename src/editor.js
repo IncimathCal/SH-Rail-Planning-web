@@ -464,7 +464,7 @@
         lsFailed = false;
       } catch (e) {
         lsFailed = true;
-        setStatus('自动暂存失败（' + ((e && e.name) || '存储异常') + '）：存储不可用或已满——请立即「保存全部线路」下载备份！', true);
+        setStatus('自动暂存失败（' + ((e && e.name) || '存储异常') + '）：存储不可用或已满——请立即「保存工作区」备份！', true);
       }
     }, 400);
   }
@@ -2173,38 +2173,153 @@
     if (e.key === 'Escape') { S.selStop = null; S.pending = []; renderAll(); }
   });
 
-  // ---------- 载入按钮 ----------
-  $('btnLoadImport').onclick = () => $('fileImport').click();
-  $('btnLoadSvg').onclick = () => $('fileSvg').click();
-  $('btnLoadData').onclick = () => $('fileData').click();
+  // ---------- 工作区（载入/新建/保存） ----------
+  // 工作区文件夹与 data/ 同构：lines/*.json＋groups.json＋manifest.json，复制进 data/ 即为提交。
+  // 打开走 File System Access（Chrome/Edge，可直写；可直接打开 data/ 本体，保存即落盘）；
+  // 不支持该 API 的浏览器降级：载入走 webkitdirectory 目录读（只读），保存走多文件下载。
+  let wsHandle = null;   // 当前工作区目录句柄（null＝未打开/降级模式）
+
+  const wsMenu = $('wsMenu');
+  $('btnWorkspace').onclick = () => wsMenu.showModal();
+  $('wsCancel').onclick = () => wsMenu.close();
+  $('wsOpen').onclick = async () => { wsMenu.close(); await openWorkspace(); };
+  $('wsNew').onclick = () => { wsMenu.close(); resetAll(); };
+
+  /** 应用一份工作区数据集（整体替换语义；一次快照，撤销一次回退整批） */
+  function applyWorkspace(lineFiles, groups, manifest, calib, label, writable) {
+    if (!lineFiles.size && !groups && !manifest) {
+      setStatus(`${label}：未发现工作区文件（lines/*.json、groups.json、manifest.json 均无）。若要清空请用「新建空工作区」。`, true);
+      return;
+    }
+    const cur = S.lines.size;
+    if (!confirm(`载入工作区：将以 ${lineFiles.size} 条线路替换当前 ${cur} 条（编组一并替换，Ctrl+Z 可撤销）。继续？`)) return;
+    snapshot();
+    S.lines = new Map(lineFiles);
+    // 整体替换语义要彻底：工作区缺 groups.json/manifest.json 时清空而非沿用当前值，
+    // 否则旧组的 stationGroups 会悬挂引用新工作区不存在的线路/站 id
+    S.groups = groups || { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
+    S.manifest = manifest || null;
+    if (calib) takeCalibration(calib);
+    S.arcs = new Map();
+    if (!S.lines.has(S.activeLine)) S.activeLine = lineFiles.size ? [...lineFiles.keys()][0] : null;
+    S.selStop = null; S.pending = [];
+    syncCountersWithLoaded();
+    renderAll();
+    $('btnBasemap').classList.toggle('primary', S.basemapOn && !!S.calib);
+    setStatus(`已载入工作区（${label}）：线路 ${lineFiles.size} 条`
+      + (groups ? '＋groups' : '') + (manifest ? '＋manifest' : '') + (calib ? '＋标定' : '')
+      + (writable ? '。保存工作区将直写该文件夹。' : '。本浏览器不支持目录直写——保存工作区将走多文件下载。'));
+  }
+
+  async function readHandleJson(fh) {
+    const f = await fh.getFile();
+    return JSON.parse(await f.text());
+  }
+
+  async function openWorkspace() {
+    if (!window.showDirectoryPicker) { $('fileWsDir').click(); return; }   // 降级：目录读
+    let dir;
+    try { dir = await window.showDirectoryPicker({ mode: 'readwrite' }); }
+    catch (e) { return; }   // 用户取消
+    const lineFiles = new Map(); let groups = null, manifest = null, calib = null;
+    try {
+      for await (const [name, handle] of dir.entries()) {
+        if (handle.kind === 'directory') {
+          if (name === 'lines') {
+            for await (const [ln, lfh] of handle.entries()) {
+              if (lfh.kind !== 'file' || !/^l\d{4}\.json$/.test(ln)) continue;
+              try {
+                const obj = await readHandleJson(lfh);
+                if (obj.schema === 'fmt/line@1' && obj.id) lineFiles.set(obj.id, obj);
+              } catch (e) { setStatus(`工作区 lines/${ln} 解析失败，已跳过：${e.message}`, true); }
+            }
+          }
+          continue;
+        }
+        try {
+          if (name === 'manifest.json') { const o = await readHandleJson(handle); if (o.schema === 'fmt/manifest@1') manifest = o; }
+          else if (name === 'groups.json') { const o = await readHandleJson(handle); if (o.schema === 'fmt/groups@1') groups = o; }
+          else if (name === 'calibration.json') { const o = await readHandleJson(handle); if (o.schema === 'fmt/calibration@2') calib = o; }
+        } catch (e) { setStatus(`工作区 ${name} 解析失败，已跳过：${e.message}`, true); }
+      }
+    } catch (e) { setStatus(`读取工作区失败：${e.message}`, true); return; }
+    if (lineFiles.size || groups || manifest) wsHandle = dir;
+    applyWorkspace(lineFiles, groups, manifest, calib, dir.name, true);
+  }
+
+  // 降级：webkitdirectory 整目录读（只读——保存走下载）。按文件名归槽，非工作区文件一概忽略
+  $('fileWsDir').addEventListener('change', async (e) => {
+    const lineFiles = new Map(); let groups = null, manifest = null, calib = null;
+    for (const f of [...e.target.files]) {
+      const base = (f.webkitRelativePath || f.name).replace(/\\/g, '/').split('/').pop();
+      try {
+        if (/^l\d{4}\.json$/.test(base)) {
+          const obj = JSON.parse(await f.text());
+          if (obj.schema === 'fmt/line@1' && obj.id) lineFiles.set(obj.id, obj);
+        } else if (base === 'manifest.json') { const o = JSON.parse(await f.text()); if (o.schema === 'fmt/manifest@1') manifest = o; }
+        else if (base === 'groups.json') { const o = JSON.parse(await f.text()); if (o.schema === 'fmt/groups@1') groups = o; }
+        else if (base === 'calibration.json') { const o = JSON.parse(await f.text()); if (o.schema === 'fmt/calibration@2') calib = o; }
+      } catch (err) { /* 非 JSON/坏文件跳过 */ }
+    }
+    e.target.value = '';
+    applyWorkspace(lineFiles, groups, manifest, calib, '目录读入', false);
+  });
+
+  /** 新建空工作区＝清空暂存与编号水位后刷新（原「重置」） */
+  function resetAll() {
+    if (!confirm('新建空工作区：将清空本地暂存（线路/组/导入记录）与线/组编号水位，测试数据不保留，页面随即刷新。\n确定继续？')) return;
+    clearTimeout(lsTimer);                    // 防清空后 400ms 防抖又把暂存写回
+    localStorage.removeItem(LS_KEY);           // 主暂存 shrail.editor.v1
+    localStorage.removeItem('shrail.counters'); // 线/组编号水位
+    localStorage.removeItem('shrail.calib');   // 旧标定偏好键（切换功能已移除，兼容清理无害）
+    location.reload();
+  }
+
+  // ---------- 导入线路（.ai/.json/.svg 三合一） ----------
+  $('btnImportLines').onclick = () => $('fileImport').click();
+
+  /** .ai 经本地 serve.py 解析为 fmt/import@1（file:// 或旧 http.server 无此 API 时给出话术） */
+  async function importAiFile(f) {
+    const mb = f.size && f.size > 1024 * 1024 ? `（约 ${(f.size / 1024 ** 3).toFixed(1)} GB，本机上传 1~2 分钟＋解析，请勿关闭页面）` : '';
+    setStatus(`正在上传并解析 ${f.name}${mb}…`);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 10 * 60 * 1000);
+    try {
+      // body 直接给 File：浏览器流式上传（真图 1.86 GB，arrayBuffer() 整包进内存不可取），
+      // Blob 长度已知故自动带 Content-Length（serve.py 依赖它，不支持 chunked）
+      const res = await fetch('/api/ai-parse', {
+        method: 'POST',
+        headers: { 'X-Filename': encodeURIComponent(f.name) },
+        body: f,
+        signal: ctrl.signal,
+      });
+      const obj = await res.json().catch(() => null);
+      if (!res.ok) throw new Error((obj && obj.error) || `服务返回 ${res.status}`);
+      if (!obj || obj.schema !== 'fmt/import@1') throw new Error('服务返回的不是 fmt/import@1');
+      addImportRecord(obj);
+      setStatus(`已从 ${f.name} 导入 ${obj.paths.length} 条 path（导入源已更新，同源旧记录被替换）。`);
+    } catch (err) {
+      throw new Error((ctrl.signal.aborted ? '解析超时（10 分钟）' : err.message)
+        + '。.ai 解析需本地服务：请用 python tools/serve.py 起服务，经 http://localhost:8000/editor.html 使用'
+        + '（file:// 打开或 python -m http.server 均无此 API）。');
+    } finally { clearTimeout(timer); }
+  }
+
   $('fileImport').addEventListener('change', async (e) => {
     for (const f of e.target.files) {
       try {
-        const obj = await readJsonFile(f);
-        if (obj.schema === 'fmt/import@1') addImportRecord(obj);
-        else if (obj.schema === 'fmt/stations-import@1') {
-          const n = addStationPreset(obj, f.name);
-          setStatus(`已载入站圆预置 ${n} 条（${f.name}）。`);
+        if (/\.ai$/i.test(f.name)) await importAiFile(f);
+        else if (/\.svg$/i.test(f.name)) addImportRecord(parseSvgText(await f.text(), f.name));
+        else if (/\.json$/i.test(f.name)) {
+          const obj = await readJsonFile(f);
+          if (obj.schema === 'fmt/import@1') addImportRecord(obj);
+          else if (obj.schema === 'fmt/stations-import@1') {
+            const n = addStationPreset(obj, f.name);
+            setStatus(`已载入站圆预置 ${n} 条（${f.name}）。`);
+          }
+          else loadDataObject(obj, f.name);   // 线路/groups/manifest/标定兜底
         }
-        else throw new Error('不是 fmt/import@1 或 fmt/stations-import@1');
-      } catch (err) { setStatus(`${f.name}：${err.message}`, true); }
-    }
-    e.target.value = '';
-    renderAll();
-  });
-  $('fileSvg').addEventListener('change', async (e) => {
-    for (const f of e.target.files) {
-      try {
-        addImportRecord(parseSvgText(await f.text(), f.name));
-      } catch (err) { setStatus(`${f.name}：${err.message}`, true); }
-    }
-    e.target.value = '';
-    renderAll();
-  });
-  $('fileData').addEventListener('change', async (e) => {
-    for (const f of e.target.files) {
-      try {
-        loadDataObject(await readJsonFile(f), f.name);
+        else setStatus(`${f.name}：不支持的文件类型（支持 .ai/.json/.svg）。`, true);
       } catch (err) { setStatus(`${f.name}：${err.message}`, true); }
     }
     e.target.value = '';
@@ -2212,17 +2327,7 @@
     renderAll();
   });
 
-  // ---------- 重置本地暂存 ----------
-  $('btnReset').addEventListener('click', () => {
-    if (!confirm('重置：将清空本地暂存（线路/组/导入记录）与线/组编号水位，测试数据不保留，页面随即刷新。\n确定继续？')) return;
-    clearTimeout(lsTimer);                    // 防清空后 400ms 防抖又把暂存写回
-    localStorage.removeItem(LS_KEY);           // 主暂存 shrail.editor.v1
-    localStorage.removeItem('shrail.counters'); // 线/组编号水位
-    localStorage.removeItem('shrail.calib');   // 旧标定偏好键（切换功能已移除，兼容清理无害）
-    location.reload();
-  });
-
-  // ---------- 保存（下载） ----------
+  // ---------- 保存（工作区直写＋降级下载） ----------
   function download(name, obj) {
     const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json;charset=utf-8' });
     const a = document.createElement('a');
@@ -2232,21 +2337,54 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
 
-  function saveLine(l) {
-    const issues = lineIssues(l);
-    if (issues.length) {
-      setStatus(`保存失败 ${l.id}：${issues.join('；')}`, true);
-      return false;
-    }
-    download(`${l.id}.json`, l);
-    return true;
+  /** 工作区直写：线路＋groups＋manifest 成套写入目录（多余线路文件删除并列出）。
+   *  只碰 lines/ 子目录与 groups.json/manifest.json 三个自家产物——calibration 等其他文件一概不动。 */
+  async function writeJson(dirHandle, name, obj) {
+    const fh = await dirHandle.getFileHandle(name, { create: true });
+    const w = await fh.createWritable();
+    await w.write(JSON.stringify(obj, null, 2));
+    await w.close();
   }
 
-  $('btnSaveLine').onclick = () => {
-    const l = S.lines.get(S.activeLine);
-    if (!l) { setStatus('没有当前线路。', true); return; }
-    if (saveLine(l)) setStatus(`已下载 ${l.id}.json → 放入 data/lines/。`);
+  async function saveWorkspaceToHandle(dir) {
+    setStatus(`正在保存工作区（${dir.name}）…`);
+    const lines = [...S.lines.values()];
+    const linesDir = await dir.getDirectoryHandle('lines', { create: true });
+    let ok = 0, fail = 0;
+    for (const l of lines) {
+      const issues = lineIssues(l);
+      if (issues.length) { fail++; setStatus(`保存失败 ${l.id}：${issues.join('；')}`, true); continue; }
+      try { await writeJson(linesDir, `${l.id}.json`, l); ok++; }
+      catch (e) { fail++; setStatus(`写入失败 ${l.id}.json：${e.message}`, true); }
+    }
+    if (!S.groups) S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
+    await writeJson(dir, 'groups.json', S.groups);
+    await writeJson(dir, 'manifest.json', buildManifest());
+    // 同步语义：lines/ 里已不在当前数据的线路文件删除（只认 lNNNN.json 命名，其余文件不动）
+    const ids = new Set(lines.map((l) => l.id));
+    const removed = [];
+    for await (const [name, handle] of linesDir.entries()) {
+      const m = /^(l\d{4})\.json$/.exec(name);
+      if (m && handle.kind === 'file' && !ids.has(m[1])) { await linesDir.removeEntry(name); removed.push(name); }
+    }
+    setStatus(`工作区已保存到 ${dir.name}/：线路 ${ok} 条＋groups.json＋manifest.json`
+      + (fail ? `；${fail} 条未过检查或写入失败（见上）` : '')
+      + (removed.length ? `；已删除多余线路文件 ${removed.join('、')}` : '。'));
+  }
+
+  $('btnSaveWorkspace').onclick = async () => {
+    if (!wsHandle && window.showDirectoryPicker) {
+      // 未打开工作区：先选目录（另存为语义）
+      try { wsHandle = await window.showDirectoryPicker({ mode: 'readwrite' }); }
+      catch (e) { return; }   // 用户取消
+    }
+    if (wsHandle) {
+      try { await saveWorkspaceToHandle(wsHandle); return; }
+      catch (e) { setStatus(`直写工作区失败（${e.message}）——已转多文件下载。`, true); }
+    }
+    saveWorkspaceDownload();
   };
+
   function buildManifest() {
     const active = [...S.lines.values()].filter((l) => !l.meta.archived);
     const archivedIds = new Set(S.manifest ? S.manifest.archived || [] : []);
@@ -2262,9 +2400,9 @@
     return S.manifest;
   }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  // 保存全部＝线路＋groups＋manifest 一并下载（水位恢复依赖 manifest，务必成套）；
+  // 降级保存＝线路＋groups＋manifest 一并下载（目录直写不可用时；水位恢复依赖 manifest，务必成套）；
   // 逐个隔 150ms 发出降低浏览器多下载拦截概率，结束对账计数
-  $('btnSaveAll').onclick = async () => {
+  async function saveWorkspaceDownload() {
     const lines = [...S.lines.values()];
     const total = lines.length + 2;
     let ok = 0, fail = 0, n = 0;
@@ -2272,27 +2410,19 @@
       const issues = lineIssues(l);
       if (issues.length) { fail++; setStatus(`保存失败 ${l.id}：${issues.join('；')}`, true); continue; }
       download(`${l.id}.json`, l); ok++; n++;
-      setStatus(`保存全部 ${n}/${total}：已请求 ${l.id}.json`);
+      setStatus(`保存工作区 ${n}/${total}：已请求 ${l.id}.json`);
       await sleep(150);
     }
     if (!S.groups) S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
     download('groups.json', S.groups); n++;
-    setStatus(`保存全部 ${n}/${total}：已请求 groups.json`);
+    setStatus(`保存工作区 ${n}/${total}：已请求 groups.json`);
     await sleep(150);
     download('manifest.json', buildManifest()); n++;
-    setStatus(`保存全部完成：已请求 ${n}/${total} 个文件（线路 ${ok} 个`
-      + (fail ? `＋未过检查 ${fail} 个（见上）` : '') + '＋groups＋manifest）→ 放入 data/ 对应位置。'
-      + '若浏览器询问「允许下载多个文件」请允许；中途取消可再点本按钮补齐。', !!fail);
-  };
-  $('btnSaveGroups').onclick = () => {
-    if (!S.groups) S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
-    download('groups.json', S.groups);
-    setStatus('已下载 groups.json → 放入 data/。');
-  };
-  $('btnSaveManifest').onclick = () => {
-    download('manifest.json', buildManifest());
-    setStatus('已下载 manifest.json → 放入 data/（工具生成+人工确认）。');
-  };
+    setStatus(`保存工作区完成（降级下载模式）：已请求 ${n}/${total} 个文件（线路 ${ok} 个`
+      + (fail ? `＋未过检查 ${fail} 个（见上）` : '') + '＋groups＋manifest）→ 放入工作区/data/ 对应位置。'
+      + '若浏览器询问「允许下载多个文件」请允许；中途取消可再点本按钮补齐。'
+      + '（Chrome/Edge 可经「载入工作区」打开文件夹获得直写，免手动归档。）', !!fail);
+  }
 
   // ---------- 启动 ----------
   window.addEventListener('resize', () => { applyView(); renderWorld(); });

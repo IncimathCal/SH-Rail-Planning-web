@@ -58,6 +58,10 @@
     border: 1px solid var(--warn); border-radius: 4px; font-size: 12px; }
   #banner.show { display: block; }
 
+  dialog { background: var(--panel); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 14px; }
+  dialog::backdrop { background: rgba(0, 0, 0, .5); }
+
   section { margin-bottom: 10px; border: 1px solid var(--border); border-radius: 6px;
     background: var(--panel2); }
   section > h3 { margin: 0; padding: 6px 10px; font-size: 13px; cursor: pointer;
@@ -140,13 +144,12 @@
 <body>
 <header id="toolbar">
   <div class="tb-group">
-    <label>载入</label>
-    <button id="btnLoadImport" title="载入 svg_parse --import 产出的导入记录">导入记录</button>
-    <button id="btnLoadSvg" title="直接解析 SVG 源图（与导入记录等效）">SVG 源图</button>
-    <button id="btnLoadData" title="载入 data/ 下的线路/groups/manifest JSON">数据文件</button>
-    <input type="file" id="fileImport" accept=".json" multiple hidden>
-    <input type="file" id="fileSvg" accept=".svg" multiple hidden>
-    <input type="file" id="fileData" accept=".json" multiple hidden>
+    <button id="btnWorkspace" class="primary"
+      title="打开工作区文件夹（lines/*.json＋groups.json＋manifest.json 一次载入，整体替换当前数据、可撤销；可直接打开 data/ 本体）或新建空工作区">载入／新建工作区</button>
+    <button id="btnImportLines"
+      title="导入 .ai（经本地 serve.py 解析为线路 path）/.json（导入记录、站圆预置或数据文件）/.svg（源图直接解析）">导入线路</button>
+    <input type="file" id="fileImport" accept=".ai,.json,.svg" multiple hidden>
+    <input type="file" id="fileWsDir" webkitdirectory hidden>
   </div>
   <div class="tb-group">
     <label>模式</label>
@@ -166,13 +169,8 @@
     </div>
   </div>
   <div class="tb-group" style="margin-left:auto">
-    <button id="btnSaveLine" class="primary">保存当前线</button>
-    <button id="btnSaveAll">保存全部线路</button>
-    <button id="btnSaveGroups">保存 groups</button>
-    <button id="btnSaveManifest">保存 manifest</button>
-  </div>
-  <div class="tb-group">
-    <button id="btnReset" class="mini danger" title="清空本地暂存与线/组编号水位（测试数据不保留）并刷新页面">重置</button>
+    <button id="btnSaveWorkspace" class="primary"
+      title="把 lines/*.json＋groups.json＋manifest.json 成套写入工作区文件夹（已打开则直写；未打开先选目录；均不可用则降级多文件下载）；工作区里多余的线路文件会删除并列出">保存工作区</button>
   </div>
 </header>
 
@@ -185,7 +183,7 @@
 
   <section id="secImport">
     <h3>导入源（未建线的 path）</h3>
-    <div class="body" id="impList"><div class="imp-src">用工具导入或工具栏载入。选中一条 path 后可建线。</div></div>
+    <div class="body" id="impList"><div class="imp-src">点「导入线路」选 .ai（经 serve.py 解析）/.json/.svg，或经 http 服务自动拉取 import/。选中一条 path 后可建线。</div></div>
   </section>
 
   <section id="secLines">
@@ -244,6 +242,18 @@
 </main>
 
 <footer id="status">就绪。</footer>
+
+<dialog id="wsMenu">
+  <b style="display:block;margin-bottom:6px">工作区</b>
+  <p style="color:var(--dim);margin:0 0 10px;font-size:12px;max-width:330px">
+    工作区文件夹与 data/ 同构（lines/*.json＋groups.json＋manifest.json），复制进 data/ 即为提交；
+    也可直接打开 data/ 本体，保存即落盘（校验门禁照旧把守）。载入＝整体替换当前线路与编组（Ctrl+Z 可撤销）。</p>
+  <div style="display:flex;flex-direction:column;gap:6px">
+    <button id="wsOpen" class="primary">打开工作区文件夹…</button>
+    <button id="wsNew" class="danger">新建空工作区（清空暂存与编号水位，页面刷新）</button>
+    <button id="wsCancel">取消</button>
+  </div>
+</dialog>
 
 <script src="src/geom.js"></script>
 <script src="src/editor.js"></script>
