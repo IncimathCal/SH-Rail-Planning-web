@@ -668,6 +668,14 @@
     S.view = { x: cx - w / 2, y: cy - (w * ratio) / 2, w: w, h: w * ratio };
     applyView(); renderWorld(); scheduleBasemap();
   }
+  /** 双击设站行：仅把该站居中，不改变缩放 */
+  function centerOn(x, y) {
+    if (!S.view) return;
+    const ratio = svg.clientHeight / Math.max(svg.clientWidth, 1);
+    S.view.x = x - S.view.w / 2;
+    S.view.y = y - (S.view.w * ratio) / 2;
+    applyView(); scheduleBasemap();
+  }
   function toWorld(evt) {
     const pt = new DOMPoint(evt.clientX, evt.clientY);
     const m = svg.getScreenCTM();
@@ -1411,6 +1419,14 @@
     const r = [...$('lineList').querySelectorAll('.line-row')].find((x) => x.dataset.lid === lid);
     if (r) r.scrollIntoView({ block: 'nearest' });
   }
+  /** 画布双击车站后：左栏定位滚动可见 */
+  function locateStopInList(sid, lid) {
+    const r = [...$('stopList').querySelectorAll('.stop-row')].find((x) => x.dataset.sid === sid);
+    if (r) r.scrollIntoView({ block: 'nearest' });
+    const lr = [...$('lineList').querySelectorAll('.line-row')].find((x) => x.dataset.lid === lid);
+    if (lr) lr.scrollIntoView({ block: 'nearest' });
+    setStatus(`已在左栏定位 ${sid}。`);
+  }
 
   function startPan(e) {
     panning = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY,
@@ -1438,7 +1454,8 @@
     if (e.button !== 0) return;
     downHit = e.target;   // pointerup 命中判定用（capture 下 e.target 失真）
     const stopEl = e.target.closest('.stop-c');
-    if (stopEl && (S.mode === 'select' || S.mode === 'add')) {
+    if (stopEl && S.mode === 'add') {
+      // 加站模式：按住站圈拖动＝改位（2026-11-21 用户裁定：仅加站模式可拖动）
       const sid = stopEl.dataset.sid, lid = stopEl.dataset.lid;
       S.activeLine = lid;
       S.selStop = sid;
@@ -1446,14 +1463,16 @@
         pre: JSON.stringify({ lines: [...S.lines.values()], groups: S.groups, imports: S.imports }) };
       svg.setPointerCapture(e.pointerId);
       renderStopList(); renderLineList(); renderLineForm();
-      regCanvasDbl(`stop:${sid}`, () => {   // 双击站圈：左栏定位滚动可见
-        const r = [...$('stopList').querySelectorAll('.stop-row')].find((x) => x.dataset.sid === sid);
-        if (r) r.scrollIntoView({ block: 'nearest' });
-        const lr = [...$('lineList').querySelectorAll('.line-row')].find((x) => x.dataset.lid === lid);
-        if (lr) lr.scrollIntoView({ block: 'nearest' });
-        setStatus(`已在左栏定位 ${sid}。`);
-      });
+      regCanvasDbl(`stop:${sid}`, () => locateStopInList(sid, lid));   // 双击站圈：左栏定位
       return;
+    }
+    if (stopEl && S.mode === 'select') {
+      // 选择模式点站：仅选中并切换当前线（不拖动）；随后的拖动落到下方平移
+      const sid = stopEl.dataset.sid, lid = stopEl.dataset.lid;
+      S.activeLine = lid;
+      S.selStop = sid;
+      renderStopList(); renderLineList(); renderLineForm();
+      regCanvasDbl(`stop:${sid}`, () => locateStopInList(sid, lid));   // 双击站圈：左栏定位
     }
     if (S.mode === 'group') {
       if (stopEl) return;                                  // 站圈点按：pointerup 切换待编组
@@ -1598,7 +1617,7 @@
     const impEl = hitEl.closest('path[data-imp-source]');
     if (impEl) {
       S.selImport = { source: impEl.dataset.impSource, sourceLayer: impEl.dataset.impLayer };
-      renderImportList();
+      renderImportList(); renderWorld();   // 画布同步高亮该未建线
       setStatus(`选中导入 path：${impEl.dataset.impLayer}（${impEl.dataset.impSource}）`);
       const iSrc = impEl.dataset.impSource, iLayer = impEl.dataset.impLayer;
       regCanvasDbl(`imp:${iSrc}|${iLayer}`, () => {   // 双击未建线：左栏导入源定位滚动可见
@@ -1694,8 +1713,16 @@
     if (!row) return;
     S.selImport = { source: row.dataset.src, sourceLayer: row.dataset.layer };
     if (e.target.dataset.mk) { createLineFromImport(row.dataset.src, row.dataset.layer); return; }
-    renderImportList(); renderLineForm();
+    renderImportList(); renderLineForm(); renderWorld();   // 画布同步高亮该未建线
     setStatus(`选中导入 path：${row.dataset.layer}（${row.dataset.src}）`);
+    // 双击（500ms 同条两次）→ 画布跳转放大；单击会重建列表 DOM，原生 dblclick 目标会漂移，故自判
+    if (!/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) {
+      const imp = S.imports.find((im) => im.source === row.dataset.src);
+      const p = imp && imp.paths.find((pp) => pp.sourceLayer === row.dataset.layer);
+      if (p) regCanvasDbl(`side-imp:${row.dataset.src}|${row.dataset.layer}`, () => {
+        try { zoomToBox(G.pathFromD(p.path).bbox(), 400); } catch (err) { setStatus('path 解析失败，无法跳转。', true); }
+      });
+    }
   });
 
   $('lineList').addEventListener('click', (e) => {
@@ -1703,34 +1730,11 @@
     if (!row) return;
     S.activeLine = row.dataset.lid; S.selStop = null;
     renderAll();
-  });
-
-  // 双击左栏条目 → 画布跳转放大（输入框/按钮/建议 chip 上双击不触发，留给原生文本操作）
-  const dblRow = (e, cls) => (/INPUT|TEXTAREA|SELECT|BUTTON/.test(e.target.tagName) || e.target.closest('.namehint'))
-    ? null : e.target.closest('.' + cls);
-  $('impList').addEventListener('dblclick', (e) => {
-    const row = dblRow(e, 'imp-row');
-    if (!row) return;
-    const imp = S.imports.find((im) => im.source === row.dataset.src);
-    const p = imp && imp.paths.find((pp) => pp.sourceLayer === row.dataset.layer);
-    if (!p) return;
-    try { zoomToBox(G.pathFromD(p.path).bbox(), 400); } catch (err) { setStatus('path 解析失败，无法跳转。', true); }
-  });
-  $('lineList').addEventListener('dblclick', (e) => {
-    const row = dblRow(e, 'line-row');
-    if (!row) return;
-    const ap = arcOf(row.dataset.lid);
-    if (ap) zoomToBox(ap.bbox(), 400);
-  });
-  $('stopList').addEventListener('dblclick', (e) => {
-    const row = dblRow(e, 'stop-row');
-    if (!row) return;
-    const line = S.lines.get(S.activeLine);
-    const st = line && line.stops.find((s) => s.id === row.dataset.sid);
-    const ap = line && arcOf(line.id);
-    if (!st || !ap) return;
-    const [x, y] = ap.pointAt(st.t);
-    zoomToBox([x, y, x, y], 500);
+    // 双击（500ms 同线两次）→ 画布跳转放大（自判，理由同导入源）
+    regCanvasDbl(`side-line:${row.dataset.lid}`, () => {
+      const ap = arcOf(row.dataset.lid);
+      if (ap) zoomToBox(ap.bbox(), 400);
+    });
   });
 
   $('stopList').addEventListener('click', (e) => {
@@ -1786,6 +1790,15 @@
     }
     const row = e.target.closest('.stop-row');
     if (!row) return;
+    // 双击（500ms 同站两次）→ 仅居中该站、不放大；输入框/按钮/建议 chip 上保留原生双击
+    if (!/INPUT|TEXTAREA|SELECT|BUTTON/.test(e.target.tagName) && !e.target.closest('.namehint')) {
+      regCanvasDbl(`side-stop:${row.dataset.sid}`, () => {
+        const line = S.lines.get(S.activeLine);
+        const st = line && line.stops.find((s) => s.id === row.dataset.sid);
+        const ap = line && arcOf(line.id);
+        if (st && ap) centerOn(...ap.pointAt(st.t));
+      });
+    }
     if (S.selStop === row.dataset.sid) return;   // 已选中：不动，避免打断输入框
     S.selStop = row.dataset.sid;
     // 只切换高亮，不重建列表（重建会销毁正在交互的输入框导致失焦）
@@ -2052,7 +2065,7 @@
   });
 
   const MODE_HINT = {
-    select: '选择：点击设站选中（左侧改名）、拖动设站沿线移动、点击线段循环切换状态；左键拖动平移、滚轮缩放。',
+    select: '选择：点击设站选中（左侧改名）、点击线段循环切换状态；左键拖动平移、滚轮缩放；拖动改站位置请切加站模式。',
     add: '加站：点击线路附近即可加站（吸附半径 40px，自动记弧长 t）；按住已有站圈可直接拖动改位置（没按到则照常拖画布）。加站类型（车站/线路所）用左侧设站面板顶部按钮切换；可以先一路点完，再展开「批量命名」一次贴入站名（线路所跳过）。',
     group: '编组：任意处拉框直接建组（框内 ≥2 站即建，已在其他组的跳过）；也可点选站圈攒待编组后点「编组」；中键拖动平移。',
   };
