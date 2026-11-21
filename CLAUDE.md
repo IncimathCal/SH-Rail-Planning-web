@@ -32,6 +32,8 @@ node tools/test_editor_logic.js                    # 编辑器纯逻辑单测
 node tools/test_calib.js                           # 标定 JS/Python 对拍（TPS 正反向）
 python -X utf8 tools/calib2_fit.py                 # 自动 TPS 标定重拟合（旧通道，控点在 零散/ 本地件；--lambda/--dry）
 python -X utf8 tools/calib_manual_fit.py           # 手动标定重拟合（GE 标注控点 CSV；LOO 选型；--dry 试算）
+python -X utf8 tools/ge_convert.py to-ge import/远期图-全量.json --out 检视.kmz   # 图→GE：线路导出 KMZ 目视核对（--layer 子串过滤）
+python -X utf8 tools/ge_convert.py from-ge 源资产/xxx.kmz --out 点位.csv          # GE→图：地标经纬度反变换为画板 x,y
 python -m http.server                              # 本地服务，开 http://localhost:8000/editor.html
 ```
 
