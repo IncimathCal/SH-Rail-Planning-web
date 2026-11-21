@@ -31,8 +31,35 @@ python tools/validate.py data
 
 # 对样例数据跑校验
 python tools/validate.py tools/fixtures/sample
+
+# 录入数据 → 查看器渲染数据（默认输出 build/net）
+python -X utf8 tools/flatten.py --data data --out build/net
+
+# 本地开发服务（编辑器/查看器共用，替代 python -m http.server）
+python -X utf8 tools/serve.py        # http://localhost:8000
+
+# 查看器纯逻辑单测（node）
+node tools/test_viewer_logic.js
 ```
+
+## 本地预览（查看器）
+
+`index.html` 以**相对路径**依次拉取 `net/lines.geojson`、`net/stops.geojson`（第一候选
+`net/` 为发布快照位，取不到回退 `build/net/` 即本地 flatten 默认输出位），因此仓库根与
+`docs/` 部署快照两种打开方式都通：
+
+```bash
+python -X utf8 tools/flatten.py --data data --out build/net   # ① 生成查看器数据
+python -X utf8 tools/serve.py                                 # ② 起服务后打开 http://localhost:8000/index.html
+```
+
+必须经 HTTP 服务打开（`file://` 直开时浏览器禁止读取数据文件，页面会给出中文指引）。
+
+查看器「底图（高德）」开关默认关闭（默认观感＝无底图深色画布）；开启后垫高德道路瓦片
+（GCJ02）。线路数据为 WGS84，渲染前在**渲染拷贝上**逐点做 WGS84→GCJ02 正变换对齐底图，
+GeoJSON / KML 导出一律保持 WGS84 原坐标，不受变换影响。
 
 ## 部署
 
-GitHub Pages 从 `main` 分支 `/docs` 目录发布；`docs/` 由 `tools/publish.py` 生成，不手工编辑。
+GitHub Pages 从 `main` 分支 `/docs` 目录发布；`docs/` 由 `tools/publish.py` 生成
+（校验 → flatten → 白名单拷贝，含 `net/` 数据，编辑器永不入产物），不手工编辑。

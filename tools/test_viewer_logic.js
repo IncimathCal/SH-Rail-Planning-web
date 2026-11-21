@@ -101,6 +101,8 @@ const g3pins = sv.pins.filter((p) => p.groupType === 'out-of-station');
 eq(g3pins.map((p) => p.key).sort(), ['s7', 's8'], '出闸组成员各自成圈');
 eq(g3pins.every((p) => p.kind === 'stop' && p.big === false), true, '出闸成员普通尺寸');
 eq(g3pins.map((p) => [p.lon, p.lat]).sort(), [[3, 3], [3.01, 3.01]], '出闸成员坐标各自保留');
+eq(g3pins.every((p) => p.groupId === 'g3'), true, '出闸成员 pin 携带 groupId（组内车站查询用）');
+ok(sv.pins.find((p) => p.key === 's1').groupId == null, '无组站 pin groupId 为 null');
 const g4 = sv.pins.find((p) => p.key === 'g:g4');
 ok(g4 && g4.kind === 'group' && g4.big === true, '单成员组照常成组');
 const g5 = sv.pins.find((p) => p.key === 'g:g5');
@@ -196,6 +198,69 @@ eq(V.buildLineOpacity(['la'], false),
   ['case', ['in', ['get', 'lineId'], ['literal', ['la']]], 1.0, 0.08], '选中＋开关关 → 选中线全 1.0');
 eq(V.buildLineOpacity(['la', 'la'], false), V.buildLineOpacity(['la'], false), '选中集去重');
 eq(V.buildLineOpacity(null, true), statusExpr, 'null 选中集不崩');
+
+// ---------- statusOpacity / buildSegLayerOpacity（按 segStatus 拆层版） ----------
+console.log('statusOpacity / buildSegLayerOpacity:');
+eq(V.statusOpacity('existing', true), 1.0, '既有全不透明');
+eq(V.statusOpacity('approved', true), 0.75, '已批复 0.75');
+eq(V.statusOpacity('future', true), 0.45, '远期 0.45');
+eq(V.statusOpacity('weird', true), 0.9, '未知状态兜 0.9（与 match 版默认一致）');
+eq(V.statusOpacity('future', false), 1.0, '开关关＝全 1.0');
+eq(V.buildSegLayerOpacity([], 'future', true), 0.45, '无选中 → 常量透明度');
+eq(V.buildSegLayerOpacity(null, 'approved', false), 1.0, 'null 选中集不崩');
+eq(V.buildSegLayerOpacity(['la', 'la'], 'future', true),
+  ['case', ['in', ['get', 'lineId'], ['literal', ['la']]], 0.45, 0.08], '选中集去重＋未选淡化 0.08');
+eq(V.buildSegLayerOpacity(['lb'], 'existing', false),
+  ['case', ['in', ['get', 'lineId'], ['literal', ['lb']]], 1.0, 0.08], '开关关＋选中 → 选中线 1.0');
+
+// ---------- stopDisplayName / formatTerminals（显示文案） ----------
+console.log('stopDisplayName / formatTerminals:');
+eq(V.stopDisplayName('中央站'), '中央站', '有名站原名');
+eq(V.stopDisplayName(''), V.UNNAMED_STOP_ZH, '空名 → 未命名站占位');
+eq(V.stopDisplayName(null), V.UNNAMED_STOP_ZH, 'null 名不崩');
+eq(V.stopDisplayName(123), V.UNNAMED_STOP_ZH, '非字符串名不崩');
+eq(V.formatTerminals({ loop: true, terminals: null }), '环线（无起讫）', '环线文案');
+eq(V.formatTerminals({ loop: false, terminals: ['单站甲', '怪类型'] }), '单站甲 — 怪类型', '正常起讫');
+eq(V.formatTerminals({ loop: false, terminals: ['', ''] }), '—', '零站线两端全空 → —（修复旧版输出 " — "）');
+eq(V.formatTerminals({ loop: false, terminals: ['', '乙'] }), V.UNNAMED_STOP_ZH + ' — 乙', '单端无名 → 占位');
+eq(V.formatTerminals({ loop: false, terminals: ['甲'] }), '甲 — ' + V.UNNAMED_STOP_ZH, '缺末端 → 占位');
+eq(V.formatTerminals(null), '—', 'null 摘要不崩');
+eq(V.formatTerminals({ loop: false }), '—', '无 terminals 字段不崩');
+
+// ---------- wgs84ToGcj02（GCJ02 偏移，渲染侧专用） ----------
+console.log('wgs84ToGcj02:');
+eq(V.wgs84ToGcj02(0, 0), [0, 0], '境外点原样返回');
+eq(V.wgs84ToGcj02(139.7, 35.7), [139.7, 35.7], '境外（东京）原样返回');
+ok(Array.isArray(V.wgs84ToGcj02(NaN, 31.2)), '非有限输入不崩');
+ok(V.wgs84ToGcj02(NaN, 31.2)[1] === 31.2, '非有限输入坐标透传');
+// 上海范围内：偏移量数百米量级、方向东偏南（GCJ02 在沪的已知特征：
+// dLon ≈ +0.0045、dLat ≈ −0.0020，合位移约 480 m）
+for (const [lo, la] of [[121.48, 31.22], [121.90, 30.95], [121.20, 31.45], [121.75, 31.05]]) {
+  const g = V.wgs84ToGcj02(lo, la);
+  const dx = (g[0] - lo) * 111320 * Math.cos((la * Math.PI) / 180);
+  const dy = (g[1] - la) * 110540;
+  const m = Math.hypot(dx, dy);
+  ok(m > 150 && m < 900, `(${lo},${la}) 偏移数百米量级（实际 ${m.toFixed(0)} m）`);
+  ok(g[0] > lo && g[1] < la, `(${lo},${la}) 偏移方向东偏南`);
+}
+// 往返近似闭合：逆变换用偏移场缓变的两次迭代近似（测试侧实现，不入 core）
+function gcjToWgsApprox(lon, lat) {
+  let wl = lon, wt = lat;
+  for (let i = 0; i < 2; i++) {
+    const g = V.wgs84ToGcj02(wl, wt);
+    wl += lon - g[0];
+    wt += lat - g[1];
+  }
+  return [wl, wt];
+}
+const shPt = [121.48, 31.22];
+const shBack = gcjToWgsApprox(...V.wgs84ToGcj02(...shPt));
+ok(Math.abs(shBack[0] - shPt[0]) < 1e-5 && Math.abs(shBack[1] - shPt[1]) < 1e-5,
+  '上海往返闭合残差 <1e-5°（实际 ' + Math.hypot(shBack[0] - shPt[0], shBack[1] - shPt[1]).toExponential(2) + '°）');
+// 平滑性：邻近点变换后仍邻近（偏移场无撕裂，渲染整链变换安全）
+const n1 = V.wgs84ToGcj02(121.48, 31.22);
+const n2 = V.wgs84ToGcj02(121.48001, 31.22001);
+ok(Math.hypot(n2[0] - n1[0], n2[1] - n1[1]) < 2e-5, '邻近点偏移平滑');
 
 // ---------- buildLineGeoJSON ----------
 console.log('buildLineGeoJSON:');

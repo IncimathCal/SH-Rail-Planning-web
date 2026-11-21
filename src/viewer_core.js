@@ -1,6 +1,7 @@
 // viewer_core.js —— 阶段 3 查看器·纯逻辑层（2026-11-21）
 // 不依赖 DOM / maplibre / editor.js：数据归一（线路聚合、站点平表、换乘组归并）、
-// 搜索匹配、标签分级、单线导出（GeoJSON 对象 / KML 字符串）、线层透明度表达式构造。
+// 搜索匹配、标签分级、单线导出（GeoJSON 对象 / KML 字符串）、线层透明度表达式构造
+//（单层 match 版＋按 segStatus 拆层版）、显示文案（起讫格式化、未名站占位）。
 // 浏览器端挂 globalThis.VIEWER_CORE；node 端（tools/test_viewer_logic.js）走 module.exports。
 // 数据契约：net/lines.geojson（每 feature＝线×分段）、net/stops.geojson（每 feature＝线×站）。
 
@@ -139,6 +140,7 @@
     const pinOfStop = (s, groupType) => ({
       kind: 'stop', key: s.sid, name: s.name, lineId: s.lineId,
       lineNames: s.lineName ? [s.lineName] : [], groupType: groupType || null,
+      groupId: s.groupId || null,   // 出闸组成员各自成圈，但保留组号供「组内车站」查询
       big: false, lon: s.lon, lat: s.lat,
     });
     for (const s of singles) {
@@ -247,6 +249,7 @@
 
   // ---------- 线层透明度 paint 表达式 ----------
   // 优先级：选中集淡化（未选线 0.08）＞「突出既有」分段半透明（开关关闭＝全部 1.0）。
+  // 单层 match 版（备用/文档语义；查看器现行按 segStatus 拆三层渲染，走 buildSegLayerOpacity）。
   function buildLineOpacity(selectedIds, emphasizeExisting) {
     const statusExpr = emphasizeExisting
       ? ['match', ['get', 'segStatus'], 'existing', 1.0, 'approved', 0.75, 'future', 0.45, 0.9]
@@ -254,6 +257,74 @@
     const sel = Array.isArray(selectedIds) ? [...new Set(selectedIds.filter(Boolean).map(String))] : [];
     if (!sel.length) return statusExpr;
     return ['case', ['in', ['get', 'lineId'], ['literal', sel]], statusExpr, 0.08];
+  }
+
+  // 分段图层（按 segStatus 拆层）透明度：单状态常量三档（开关关＝1.0），选中集外 0.08。
+  // 拆层原因：line-dasharray 不支持数据驱动，远期虚线只能整层设。
+  function statusOpacity(segStatus, emphasizeExisting) {
+    if (!emphasizeExisting) return 1.0;
+    return Object.prototype.hasOwnProperty.call(SEG_STATUS_OPACITY, segStatus) ? SEG_STATUS_OPACITY[segStatus] : 0.9;
+  }
+  function buildSegLayerOpacity(selectedIds, segStatus, emphasizeExisting) {
+    const base = statusOpacity(segStatus, emphasizeExisting);
+    const sel = Array.isArray(selectedIds) ? [...new Set(selectedIds.filter(Boolean).map(String))] : [];
+    if (!sel.length) return base;
+    return ['case', ['in', ['get', 'lineId'], ['literal', sel]], base, 0.08];
+  }
+
+  // ---------- 显示文案（中文仅此层，结构字段不受影响） ----------
+  const UNNAMED_STOP_ZH = '（未命名站）';
+  function stopDisplayName(name) {
+    return typeof name === 'string' && name ? name : UNNAMED_STOP_ZH;
+  }
+  // 线路起讫文案：环线 → 「环线（无起讫）」；两端全空（零站线）→ '—'；
+  // 单端无名 → 未名站占位；正常 → 'A — B'。
+  function formatTerminals(sum) {
+    if (!sum) return '—';
+    if (sum.loop) return '环线（无起讫）';
+    const t = Array.isArray(sum.terminals) ? sum.terminals : [];
+    const a = typeof t[0] === 'string' ? t[0] : '';
+    const b = typeof t[1] === 'string' ? t[1] : '';
+    if (!a && !b) return '—';
+    return stopDisplayName(a) + ' — ' + stopDisplayName(b);
+  }
+
+  // ---------- GCJ02 偏移（高德底图对齐） ----------
+  // 国家标准加密偏移的通用近似算法（纯数学公式，不引用任何外部数据）：WGS84 → GCJ02。
+  // 只用于渲染侧（线路/站点喂 MapLibre 前的渲染拷贝，与高德瓦片同平面）；
+  // GeoJSON / KML 导出一律保持 WGS84 原坐标——变换绝不写回权威数据结构。
+  const GCJ_A = 6378245.0;                // 克拉索夫斯基椭球长半轴
+  const GCJ_EE = 0.00669342162296594323;  // 第一偏心率平方
+  function gcjTransformLat(x, y) {
+    let ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+    ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
+    ret += (20.0 * Math.sin(y * Math.PI) + 40.0 * Math.sin(y / 3.0 * Math.PI)) * 2.0 / 3.0;
+    ret += (160.0 * Math.sin(y / 12.0 * Math.PI) + 320 * Math.sin(y * Math.PI / 30.0)) * 2.0 / 3.0;
+    return ret;
+  }
+  function gcjTransformLon(x, y) {
+    let ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+    ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
+    ret += (20.0 * Math.sin(x * Math.PI) + 40.0 * Math.sin(x / 3.0 * Math.PI)) * 2.0 / 3.0;
+    ret += (150.0 * Math.sin(x / 12.0 * Math.PI) + 300.0 * Math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0;
+    return ret;
+  }
+  // 中国境外无偏移（粗略界；本项目数据均在境内，此为算法自带的守卫）
+  function outOfChina(lon, lat) {
+    return !(lon > 72.004 && lon < 137.8347 && lat > 0.8293 && lat < 55.8271);
+  }
+  function wgs84ToGcj02(lon, lat) {
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return [lon, lat];
+    if (outOfChina(lon, lat)) return [lon, lat];
+    let dLat = gcjTransformLat(lon - 105.0, lat - 35.0);
+    let dLon = gcjTransformLon(lon - 105.0, lat - 35.0);
+    const radLat = (lat / 180.0) * Math.PI;
+    let magic = Math.sin(radLat);
+    magic = 1 - GCJ_EE * magic * magic;
+    const sqrtMagic = Math.sqrt(magic);
+    dLat = (dLat * 180.0) / ((GCJ_A * (1 - GCJ_EE)) / (magic * sqrtMagic) * Math.PI);
+    dLon = (dLon * 180.0) / (GCJ_A / sqrtMagic * Math.cos(radLat) * Math.PI);
+    return [lon + dLon, lat + dLat];
   }
 
   // ---------- 单线导出 ----------
@@ -323,9 +394,11 @@
   const Core = {
     SEG_STATUS_OPACITY, DEFAULT_LINE_COLOR, GROUP_TYPE_ZH, ROLE_ZH, SEG_STATUS_ZH,
     LABEL_CAP, LABEL_ZOOM_GROUP, LABEL_ZOOM_STOP,
+    UNNAMED_STOP_ZH, stopDisplayName, formatTerminals,
+    outOfChina, wgs84ToGcj02,
     xmlEscape, normalizeHex, hexToKmlColor,
     normalizeLines, lineBboxOf, stopList, buildStopView, lineSummaries, layerGroups,
-    matchEntries, filterLabels, buildLineOpacity,
+    matchEntries, filterLabels, buildLineOpacity, statusOpacity, buildSegLayerOpacity,
     buildLineGeoJSON, buildLineKML,
   };
   G.VIEWER_CORE = Core;
