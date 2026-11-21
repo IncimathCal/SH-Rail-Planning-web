@@ -111,8 +111,8 @@
 
 1. ID 格式合法且全局唯一（含归档池查重）；
 2. `segments` 长度符合环线/非环线公式；站数 < 2 时检查线路级 `status` 替代关系；
-3. `stops` 的 t 严格递增且 ∈ [0,1]；站名非空；
-4. `groups.json` 引用的线路/设站全部存在；一设站至多属一节点组；
+3. `stops` 的 t 严格递增且 ∈ [0,1]；站名非空（`kind:"block"` 线路所除外）；`kind` 值仅允许 `block`；
+4. `groups.json` 引用的线路/设站全部存在；一设站至多属一节点组；线路所只能进全线路所的 `junction` 组（混编即错）；
 5. `role: "connector"` 必须有 `connects ≥ 2`，指向存在的线路；其他 role `connects` 必须为空；
 6. 环线 path 闭合（`Z` 或首末点重合）；path 语法合法；
 7. `color` 为 `#RRGGBB`；`segments` 枚举合法；

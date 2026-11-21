@@ -440,6 +440,7 @@
     S.lines = new Map(d.lines.map((l) => [l.id, l]));
     S.groups = d.groups; S.imports = d.imports;
     S.arcs = new Map();
+    if (S.selImport && !S.imports.some((im) => im.source === S.selImport.source)) S.selImport = null;
     if (!S.lines.has(S.activeLine)) S.activeLine = null;
     S.selStop = null; S.pending = [];
     renderAll(); setStatus('已撤销。');
@@ -1380,6 +1381,7 @@
   let drag = null;     // {type:'stop', lid, sid, moved, pre}
   let panning = null;  // {x,y,sx,sy,view,moved}；点按位移 ≤4px 视为点击而非拖动
   let rubber = null;   // 编组模式拉框 {x0,y0,x1,y1,sx,sy,moved}（世界坐标）
+  let downHit = null;  // 按下时的 e.target：pointer capture 下 pointerup 的 e.target 恒为 svg，命中判定改用此记录
 
   function startPan(e) {
     panning = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY,
@@ -1405,8 +1407,9 @@
   svg.addEventListener('pointerdown', (e) => {
     if (e.button === 1) { startPan(e); return; }          // 中键：任何位置、任何模式平移
     if (e.button !== 0) return;
+    downHit = e.target;   // pointerup 命中判定用（capture 下 e.target 失真）
     const stopEl = e.target.closest('.stop-c');
-    if (stopEl && S.mode === 'select') {
+    if (stopEl && (S.mode === 'select' || S.mode === 'add')) {
       const sid = stopEl.dataset.sid, lid = stopEl.dataset.lid;
       S.activeLine = lid;
       S.selStop = sid;
@@ -1481,6 +1484,11 @@
     }
     const [wx, wy] = toWorld(e);
 
+    // 命中判定：平移/拉框的 pointer capture 使 e.target 恒为 <svg>，
+    // 改用按下时记录的目标元素（未拖动的点击，按下与松手位置一致）
+    const hitEl = (downHit && downHit.isConnected) ? downHit : e.target;
+    downHit = null;
+
     if (S.mode === 'add') {
       const hit = nearestLineAt(wx, wy);
       if (hit) {
@@ -1492,7 +1500,7 @@
     }
 
     if (S.mode === 'group') {
-      const mgEl = e.target.closest('.stop-merge');
+      const mgEl = hitEl.closest('.stop-merge');
       if (mgEl) {
         const g = S.groups.stationGroups.find((x) => x.id === mgEl.dataset.grp);
         if (g) {
@@ -1504,7 +1512,7 @@
         }
         return;
       }
-      const stopEl = e.target.closest('.stop-c');
+      const stopEl = hitEl.closest('.stop-c');
       if (stopEl) {
         const sid = stopEl.dataset.sid;
         S.pending = S.pending.includes(sid) ? S.pending.filter((x) => x !== sid) : [...S.pending, sid];
@@ -1514,13 +1522,13 @@
     }
 
     // select 模式的点击
-    const mgSel = e.target.closest('.stop-merge');
+    const mgSel = hitEl.closest('.stop-merge');
     if (mgSel) {
       const g = S.groups.stationGroups.find((x) => x.id === mgSel.dataset.grp);
-      if (g) setStatus(`${g.id} ${g.type === 'junction' ? '接轨站' : '同站换乘'}组：${g.stops.map((sid) => stopLabel(sid)).join('；')}`);
+      if (g) setStatus(`${g.id} ${g.type === 'junction' ? '接轨站' : g.type === 'out-of-station' ? '出闸换乘' : g.type ? '同站换乘' : '类型未定'}组：${g.stops.map((sid) => stopLabel(sid)).join('；')}`);
       return;
     }
-    const segEl = e.target.closest('.seg-hit');
+    const segEl = hitEl.closest('.seg-hit');
     if (segEl) {
       const lid = segEl.dataset.lid, i = +segEl.dataset.seg;
       const line = S.lines.get(lid);
@@ -1534,14 +1542,14 @@
       }
       return;
     }
-    if (e.target.closest('.stop-c')) return;  // 已在 pointerdown 处理
-    const baseEl = e.target.closest('path');
+    if (hitEl.closest('.stop-c')) return;  // 已在 pointerdown 处理
+    const baseEl = hitEl.closest('path');
     if (baseEl && baseEl.dataset.lid) {
       S.activeLine = baseEl.dataset.lid; S.selStop = null;
       renderLineList(); renderLineForm(); renderStopList(); renderWorld();
       return;
     }
-    const impEl = e.target.closest && e.target.closest('path[data-imp-source]');
+    const impEl = hitEl.closest('path[data-imp-source]');
     if (impEl) {
       S.selImport = { source: impEl.dataset.impSource, sourceLayer: impEl.dataset.impLayer };
       renderImportList();
@@ -1650,12 +1658,22 @@
       const line = S.lines.get(S.activeLine);
       const st = line && line.stops.find((s) => s.id === kindEl.dataset.kind);
       if (st) {
-        // 普通站转线路所时守住组约束：线路所只能进 junction（接轨站）组
-        if (st.kind !== 'block') {
-          const grp = S.groups && (S.groups.stationGroups || []).find((g) => g.stops.includes(st.id));
-          if (grp && grp.type !== 'junction') {
-            setStatus(`${st.id} 在 ${grp.id}（${grp.type === 'out-of-station' ? '出闸' : '同站'}换乘）组中：`
-              + '线路所只能进接轨站组，请先拆组或改组类型。', true);
+        // 双向守住组约束：转换后组内不得混编（全线路所⟺junction 组；普通站组不得混入线路所）
+        const grp = S.groups && (S.groups.stationGroups || []).find((g) => g.stops.includes(st.id));
+        if (grp) {
+          const others = grp.stops.filter((sid) => sid !== st.id).map((sid) => stopKindOf(sid));
+          if (st.kind !== 'block') {   // → 线路所：组内须已全线路所，且组为 junction
+            if (others.some((k) => k !== 'block')) {
+              setStatus(`${st.id} 所在组 ${grp.id} 内还有普通车站：线路所不能与之同组，请先拆组。`, true);
+              return;
+            }
+            if (grp.type !== 'junction') {
+              setStatus(`${st.id} 在 ${grp.id}（${grp.type === 'out-of-station' ? '出闸' : '同站'}换乘）组中：`
+                + '线路所只能进接轨站组，请先拆组或改组类型。', true);
+              return;
+            }
+          } else if (others.some((k) => k === 'block')) {   // → 普通车站：组内还有线路所则混编
+            setStatus(`${st.id} 所在组 ${grp.id} 内还有线路所：转回普通车站会混编，请先拆组。`, true);
             return;
           }
         }
@@ -1894,6 +1912,7 @@
       renderGroupsPanel();
       return;
     }
+    snapshot();   // 组类型切换可撤销（与建组/拆组一致）
     g.type = e.target.value || null; renderWorld(); autosave();
   });
 
@@ -1951,7 +1970,7 @@
 
   const MODE_HINT = {
     select: '选择：点击设站选中（左侧改名）、拖动设站沿线移动、点击线段循环切换状态；左键拖动平移、滚轮缩放。',
-    add: '加站：点击线路附近即可加站（吸附半径 40px，自动记弧长 t）。加站类型（车站/线路所）用左侧设站面板顶部按钮切换；可以先一路点完，再展开「批量命名」一次贴入站名（线路所跳过）。',
+    add: '加站：点击线路附近即可加站（吸附半径 40px，自动记弧长 t）；按住已有站圈可直接拖动改位置（没按到则照常拖画布）。加站类型（车站/线路所）用左侧设站面板顶部按钮切换；可以先一路点完，再展开「批量命名」一次贴入站名（线路所跳过）。',
     group: '编组：任意处拉框直接建组（框内 ≥2 站即建，已在其他组的跳过）；也可点选站圈攒待编组后点「编组」；中键拖动平移。',
   };
   for (const btn of document.querySelectorAll('#toolbar [data-mode]')) {
@@ -1968,7 +1987,10 @@
   }
   $('btnUndo').addEventListener('click', undo);
   document.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'
+        && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) {
+      e.preventDefault(); undo();
+    }
     if (e.key === 'Delete' && S.selStop && S.activeLine
         && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) {
       deleteStop(S.activeLine, S.selStop);

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""数据校验器 —— 执行《架构方案-01》§1.7 的校验规则（v1.1）。
+"""数据校验器 —— 执行《架构方案-01》§1.7 的校验规则（v1.4）。
 
 用法：
     python tools/validate.py [目标目录]     # 默认 data
@@ -19,7 +19,8 @@ from pathlib import Path
 
 SEG_STATUS = {"existing", "approved", "future"}
 ROLES = {"main", "branch", "connector", "standalone"}
-GROUP_TYPES = {"same-station", "out-of-station"}  # v1.3：passage（通道）已取消
+GROUP_TYPES = {"same-station", "out-of-station", "junction"}  # v1.3 取消 passage；v1.4 增 junction（接轨站）
+STOP_KINDS = {"block"}  # v1.4 线路所：kind 缺省＝普通站，仅 block 合法
 
 RE_LINE_ID = re.compile(r"^l\d{4}$")
 RE_STOP_ID = re.compile(r"^l\d{4}-s\d{2,}$")
@@ -91,6 +92,7 @@ def main():
 
     lines = {}         # line id -> data
     all_stop_ids = {}  # stop id -> line id
+    stop_kinds = {}    # stop id -> kind（普通站为 None）
 
     # ---------- 线路文件 ----------
     for lf in line_files:
@@ -158,7 +160,11 @@ def main():
                 err(fname, f"duplicate stop id: {sid} (also in {all_stop_ids[sid]})")
             else:
                 all_stop_ids[sid] = lid
-            if not isinstance(st.get("name"), str) or not st.get("name", "").strip():
+                stop_kinds[sid] = st.get("kind")
+            kind = st.get("kind")
+            if kind is not None and kind not in STOP_KINDS:
+                err(fname, f"stop {sid}: bad kind {kind!r} (only 'block' allowed)")
+            if kind != "block" and (not isinstance(st.get("name"), str) or not st.get("name", "").strip()):
                 err(fname, f"stop {sid}: empty name")
             t = st.get("t")
             if not isinstance(t, (int, float)) or not (0 <= t <= 1):
@@ -233,6 +239,11 @@ def main():
                     seen_stop[sid] = sgid
             if sg.get("type") is not None and sg.get("type") not in GROUP_TYPES:
                 err("groups.json", f"stationGroup {sgid}: bad type {sg.get('type')!r}")
+            n_blk = sum(1 for sid in members if stop_kinds.get(sid) == "block")
+            if n_blk and sg.get("type") != "junction":
+                err("groups.json", f"stationGroup {sgid}: contains block stop(s) but type is not 'junction'")
+            if 0 < n_blk < len(members):
+                err("groups.json", f"stationGroup {sgid}: block and normal stops cannot be mixed")
 
     # ---------- 线路 ↔ 组/联络 引用交叉检查 ----------
     for lid, d in lines.items():
