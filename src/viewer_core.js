@@ -6,6 +6,8 @@
 // 数据契约：net/lines.geojson（每 feature＝线×分段）、net/stops.geojson（每 feature＝线×站）。
 // 2026-11-21 增：出省箭头（stop.kind:'arrow'——非站，不进组/标签/摘要/导出，仅出 arrows 视图）、
 // ≥3 线同站组药丸链序（planGroupPillChain 贪心最近邻，与编辑器侧逐字节同规格）。
+// 2026-11-22 增：GCJ02 显示变换三件套（outOfChina/wgs84ToGcj02＝src/geom.js 同源受控副本＋
+// makeDispCoord 显示坐标工厂）——测试阶段底图（高德）对齐用，仅显示侧，权威数据不动。
 
 (function (G) {
   'use strict';
@@ -44,6 +46,56 @@
   }
   // 数值容差转字符串（坐标导出用，非数值兜底 0）
   function num(v) { return Number.isFinite(v) ? v : 0; }
+
+  // ---------- GCJ02 偏移（测试阶段底图·高德对齐用） ----------
+  // ⚠ 与 src/geom.js 同源复制，测试阶段功能，勿单侧改动——查看器不能引 geom.js 整模块
+  //（那会把编辑器几何库带进 Pages 部署面），故留受控副本；两份副本漂移由
+  // tools/test_viewer_logic.js 的 geom.js 对拍守卫兜住（改一处必跑该测试同步另一处）。
+  // 国测局加偏为公开近似式，单向：WGS84 → GCJ02（无精确逆式，本项目也用不到逆）。
+  // 克拉索夫斯基椭球长半轴 a=6378245、第一偏心率平方 ee=0.00669342162296594323。
+  const GCJ_A = 6378245.0;
+  const GCJ_EE = 0.00669342162296594323;
+  function gcjTransformLat(x, y) {
+    let ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+    ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
+    ret += (20.0 * Math.sin(y * Math.PI) + 40.0 * Math.sin(y / 3.0 * Math.PI)) * 2.0 / 3.0;
+    ret += (160.0 * Math.sin(y / 12.0 * Math.PI) + 320 * Math.sin(y * Math.PI / 30.0)) * 2.0 / 3.0;
+    return ret;
+  }
+  function gcjTransformLon(x, y) {
+    let ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+    ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
+    ret += (20.0 * Math.sin(x * Math.PI) + 40.0 * Math.sin(x / 3.0 * Math.PI)) * 2.0 / 3.0;
+    ret += (150.0 * Math.sin(x / 12.0 * Math.PI) + 300.0 * Math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0;
+    return ret;
+  }
+  /** 中国境外判定（算法自带的粗略界守卫；true = 境外，恒等无偏移） */
+  function outOfChina(lon, lat) {
+    return !(lon > 72.004 && lon < 137.8347 && lat > 0.8293 && lat < 55.8271);
+  }
+  /** WGS84 → GCJ02：返回 [lon, lat]；境外或非有限输入恒等返回 */
+  function wgs84ToGcj02(lon, lat) {
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return [lon, lat];
+    if (outOfChina(lon, lat)) return [lon, lat];
+    let dLat = gcjTransformLat(lon - 105.0, lat - 35.0);
+    let dLon = gcjTransformLon(lon - 105.0, lat - 35.0);
+    const radLat = (lat / 180.0) * Math.PI;
+    let magic = Math.sin(radLat);
+    magic = 1 - GCJ_EE * magic * magic;
+    const sqrtMagic = Math.sqrt(magic);
+    dLat = (dLat * 180.0) / ((GCJ_A * (1 - GCJ_EE)) / (magic * sqrtMagic) * Math.PI);
+    dLon = (dLon * 180.0) / (GCJ_A / sqrtMagic * Math.cos(radLat) * Math.PI);
+    return [lon + dLon, lat + dLat];
+  }
+
+  // 显示坐标变换工厂（测试阶段底图）：'none'|'osm' → 恒等（OSM 瓦片即 WGS84，与数据同基准）；
+  // 'gaode' → wgs84ToGcj02 包装（高德瓦片为 GCJ02，对齐＝仅显示用坐标做偏移——境外点恒等
+  // 由 outOfChina 在 wgs84ToGcj02 内部处理）。⚠ 只喂渲染/标签定位/相机定位等显示侧；
+  // 权威数据（linesMap/stops/摘要/搜索索引/导出）一律不过此函数。未知 mode 兜恒等（防御）。
+  function makeDispCoord(mode) {
+    if (mode === 'gaode') return (lon, lat) => wgs84ToGcj02(lon, lat);
+    return (lon, lat) => [lon, lat];
+  }
 
   // ---------- 数据归一 ----------
   // lines.geojson → Map<lineId, line>；line.segments 按 segIndex 升序（稳定），
@@ -497,6 +549,7 @@
     planGroupPillChain, planarOf, lineSummaries, layerGroups,
     matchEntries, filterLabels, buildLineOpacity, statusOpacity, buildSegLayerOpacity,
     buildLineGeoJSON, buildLineKML,
+    outOfChina, wgs84ToGcj02, makeDispCoord,
   };
   G.VIEWER_CORE = Core;
   if (typeof module !== 'undefined' && module.exports) module.exports = Core;

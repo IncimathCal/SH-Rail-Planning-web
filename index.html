@@ -10,7 +10,8 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23101216'/%3E%3Cpath d='M16 2v8M16 22v8M2 16h8M22 16h8' stroke='%234c8dff' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='5.5' fill='%23fff'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="assets/vendor/maplibre-gl.css">
   <style>
-    /* 阶段 3 查看器：纯深色画布（无底图，不引用任何外部数据源） */
+    /* 阶段 3 查看器：纯深色画布（默认无底图、不引用任何外部数据源；
+       2026-11-22 测试阶段豁免：可选 OSM/高德底图，默认关闭时行为与零外部资源现状完全一致） */
     :root {
       --bg: #101216;
       --panel: rgba(23, 26, 32, 0.92);
@@ -55,6 +56,13 @@
       border: 1px solid var(--panel-border); border-radius: 6px; outline: none;
     }
     #searchInput:focus { border-color: var(--accent); }
+    /* 测试阶段底图开关（三态 无→OSM→高德 循环；2026-11-22 用户豁免，正式上线可能移除） */
+    #btnBasemap {
+      flex: none; padding: 6px 10px; cursor: pointer; white-space: nowrap;
+      background: #0d0f13; color: var(--text);
+      border: 1px solid var(--panel-border); border-radius: 6px;
+    }
+    #btnBasemap:hover { border-color: var(--accent); color: #fff; }
     #searchDrop {
       position: absolute; top: calc(100% + 4px); left: 0; right: 0;
       margin: 0; padding: 4px 0; list-style: none;
@@ -159,6 +167,14 @@
       border-top: 1px solid var(--panel-border);
     }
     #legendPanel #emphasisWrap input { accent-color: var(--accent); }
+    /* 测试阶段底图署名（attributionControl:false，此行即署名载体；无底图时隐藏）——
+       放图例卡尾行：恒在左下、与右下 NavigationControl 天然不重叠。不设 display 属性，
+       保证 [hidden] 生效。 */
+    #basemapAttr {
+      margin-top: 8px; padding-top: 8px;
+      border-top: 1px solid var(--panel-border);
+      color: var(--text-dim); font-size: 11px; white-space: nowrap;
+    }
 
     /* 站点 hover 提示（浮于图例之上、面板之下） */
     #stopTip {
@@ -189,6 +205,10 @@
       <input id="searchInput" type="text" placeholder="搜索线路或车站…" autocomplete="off" spellcheck="false">
       <ul id="searchDrop" hidden></ul>
     </div>
+    <!-- 测试阶段功能（正式上线可能移除）：底图三态循环。默认「无」＝零外部资源、零网络请求；
+         高德为 GCJ02，仅显示坐标做偏移对齐，数据与导出仍为 WGS84。状态不持久化。 -->
+    <button id="btnBasemap" type="button"
+      title="测试阶段功能（正式上线可能移除）：底图三态 无→OSM→高德 循环，仅显示对位参考；默认无底图＝零外部资源、零网络请求；高德（GCJ02）仅显示坐标做偏移对齐，数据与导出仍为 WGS84。">底图：无</button>
   </header>
 
   <aside id="linePanel">
@@ -217,6 +237,8 @@
     <label id="emphasisWrap" title="开启后：既有段不透明、已批复段 75%、远期段 45%；关闭后三档同等不透明（远期仍为虚线）">
       <input type="checkbox" id="emphasisToggle" checked>突出既有
     </label>
+    <!-- 测试阶段底图署名行（文案由 viewer.js 随三态切换；「无」时隐藏） -->
+    <div id="basemapAttr" hidden title="测试阶段底图署名（无底图时隐藏）"></div>
   </aside>
 
   <div id="stopTip" hidden>

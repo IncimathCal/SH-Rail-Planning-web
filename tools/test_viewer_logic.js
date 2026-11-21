@@ -3,7 +3,8 @@
 // 线路摘要与分组（lineSummaries/layerGroups）、搜索匹配（matchEntries）、标签分级（filterLabels）、
 // 透明度表达式（buildLineOpacity）、单线导出（buildLineGeoJSON/buildLineKML）、颜色与转义工具、
 // 药丸链序（planGroupPillChain：确定性/平手/共线点/n=2~4）、出省箭头（kind:'arrow' 方向推导、
-// 搜索/摘要/导出排除）、手造输入链路（arrow＋3 线 same 组）。
+// 搜索/摘要/导出排除）、手造输入链路（arrow＋3 线 same 组）、GCJ02 显示变换（wgs84ToGcj02/
+// outOfChina 与 src/geom.js 逐点对拍守卫——防两份副本漂移；makeDispCoord 三态）。
 // 用法：node tools/test_viewer_logic.js（纯 node，不引 jsdom/DOM/maplibre）
 
 const V = require(path_join('src', 'viewer_core.js'));
@@ -377,6 +378,31 @@ ok(Math.abs(svP.arrows[0].angleDeg - 90) < 1e-9, 'arx 东向 90°（邻站＝x1�
 eq(svP.labels.filter((l) => l.group).map((l) => l.key), ['g:g9'], '药丸组合并为一个组标签');
 const sumP = V.lineSummaries(V.normalizeLines(pillFC), stP);
 eq(sumP.get('lx').stopCount, 1, 'lx 站数不含 arrow（药丸成员照常计数）');
+
+// ---------- GCJ02 显示变换（测试阶段底图·高德对齐；与 src/geom.js 对拍守卫防副本漂移） ----------
+console.log('gcj02 / makeDispCoord:');
+const geom = require(path_join('src', 'geom.js'));   // 引法同 tools/test_geom.js
+const GCJ_SAMPLE_PTS = [[121.47, 31.23], [116.4, 39.9], [0, 0], [135, 45]];   // 上海/北京/境外两点
+for (const [lon, lat] of GCJ_SAMPLE_PTS) {
+  const a = V.wgs84ToGcj02(lon, lat), b = geom.wgs84ToGcj02(lon, lat);
+  ok(Math.abs(a[0] - b[0]) < 1e-12 && Math.abs(a[1] - b[1]) < 1e-12,
+    `wgs84ToGcj02(${lon}, ${lat}) 与 geom.js 逐点一致（1e-12 容差）`);
+  eq(V.outOfChina(lon, lat), geom.outOfChina(lon, lat), `outOfChina(${lon}, ${lat}) 与 geom.js 同步对拍`);
+}
+eq(V.wgs84ToGcj02(0, 0), [0, 0], '境外点（0,0）gcj 变换恒等');
+// 135/45 地理上已在国界外，但落在公开近似式的粗界矩形内（lon<137.8347）——加偏照施加，
+// 这是该算法的已知局限（geom.js 同行为）。对拍守卫已保证两份副本逐位一致，此处固化怪癖。
+ok(V.outOfChina(135, 45) === false, '135/45 在算法粗界内（公开近似式矩形边界，非真实国界）');
+eq(V.wgs84ToGcj02(135, 45), geom.wgs84ToGcj02(135, 45), '135/45 两副本输出一致（粗界内加偏，非恒等）');
+ok(V.outOfChina(121.47, 31.23) === false && V.outOfChina(116.4, 39.9) === false, '上海/北京判境内');
+ok(V.outOfChina(0, 0) === true, '境外样点（0,0）判境外');
+const sh = V.wgs84ToGcj02(121.47, 31.23);
+ok(Math.abs(sh[0] - 121.47) > 0.001 && Math.abs(sh[1] - 31.23) > 0.001, '上海点有实际偏移（非恒等）');
+eq(V.makeDispCoord('none')(121.47, 31.23), [121.47, 31.23], 'makeDispCoord(none) 恒等');
+eq(V.makeDispCoord('osm')(121.47, 31.23), [121.47, 31.23], 'makeDispCoord(osm) 恒等（OSM 瓦片即 WGS84）');
+eq(V.makeDispCoord('gaode')(121.47, 31.23), V.wgs84ToGcj02(121.47, 31.23), 'makeDispCoord(gaode)＝wgs84ToGcj02');
+eq(V.makeDispCoord('gaode')(0, 0), [0, 0], 'makeDispCoord(gaode) 境外恒等（outOfChina 内部守卫）');
+eq(V.makeDispCoord('weird')(1, 2), [1, 2], '未知 mode 兜恒等（防御）');
 
 console.log(fails ? `\nFAIL - ${fails} assertion(s)` : '\nPASS - viewer logic OK');
 process.exit(fails ? 1 : 0);

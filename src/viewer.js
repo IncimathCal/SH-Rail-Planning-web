@@ -4,7 +4,9 @@
 // 纯深色画布）→ 搜索 / 多选高亮 / 线·站信息面板 / 状态图例＋「突出既有」开关 / 站点 hover
 // 提示 / 单线导出 / 中文 HTML 标签叠加。
 // 渲染坐标系＝WGS84（无底图设计，零外部资源）；S.linesMap/S.stops 即权威结构，
-// GeoJSON/KML 导出与其同坐标。
+// GeoJSON/KML 导出与其同坐标。2026-11-22 增：测试阶段底图三态（无→OSM→高德循环，
+// 用户阶段性豁免——早前「查看器不放底图」裁定在测试期让位，正式上线可能保留也可能移除）；
+// 高德为 GCJ02，对齐走显示侧坐标变换（S.dispCoord，权威数据/导出一律 WGS84 不动）。
 // 线层按 segStatus 拆三层（远期虚线只能整层设——line-dasharray 不支持数据驱动）。
 // 2026-11-21 增：①出省箭头（kind:'arrow'）——线色三角 glyph 指向线路外侧（方向在
 // VIEWER_CORE 按 t 序邻站推导；icon-rotate 数据驱动旋转；图标 canvas 本地绘制＋
@@ -35,6 +37,10 @@
     labelFrame: 0,                // rAF 合帧令牌
     searchIdx: [],                // 搜索条目
     dropIndex: 0,                 // 搜索下拉键盘焦点序
+    basemap: 'off',               // 测试阶段底图三态：'off'|'osm'|'gaode'（默认无＝与现状零差别；不持久化）
+    dispCoord: V.makeDispCoord('none'), // 显示坐标变换（gaode＝WGS84→GCJ02；仅显示侧，见下方底图段）
+    basemapPending: false,        // 样式未就绪时点击的补应用标记（目标态恒存 S.basemap）
+    styleReady: false,            // map 'load' 已触发（样式只建一次，就绪后 addSource/addLayer 恒可用）
   };
 
   // ---------- 通用 ----------
@@ -91,9 +97,13 @@
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
 
-  // ---------- 渲染数据（由归一结果重建，保证 paint 属性干净齐全；WGS84 直通） ----------
+  // ---------- 渲染数据（由归一结果重建，保证 paint 属性干净齐全） ----------
+  // 权威结构（S.linesMap/S.stops）恒 WGS84；渲染特征逐坐标过 S.dispCoord（测试阶段底图：
+  // 'off'/'osm' 恒等直通、'gaode' 变 GCJ02）——bbox 也按显示坐标记账（fitAll/选中定位与
+  // 渲染同帧一致；与 WGS84 差数百米，全图 fit 无感）。导出走权威结构，不经此处。
   function renderLinesFC() {
     S.dispBbox = new Map();
+    const dc = S.dispCoord;
     const features = [];
     for (const line of S.linesMap.values()) {
       let bb = null;
@@ -101,8 +111,9 @@
         const coords = [];
         for (const pt of seg.coords) {
           if (!pt || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
-          coords.push([pt[0], pt[1]]);
-          bb = mergeBbox(bb, [pt[0], pt[1], pt[0], pt[1]]);
+          const p = dc(pt[0], pt[1]);
+          coords.push(p);
+          bb = mergeBbox(bb, [p[0], p[1], p[0], p[1]]);
         }
         if (coords.length < 2) continue;
         features.push({
@@ -131,8 +142,9 @@
   function renderStopsFC() {
     // pin → circle：白填充；描边＝无组站取线色、同站组/出闸成员黑边（换乘语义）、
     // junction 组取成员线角色优先级色；big（同站大圈）与 dark（黑边加粗）为渲染开关位。
-    // 坐标 WGS84 直通（同 renderLinesFC）。
+    // 坐标过 S.dispCoord（同 renderLinesFC，显示侧变换）。
     S.dispStopsBbox = null;
+    const dc = S.dispCoord;
     const features = [];
     for (const pin of S.view.pins) {
       let stroke, dark = 0;
@@ -142,10 +154,11 @@
         const line = S.linesMap.get(pin.lineId);
         stroke = line ? line.color : '#999999';
       }
-      S.dispStopsBbox = mergeBbox(S.dispStopsBbox, [pin.lon, pin.lat, pin.lon, pin.lat]);
+      const p = dc(pin.lon, pin.lat);
+      S.dispStopsBbox = mergeBbox(S.dispStopsBbox, [p[0], p[1], p[0], p[1]]);
       features.push({
         type: 'Feature',
-        geometry: { type: 'Point', coordinates: [pin.lon, pin.lat] },
+        geometry: { type: 'Point', coordinates: [p[0], p[1]] },
         properties: { key: pin.key, name: pin.name, lineId: pin.lineId || '', big: pin.big ? 1 : 0, dark, stroke },
       });
     }
@@ -155,9 +168,12 @@
   // 特性携带 pin 的 key（渲染层据此查 pinByKey 开面板/hover）；坐标并入站点 bbox 供 fitAll 兜底；
   // 单点退化（共点组）复制端点保 LineString 合法——round 端帽渲染为圆点。
   function renderPillsFC() {
+    const dc = S.dispCoord;
     const features = [];
     for (const pill of S.view.pills || []) {
-      const coords = (pill.chain || []).filter((c) => c && Number.isFinite(c[0]) && Number.isFinite(c[1]));
+      const coords = (pill.chain || [])
+        .filter((c) => c && Number.isFinite(c[0]) && Number.isFinite(c[1]))
+        .map((c) => dc(c[0], c[1]));
       if (!coords.length) continue;
       if (coords.length === 1) coords.push(coords[0]);
       for (const c of coords) S.dispStopsBbox = mergeBbox(S.dispStopsBbox, [c[0], c[1], c[0], c[1]]);
@@ -172,15 +188,17 @@
   // 出省箭头（view.arrows，非站）：icon 名按线色区分（arrow-xxxxxx 三角 / arrowdot-xxxxxx 退化小圆点），
   // angle＝自北顺时针度数（icon-rotate 语义）。坐标并入站点 bbox 供 fitAll 兜底。
   function renderArrowsFC() {
+    const dc = S.dispCoord;
     const features = [];
     for (const a of S.view.arrows || []) {
       const line = S.linesMap.get(a.lineId);
       const color = line && line.color ? line.color : '#999999';
       const icon = (a.angleDeg == null ? 'arrowdot-' : 'arrow-') + color.slice(1);
-      S.dispStopsBbox = mergeBbox(S.dispStopsBbox, [a.lon, a.lat, a.lon, a.lat]);
+      const p = dc(a.lon, a.lat);
+      S.dispStopsBbox = mergeBbox(S.dispStopsBbox, [p[0], p[1], p[0], p[1]]);
       features.push({
         type: 'Feature',
-        geometry: { type: 'Point', coordinates: [a.lon, a.lat] },
+        geometry: { type: 'Point', coordinates: [p[0], p[1]] },
         properties: { key: a.key, icon, angle: Math.round((a.angleDeg || 0) * 10) / 10 },
       });
     }
@@ -261,8 +279,9 @@
   function buildMap() {
     const map = new G.maplibregl.Map({
       container: 'map',
-      // 内联 style：无 glyphs、无 sources 底图、无文本 symbol（中文标签走 HTML 叠加层；
-      // arrows 为纯图标 symbol，不涉及字形）。
+      // 内联 style：无 glyphs、无底图 sources、无文本 symbol（中文标签走 HTML 叠加层；
+      // arrows 为纯图标 symbol，不涉及字形）。测试阶段底图不在 style 里声明——惰性 addSource，
+      // 保证默认（无底图）路径零外部资源零网络请求。
       style: {
         version: 8,
         sources: {
@@ -331,11 +350,86 @@
       map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; hideStopTip(); });
       map.on('mousemove', id, showStopTip);
     }
-    map.on('load', () => { fitAll(); scheduleLabels(); });
+    map.on('load', () => {
+      S.styleReady = true;
+      // 补应用样式未就绪期间点的底图目标态（目标恒存 S.basemap，此处只补地图侧动作）
+      if (S.basemapPending) { S.basemapPending = false; applyBasemapToMap(); }
+      fitAll(); scheduleLabels();
+    });
   }
   function fitAll() {
     const bb = totalBbox();
     if (bb) S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 60, duration: 0, maxZoom: 12 });
+  }
+
+  // ---------- 测试阶段底图（三态：无 → OSM → 高德 → 无 循环） ----------
+  // ⚠ 测试阶段功能（2026-11-22 用户指示的阶段性豁免）：早前用户曾裁定「查看器不放底图、
+  // 零外部资源」，本段为测试期豁免，正式上线可能保留也可能移除——移除时删本段＋顶栏按钮＋
+  // 图例卡署名行＋S 里三字段即可。默认 'off' 与无底图现状完全一致（不 addSource、零网络请求）；
+  // 状态会话内不持久化（每次加载默认无底图）。
+  // 对齐设计：OSM 瓦片 WGS84 与数据同基准直接叠；高德瓦片 GCJ02——不动瓦片、只把显示用坐标
+  // 过 S.dispCoord（WGS84→GCJ02），权威数据与 GeoJSON/KML 导出一律 WGS84 一个字节不动
+  //（编辑器是「逐瓦片常量偏移」动瓦片侧，查看器数据侧变换，各自单侧适配、殊途同归）。
+  const BASEMAP_LABEL_ZH = { off: '无', osm: 'OSM', gaode: '高德' };
+  const BASEMAP_ATTR_ZH = { osm: '底图 © OpenStreetMap 贡献者', gaode: '底图 © 高德' };
+  function syncBasemapUI() {
+    const b = $('btnBasemap');
+    if (b) b.textContent = '底图：' + (BASEMAP_LABEL_ZH[S.basemap] || S.basemap);
+    const attr = $('basemapAttr');
+    if (attr) {
+      const text = BASEMAP_ATTR_ZH[S.basemap] || '';
+      attr.textContent = text;
+      attr.hidden = !text;   // 「无」时隐藏（attributionControl:false，此行即署名载体）
+    }
+  }
+  // 惰性建层：首次开底图才 addSource/addLayer（默认路径零请求）；raster 插到首条线路图层
+  // 之下——数据压瓦片、bg 背景层被瓦片盖住（无妨，瓦片即底色）。切回「无」只藏不删
+  //（setLayoutProperty visibility none，source 保留——再开免重建）。
+  // 瓦片 URL 与编辑器 src/editor.js 同源：OSM 同址；高德四子域 webrd01~04＋style=8——编辑器
+  // 按 (tx+ty)%4 取子域，MapLibre 无子域模板语法，tiles 列 4 个完整 URL 由其内部轮询，等价。
+  function ensureBasemapLayers() {
+    const map = S.map;
+    if (!map || map.getSource('basemap-osm')) return;
+    map.addSource('basemap-osm', {
+      type: 'raster', tileSize: 256,
+      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+    });
+    map.addSource('basemap-gaode', {
+      type: 'raster', tileSize: 256,
+      tiles: [1, 2, 3, 4].map((n) =>
+        'https://webrd0' + n + '.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}'),
+    });
+    const before = map.getLayer(LINE_LAYER_IDS[0]) ? LINE_LAYER_IDS[0] : undefined;
+    map.addLayer({ id: 'basemap-osm', type: 'raster', source: 'basemap-osm', layout: { visibility: 'none' } }, before);
+    map.addLayer({ id: 'basemap-gaode', type: 'raster', source: 'basemap-gaode', layout: { visibility: 'none' } }, before);
+  }
+  // 应用到地图：层可见性＋显示坐标变换＋四个 source 全量 setData 重渲染＋标签重排
+  //（复用既有 render 函数，mode 变了自然产出变换后坐标）。箭头 icon-rotate 角度是 WGS84
+  // 下算的——GCJ 常量级偏移（百米级）对方向角影响可忽略，不重算；fitAll/选中定位用的
+  // dispBbox 已是显示坐标（与渲染同帧），不特殊处理。
+  function applyBasemapToMap() {
+    if (S.basemap !== 'off') ensureBasemapLayers();
+    const vis = (layerId, on) => {
+      if (S.map.getLayer(layerId)) S.map.setLayoutProperty(layerId, 'visibility', on ? 'visible' : 'none');
+    };
+    vis('basemap-osm', S.basemap === 'osm');
+    vis('basemap-gaode', S.basemap === 'gaode');
+    S.dispCoord = V.makeDispCoord(S.basemap === 'gaode' ? 'gaode' : 'none');
+    if (S.map.getSource('lines')) S.map.getSource('lines').setData(renderLinesFC());
+    if (S.map.getSource('stops')) S.map.getSource('stops').setData(renderStopsFC());
+    if (S.map.getSource('pills')) S.map.getSource('pills').setData(renderPillsFC());
+    if (S.map.getSource('arrows')) S.map.getSource('arrows').setData(renderArrowsFC());
+    scheduleLabels();
+  }
+  // 目标态恒存 S.basemap（按钮文案/署名即时跟随）；样式未就绪（buildMap 前/样式加载中）只置
+  // pending 标记、on('load') 后补应用，点击不丢失。isStyleLoaded 在地图 idle 时也可能返回
+  // false，故叠加自记 styleReady（本页样式只建一次、永不 setStyle，就绪后恒可安全加层）。
+  function setBasemap(mode) {
+    S.basemap = mode;
+    syncBasemapUI();
+    if (!S.map || !(S.styleReady || S.map.isStyleLoaded())) { S.basemapPending = true; return; }
+    S.basemapPending = false;
+    applyBasemapToMap();
   }
 
   // ---------- 高亮 / 突出既有 ----------
@@ -544,7 +638,8 @@
     } else {
       const lb = ent.ref;
       if (!lb) return;
-      S.map.flyTo({ center: [lb.lon, lb.lat], zoom: Math.max(S.map.getZoom(), 13.5), duration: 800 });
+      // 相机定位取显示坐标（与渲染/标签同帧——gaode 下飞 WGS84 会偏半公里；搜索条目本身不动）
+      S.map.flyTo({ center: S.dispCoord(lb.lon, lb.lat), zoom: Math.max(S.map.getZoom(), 13.5), duration: 800 });
       openStopPanel(lb.key);
     }
   }
@@ -583,7 +678,8 @@
     const seen = new Set();
     for (const it of items) {
       let xy;
-      try { xy = map.project([it.lon, it.lat]); } catch (e) { continue; }
+      // 标签定位过 S.dispCoord（显示侧变换：gaode 下与瓦片同帧；S.dispLabels 本身恒 WGS84）
+      try { xy = map.project(S.dispCoord(it.lon, it.lat)); } catch (e) { continue; }
       if (!xy) continue;
       if (xy.x < -M || xy.y < -M || xy.x > w + M || xy.y > h + M) continue;
       seen.add(it.key);
@@ -641,6 +737,11 @@
       applyLinePaint();
       updateLegend();
     });
+    // 测试阶段底图三态循环：无 → OSM → 高德 → 无（不持久化，刷新回默认「无」）
+    $('btnBasemap').addEventListener('click', () => {
+      setBasemap(S.basemap === 'off' ? 'osm' : (S.basemap === 'osm' ? 'gaode' : 'off'));
+    });
+    syncBasemapUI();   // 与 S.basemap 初始态（'off'）对齐：按钮文案「底图：无」、署名隐藏
     $('infoClose').addEventListener('click', () => { $('infoPanel').hidden = true; });
     document.addEventListener('keydown', (ev) => {
       if (ev.key !== 'Escape') return;
