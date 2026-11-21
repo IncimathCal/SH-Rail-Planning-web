@@ -4,9 +4,187 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>上海轨道交通远期规划图</title>
+  <link rel="stylesheet" href="assets/vendor/maplibre-gl.css">
+  <style>
+    /* 阶段 3 查看器：纯深色画布（无底图，不引用任何外部数据源） */
+    :root {
+      --bg: #101216;
+      --panel: rgba(23, 26, 32, 0.92);
+      --panel-border: #2a2f3a;
+      --text: #e8eaf0;
+      --text-dim: #9aa3b2;
+      --accent: #4c8dff;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); }
+    body { font: 14px/1.5 system-ui, "Microsoft YaHei", sans-serif; color: var(--text); overflow: hidden; }
+
+    #map { position: absolute; inset: 0; }
+
+    /* HTML 中文标签叠加层（无 glyphs 备案路线：绝对定位 + project 定位 + rAF 合帧） */
+    #labelLayer {
+      position: absolute; inset: 0; overflow: hidden;
+      pointer-events: none; z-index: 1;
+    }
+    .map-label {
+      position: absolute; left: 0; top: 0;
+      font-size: 12px; line-height: 1.2; color: var(--text);
+      white-space: nowrap; pointer-events: none; will-change: transform;
+      text-shadow: 0 0 3px #000, 0 1px 2px #000;
+    }
+    .map-label.is-group { font-size: 13px; font-weight: 600; color: #ffffff; }
+
+    /* 顶栏：标题 + 搜索 + 「突出既有」开关 */
+    #topbar {
+      position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+      display: flex; align-items: center; gap: 14px;
+      padding: 8px 12px;
+      background: var(--panel); border-bottom: 1px solid var(--panel-border);
+      backdrop-filter: blur(6px);
+    }
+    #brand { font-weight: 600; white-space: nowrap; }
+    #brand small { color: var(--text-dim); font-weight: 400; margin-left: 6px; }
+    #searchWrap { position: relative; flex: 0 1 360px; min-width: 200px; }
+    #searchInput {
+      width: 100%; padding: 6px 10px;
+      background: #0d0f13; color: var(--text);
+      border: 1px solid var(--panel-border); border-radius: 6px; outline: none;
+    }
+    #searchInput:focus { border-color: var(--accent); }
+    #searchDrop {
+      position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+      margin: 0; padding: 4px 0; list-style: none;
+      background: var(--panel); border: 1px solid var(--panel-border); border-radius: 6px;
+      max-height: 320px; overflow: auto; z-index: 11;
+    }
+    #searchDrop li {
+      display: flex; align-items: baseline; gap: 8px;
+      padding: 5px 10px; cursor: pointer;
+    }
+    #searchDrop li.active, #searchDrop li:hover { background: #232833; }
+    .drop-main { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .drop-sub { flex: 1; color: var(--text-dim); font-size: 12px; text-align: right; }
+    #topbar .spacer { flex: 1; }
+    #emphasisWrap {
+      display: flex; align-items: center; gap: 6px; white-space: nowrap;
+      color: var(--text); cursor: pointer; user-select: none;
+    }
+    #emphasisWrap input { accent-color: var(--accent); }
+
+    /* 左：线路列表面板（按线路分类分组） */
+    #linePanel {
+      position: absolute; top: 56px; left: 12px; bottom: 12px; width: 236px; z-index: 10;
+      display: flex; flex-direction: column;
+      background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
+      backdrop-filter: blur(6px); overflow: hidden;
+    }
+    #linePanel .panel-head {
+      padding: 8px 12px; font-weight: 600;
+      border-bottom: 1px solid var(--panel-border); flex: none;
+    }
+    #lineList { overflow: auto; padding: 4px 0; flex: 1; }
+    .line-group { margin-bottom: 2px; }
+    .line-group-head {
+      padding: 4px 12px; font-size: 12px; color: var(--text-dim);
+      cursor: pointer; user-select: none; letter-spacing: 1px;
+    }
+    .line-group-head:hover { color: var(--text); }
+    .line-group.collapsed .line-item { display: none; }
+    .line-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 3px 12px; cursor: pointer; user-select: none;
+    }
+    .line-item:hover { background: #232833; }
+    .line-item input { accent-color: var(--accent); flex: none; }
+    .line-swatch {
+      flex: none; width: 14px; height: 4px; border-radius: 2px;
+    }
+    .line-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .panel-tip { padding: 8px 12px; color: var(--text-dim); font-size: 12px; }
+
+    /* 右：信息面板（点线 / 点站 / 搜索选择） */
+    #infoPanel {
+      position: absolute; top: 56px; right: 12px; width: 300px; z-index: 10;
+      background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
+      backdrop-filter: blur(6px); overflow: hidden;
+    }
+    #infoHead {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 8px 8px 12px; border-bottom: 1px solid var(--panel-border);
+    }
+    #infoTitle { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #infoClose {
+      flex: none; border: none; background: none; color: var(--text-dim);
+      font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 6px;
+    }
+    #infoClose:hover { color: var(--text); }
+    #infoBody { padding: 8px 12px 12px; }
+    .info-row { display: flex; gap: 10px; padding: 3px 0; }
+    .info-key { flex: none; width: 62px; color: var(--text-dim); }
+    .info-val { flex: 1; word-break: break-all; }
+    .info-actions { display: flex; gap: 8px; margin-top: 10px; }
+    .info-actions button {
+      flex: 1; padding: 5px 0; cursor: pointer;
+      background: #0d0f13; color: var(--text);
+      border: 1px solid var(--panel-border); border-radius: 6px;
+    }
+    .info-actions button:hover { border-color: var(--accent); color: #fff; }
+
+    /* 中央提示（加载中 / 暂无数据 / 加载失败） */
+    #centerMsg {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      z-index: 20; text-align: center; pointer-events: none;
+      background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
+      padding: 18px 26px; max-width: 70%;
+    }
+    #centerMsgText { font-size: 16px; font-weight: 600; }
+    #centerMsgDetail { margin-top: 6px; color: var(--text-dim); font-size: 13px; }
+
+    @media (max-width: 720px) {
+      #brand small { display: none; }
+      #linePanel { width: 190px; }
+      #infoPanel { width: calc(100vw - 24px); }
+    }
+  </style>
 </head>
 <body>
-  <!-- 查看器入口（阶段 3 实现：MapLibre 渲染、搜索、高亮、信息面板） -->
-  <p style="font-family: sans-serif; padding: 2em;">查看器尚未实现——见《架构方案-01》阶段 3。</p>
+  <div id="map"></div>
+  <div id="labelLayer"></div>
+
+  <header id="topbar">
+    <div id="brand">上海轨道交通远期规划图<small>查看器</small></div>
+    <div id="searchWrap">
+      <input id="searchInput" type="text" placeholder="搜索线路或车站…" autocomplete="off" spellcheck="false">
+      <ul id="searchDrop" hidden></ul>
+    </div>
+    <div class="spacer"></div>
+    <label id="emphasisWrap" title="开启后：既有段不透明、已批复段 75%、远期段 45%">
+      <input type="checkbox" id="emphasisToggle" checked>突出既有
+    </label>
+  </header>
+
+  <aside id="linePanel">
+    <div class="panel-head">线路</div>
+    <div id="lineList"></div>
+  </aside>
+
+  <aside id="infoPanel" hidden>
+    <div id="infoHead">
+      <div id="infoTitle"></div>
+      <button id="infoClose" title="关闭">×</button>
+    </div>
+    <div id="infoBody"></div>
+  </aside>
+
+  <div id="centerMsg" hidden>
+    <div id="centerMsgText"></div>
+    <div id="centerMsgDetail"></div>
+  </div>
+
+  <noscript><p style="padding:2em">本页需要启用 JavaScript 才能显示地图。</p></noscript>
+
+  <script src="assets/vendor/maplibre-gl.js"></script>
+  <script src="src/viewer_core.js"></script>
+  <script src="src/viewer.js"></script>
 </body>
 </html>
