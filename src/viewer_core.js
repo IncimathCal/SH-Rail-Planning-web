@@ -40,12 +40,14 @@
   const LABEL_CAP = 800;        // 标签数量上限：超过则只显示换乘组标签（防低 zoom 糊屏）
   const LABEL_ZOOM_GROUP = 10;  // 换乘组标签最低 zoom（不动）
   const LABEL_ZOOM_STOP = 11;   // 普通站标签最低 zoom（2026-11-22 用户指示 12→11）
-  // 尺寸缩放冻结（2026-11-22 用户指示）：z≥11 各尺寸维持基准值；z<11 随 zoom 线性缩小，
-  // 至 z=SIZE_ZOOM_MIN 缩到基准 ×SIZE_MIN_RATIO（两端 clamp——MapLibre interpolate 原生行为）。
-  // 比例 0.30 为占位参数，用户目验后会调。z=11 与普通站名门槛一致（用户指定）。
-  const SIZE_ZOOM_MIN = 8;
+  // 尺寸随缩放等比变化（2026-11-22 用户两次裁定：初次线性缩小案被推翻，改「等比缩＋向上封顶」）：
+  // z≥SIZE_ZOOM_HOLD 各尺寸维持基准值（拉近不再变粗——封顶）；z<11 按 2^(z−11) 持续等比缩小
+  //（每拉远一级减半，与画布同比例——「肉眼随画布缩小」），无下限地板（远景元素极小防结块；
+  // 表达式低端锚 SIZE_ZOOM_MIN 以下恒为锚值——MapLibre interpolate 原生 clamp，锚值已趋近不可见）。
+  // z=11 与普通站名门槛一致（用户指定）。
+  const SIZE_ZOOM_MIN = 5;
   const SIZE_ZOOM_HOLD = 11;
-  const SIZE_MIN_RATIO = 0.30;
+  const SIZE_SCALE_EXP = 2;
 
   // ---------- 小工具 ----------
   // XML 文本转义（KML 用）
@@ -559,15 +561,16 @@
     return PHASE_CYCLE[((i < 0 ? 0 : i) + 1) % PHASE_CYCLE.length];
   }
 
-  // ---------- 尺寸缩放冻结表达式（z≥11 恒基准、z<11 线性缩小） ----------
-  // zoomInterp(sizeLow, sizeHigh)：构造 ['interpolate',['linear'],['zoom'], 8, 低端, 11, 高端]；
-  // 两端自动 clamp（z≤8 恒低端、z≥11 恒高端）。scaledSize(base)：基准 ×SIZE_MIN_RATIO，
-  // 两位小数舍入防浮点噪声（如 0.30×19.4=5.819999…→5.82）。比例为占位参数待用户目验。
+  // ---------- 尺寸随缩放等比表达式（z≥11 恒基准封顶、z<11 按 2^(z−11) 等比缩小） ----------
+  // zoomInterp(sizeLow, sizeHigh)：构造 ['interpolate',['exponential',2],['zoom'], 5, 低端, 11, 高端]；
+  // 两端自动 clamp（z≤5 恒低端、z≥11 恒高端——高端即「向上封顶」，拉近不变粗）。
+  // scaledSize(base)：基准 ×2^(5−11)＝基准/64，两位小数舍入防浮点噪声。
   function zoomInterp(sizeLow, sizeHigh) {
-    return ['interpolate', ['linear'], ['zoom'], SIZE_ZOOM_MIN, sizeLow, SIZE_ZOOM_HOLD, sizeHigh];
+    return ['interpolate', ['exponential', SIZE_SCALE_EXP], ['zoom'],
+      SIZE_ZOOM_MIN, sizeLow, SIZE_ZOOM_HOLD, sizeHigh];
   }
   function scaledSize(base) {
-    return Math.round(base * SIZE_MIN_RATIO * 100) / 100;
+    return Math.round(base * Math.pow(SIZE_SCALE_EXP, SIZE_ZOOM_MIN - SIZE_ZOOM_HOLD) * 100) / 100;
   }
 
   // ---------- 左栏列表分组＋类别过滤 ----------
@@ -664,7 +667,7 @@
     DIM_OPACITY, SEG_STATUS_RANK, DEFAULT_LINE_COLOR, GROUP_TYPE_ZH, ROLE_ZH, SEG_STATUS_ZH,
     PHASE_CYCLE, PHASE_LABEL_ZH, HIDDEN_LIST_LAYERS, DISPLAY_ONLY_LAYERS,
     LABEL_CAP, LABEL_ZOOM_GROUP, LABEL_ZOOM_STOP,
-    SIZE_ZOOM_MIN, SIZE_ZOOM_HOLD, SIZE_MIN_RATIO,
+    SIZE_ZOOM_MIN, SIZE_ZOOM_HOLD, SIZE_SCALE_EXP,
     UNNAMED_STOP_ZH, stopDisplayName, formatTerminals,
     xmlEscape, normalizeHex, hexToKmlColor,
     normalizeLines, lineBboxOf, stopList, buildStopView, buildArrowViews,

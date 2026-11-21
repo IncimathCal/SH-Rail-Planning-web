@@ -4,7 +4,7 @@
 //（matchEntries）、标签分级与可见性（filterLabels zoom 门槛 11＋visibleLabels 优先级：
 // 全局开关＞聚焦常显＞调光隐藏＞zoom 门槛）、调光纯逻辑（linePhaseOf 线路期次归类/
 // lineLayerRank 仅显示级/computeDimmedSet 分期＋聚焦叠加/nextPhase 四档循环）、尺寸缩放
-//冻结表达式（zoomInterp/scaledSize）、单线导出（buildLineGeoJSON/buildLineKML——2026-11-22
+//冻结改等比（zoomInterp/scaledSize：z≥11 封顶、z<11 按 2^(z−11) 与画布同比例）、单线导出（buildLineGeoJSON/buildLineKML——2026-11-22
 // 改版后纯色实线统一不透明）、颜色与转义工具、药丸链序（planGroupPillChain）、出省箭头
 //（kind:'arrow'）、手造输入链路（arrow＋3 线 same 组）、GCJ02 显示变换（与 src/geom.js
 // 逐点对拍守卫——防两份副本漂移；makeDispCoord 三态）。
@@ -320,18 +320,19 @@ eq(V.layerGroups(lmo, ['l2'])[0].lines.map((l) => l.lineId), ['l2', 'l1', 'l3'],
 eq(V.visibleListGroups(lm, ['联络线'], ['lc', 'la', 'lb']).map((g) => g.layer), ['市区线', null],
   '过滤＋自定义序叠加：隐藏组整组剔除，余组仍按组内最靠前成员排序');
 
-// ---------- zoomInterp / scaledSize（尺寸缩放冻结表达式） ----------
+// ---------- zoomInterp / scaledSize（尺寸随缩放等比：z≥11 封顶、z<11 按 2^(z−11) 等比缩小） ----------
 console.log('zoomInterp / scaledSize:');
-ok(V.SIZE_ZOOM_MIN === 8 && V.SIZE_ZOOM_HOLD === 11 && V.SIZE_MIN_RATIO === 0.30, '冻结常量 8/11/0.30');
-eq(V.zoomInterp(2.1, 7), ['interpolate', ['linear'], ['zoom'], 8, 2.1, 11, 7], '线宽 7 表达式（z8=2.1、z11=7，两端 clamp）');
-eq(V.scaledSize(7), 2.1, 'scaledSize(7)＝2.1');
-eq(V.scaledSize(5.5), 1.65, '站圈 5.5 → 1.65');
-eq(V.scaledSize(7.5), 2.25, '大圈 7.5 → 2.25');
-eq(V.scaledSize(2), 0.6, '描边 2 → 0.6');
-eq(V.scaledSize(2.2), 0.66, '黑边 2.2 → 0.66');
-eq(V.scaledSize(15), 4.5, '药丸 15 → 4.5');
-eq(V.scaledSize(19.4), 5.82, '药丸外层 19.4 → 5.82（两位小数舍入防浮点噪声）');
-eq(V.scaledSize(1), 0.3, 'icon-size 1 → 0.3');
+ok(V.SIZE_ZOOM_MIN === 5 && V.SIZE_ZOOM_HOLD === 11 && V.SIZE_SCALE_EXP === 2, '等比常量：锚 z5/封顶 z11/底 2');
+eq(V.zoomInterp(0.11, 7), ['interpolate', ['exponential', 2], ['zoom'], 5, 0.11, 11, 7],
+  '线宽 7 表达式（z5=0.11 锚、z11=7 封顶两端 clamp；exponential 2＝每级×2 与画布同比例）');
+eq(V.scaledSize(7), 0.11, 'scaledSize(7)＝7/64＝0.11');
+eq(V.scaledSize(5.5), 0.09, '站圈 5.5 → 0.09');
+eq(V.scaledSize(7.5), 0.12, '大圈 7.5 → 0.12');
+eq(V.scaledSize(2), 0.03, '描边 2 → 0.03');
+eq(V.scaledSize(2.2), 0.03, '黑边 2.2 → 0.03（低端锚两位小数与描边同值——z≥11 处才分档）');
+eq(V.scaledSize(15), 0.23, '药丸 15 → 0.23');
+eq(V.scaledSize(19.4), 0.3, '药丸外层 19.4 → 0.30（两位小数舍入防浮点噪声）');
+eq(V.scaledSize(1), 0.02, 'icon-size 1 → 0.02');
 
 // ---------- stopDisplayName / formatTerminals（显示文案） ----------
 console.log('stopDisplayName / formatTerminals:');
