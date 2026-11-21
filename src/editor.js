@@ -658,6 +658,16 @@
     S.view.h = S.view.w * ratio;
     svg.setAttribute('viewBox', `${S.view.x} ${S.view.y} ${S.view.w} ${S.view.h}`);
   }
+  /** 双击左栏条目跳转：视图对准 bbox（世界坐标 [x0,y0,x1,y1]）留边放大；minW 防过近 */
+  function zoomToBox(bb, minW) {
+    if (!bb) return;
+    const ratio = svg.clientHeight / Math.max(svg.clientWidth, 1);
+    const cx = (bb[0] + bb[2]) / 2, cy = (bb[1] + bb[3]) / 2;
+    const pad = 0.12 * Math.max(bb[2] - bb[0], bb[3] - bb[1], 1);
+    const w = Math.max((bb[2] - bb[0]) + 2 * pad, ((bb[3] - bb[1]) + 2 * pad) / ratio, minW || 300);
+    S.view = { x: cx - w / 2, y: cy - (w * ratio) / 2, w: w, h: w * ratio };
+    applyView(); renderWorld(); scheduleBasemap();
+  }
   function toWorld(evt) {
     const pt = new DOMPoint(evt.clientX, evt.clientY);
     const m = svg.getScreenCTM();
@@ -1382,6 +1392,25 @@
   let panning = null;  // {x,y,sx,sy,view,moved}；点按位移 ≤4px 视为点击而非拖动
   let rubber = null;   // 编组模式拉框 {x0,y0,x1,y1,sx,sy,moved}（世界坐标）
   let downHit = null;  // 按下时的 e.target：pointer capture 下 pointerup 的 e.target 恒为 svg，命中判定改用此记录
+  let lastCanvasClick = null;  // {t,key}：自实现画布双击判定（renderWorld 重建 DOM 会使原生 dblclick 目标漂移）
+  /** 同一目标 500ms 内第二次点击＝双击：执行 fn。返回是否命中 */
+  function regCanvasDbl(key, fn) {
+    const now = Date.now();
+    if (lastCanvasClick && lastCanvasClick.key === key && now - lastCanvasClick.t < 500) {
+      lastCanvasClick = null;
+      fn();
+      return true;
+    }
+    lastCanvasClick = { t: now, key };
+    return false;
+  }
+  /** 画布双击线路/段后：左栏定位并滚动可见 */
+  function locateLineInList(lid) {
+    S.activeLine = lid; S.selStop = null;
+    renderLineList(); renderLineForm(); renderStopList();
+    const r = [...$('lineList').querySelectorAll('.line-row')].find((x) => x.dataset.lid === lid);
+    if (r) r.scrollIntoView({ block: 'nearest' });
+  }
 
   function startPan(e) {
     panning = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY,
@@ -1417,6 +1446,13 @@
         pre: JSON.stringify({ lines: [...S.lines.values()], groups: S.groups, imports: S.imports }) };
       svg.setPointerCapture(e.pointerId);
       renderStopList(); renderLineList(); renderLineForm();
+      regCanvasDbl(`stop:${sid}`, () => {   // 双击站圈：左栏定位滚动可见
+        const r = [...$('stopList').querySelectorAll('.stop-row')].find((x) => x.dataset.sid === sid);
+        if (r) r.scrollIntoView({ block: 'nearest' });
+        const lr = [...$('lineList').querySelectorAll('.line-row')].find((x) => x.dataset.lid === lid);
+        if (lr) lr.scrollIntoView({ block: 'nearest' });
+        setStatus(`已在左栏定位 ${sid}。`);
+      });
       return;
     }
     if (S.mode === 'group') {
@@ -1539,6 +1575,12 @@
         S.activeLine = lid;
         setStatus(`${lid} 段 ${i + 1} → ${SEG_LABEL[line.segments[i]]}`);
         renderAll();
+        // 双击段＝定位线路而非连改两次状态：回退本次循环（连同上一次共两次→净零），滚到左栏
+        regCanvasDbl(`line:${lid}`, () => {
+          line.segments[i] = SEG_ORDER[(SEG_ORDER.indexOf(line.segments[i]) + 1) % 3];
+          locateLineInList(lid);
+          setStatus(`已在左栏定位 ${lid}（段状态保持 ${SEG_LABEL[line.segments[i]]}）。`);
+        });
       }
       return;
     }
@@ -1547,6 +1589,10 @@
     if (baseEl && baseEl.dataset.lid) {
       S.activeLine = baseEl.dataset.lid; S.selStop = null;
       renderLineList(); renderLineForm(); renderStopList(); renderWorld();
+      regCanvasDbl(`line:${baseEl.dataset.lid}`, () => {
+        locateLineInList(baseEl.dataset.lid);
+        setStatus(`已在左栏定位 ${baseEl.dataset.lid}。`);
+      });
       return;
     }
     const impEl = hitEl.closest('path[data-imp-source]');
@@ -1554,9 +1600,18 @@
       S.selImport = { source: impEl.dataset.impSource, sourceLayer: impEl.dataset.impLayer };
       renderImportList();
       setStatus(`选中导入 path：${impEl.dataset.impLayer}（${impEl.dataset.impSource}）`);
+      const iSrc = impEl.dataset.impSource, iLayer = impEl.dataset.impLayer;
+      regCanvasDbl(`imp:${iSrc}|${iLayer}`, () => {   // 双击未建线：左栏导入源定位滚动可见
+        renderImportList();
+        const r = [...$('impList').querySelectorAll('.imp-row')]
+          .find((x) => x.dataset.src === iSrc && x.dataset.layer === iLayer);
+        if (r) r.scrollIntoView({ block: 'nearest' });
+        setStatus(`已在左栏定位导入 path：${iLayer}。`);
+      });
       return;
     }
-    // 空白：取消选择
+    // 空白：取消选择（并打断双击链）
+    lastCanvasClick = null;
     S.selStop = null;
     renderStopList(); renderWorld();
   });
@@ -1648,6 +1703,34 @@
     if (!row) return;
     S.activeLine = row.dataset.lid; S.selStop = null;
     renderAll();
+  });
+
+  // 双击左栏条目 → 画布跳转放大（输入框/按钮/建议 chip 上双击不触发，留给原生文本操作）
+  const dblRow = (e, cls) => (/INPUT|TEXTAREA|SELECT|BUTTON/.test(e.target.tagName) || e.target.closest('.namehint'))
+    ? null : e.target.closest('.' + cls);
+  $('impList').addEventListener('dblclick', (e) => {
+    const row = dblRow(e, 'imp-row');
+    if (!row) return;
+    const imp = S.imports.find((im) => im.source === row.dataset.src);
+    const p = imp && imp.paths.find((pp) => pp.sourceLayer === row.dataset.layer);
+    if (!p) return;
+    try { zoomToBox(G.pathFromD(p.path).bbox(), 400); } catch (err) { setStatus('path 解析失败，无法跳转。', true); }
+  });
+  $('lineList').addEventListener('dblclick', (e) => {
+    const row = dblRow(e, 'line-row');
+    if (!row) return;
+    const ap = arcOf(row.dataset.lid);
+    if (ap) zoomToBox(ap.bbox(), 400);
+  });
+  $('stopList').addEventListener('dblclick', (e) => {
+    const row = dblRow(e, 'stop-row');
+    if (!row) return;
+    const line = S.lines.get(S.activeLine);
+    const st = line && line.stops.find((s) => s.id === row.dataset.sid);
+    const ap = line && arcOf(line.id);
+    if (!st || !ap) return;
+    const [x, y] = ap.pointAt(st.t);
+    zoomToBox([x, y, x, y], 500);
   });
 
   $('stopList').addEventListener('click', (e) => {
