@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 // viewer_core.js 纯逻辑单测：数据归一（normalizeLines/stopList）、组归并（buildStopView）、
-// 线路摘要与分组（lineSummaries/layerGroups）、搜索匹配（matchEntries）、标签分级（filterLabels）、
-// 透明度表达式（buildLineOpacity）、单线导出（buildLineGeoJSON/buildLineKML）、颜色与转义工具、
-// 药丸链序（planGroupPillChain：确定性/平手/共线点/n=2~4）、出省箭头（kind:'arrow' 方向推导、
-// 搜索/摘要/导出排除）、手造输入链路（arrow＋3 线 same 组）、GCJ02 显示变换（wgs84ToGcj02/
-// outOfChina 与 src/geom.js 逐点对拍守卫——防两份副本漂移；makeDispCoord 三态）。
+// 线路摘要与分组（lineSummaries/layerGroups/visibleListGroups 类别过滤）、搜索匹配
+//（matchEntries）、标签分级与可见性（filterLabels zoom 门槛 11＋visibleLabels 优先级：
+// 全局开关＞聚焦常显＞调光隐藏＞zoom 门槛）、调光纯逻辑（linePhaseOf 线路期次归类/
+// lineLayerRank 仅显示级/computeDimmedSet 分期＋聚焦叠加/nextPhase 四档循环）、尺寸缩放
+//冻结表达式（zoomInterp/scaledSize）、单线导出（buildLineGeoJSON/buildLineKML——2026-11-22
+// 改版后纯色实线统一不透明）、颜色与转义工具、药丸链序（planGroupPillChain）、出省箭头
+//（kind:'arrow'）、手造输入链路（arrow＋3 线 same 组）、GCJ02 显示变换（与 src/geom.js
+// 逐点对拍守卫——防两份副本漂移；makeDispCoord 三态）。
 // 用法：node tools/test_viewer_logic.js（纯 node，不引 jsdom/DOM/maplibre）
 
 const V = require(path_join('src', 'viewer_core.js'));
@@ -126,6 +129,10 @@ const lg1 = sv.labels.find((l) => l.key === 'g:g1');
 ok(lg1 && lg1.group === true && lg1.name === '中央', '药丸组仍合并为一个标签（均值位置）');
 const lg3 = sv.labels.find((l) => l.key === 'g:g3');
 ok(lg3 && lg3.group === true && lg3.name === '出闸西', '出闸组仍合并为一个标签');
+// 2026-11-22 改版：标签携带 lineIds（站名可见性判定用——全局开关/聚焦常显/调光隐藏）
+eq((sv.labels.find((l) => l.key === 's1') || {}).lineIds, ['la'], '单站标签 lineIds＝本线');
+eq((sv.labels.find((l) => l.key === 'g:g1') || {}).lineIds, ['la', 'lb', 'lc'], '组标签 lineIds＝成员线去重');
+eq((sv.labels.find((l) => l.key === 'g:g3') || {}).lineIds, ['la', 'lb'], '出闸组标签 lineIds＝两成员线');
 eq(sv.labels.filter((l) => l.group).length, 6, '组标签恰好 6 个');
 eq(sv.labels.filter((l) => !l.group).map((l) => l.key).sort(), ['s1', 's10'], '无组站标签');
 eq(V.buildStopView([]), { pins: [], pills: [], arrows: [], labels: [] }, '空输入不崩');
@@ -186,48 +193,145 @@ eq(V.matchEntries('线', ents, 1).map((e) => e.id), ['la'], 'limit 截断');
 eq(V.matchEntries('线', ents).length, 2, '默认 limit 12 内全返');
 eq(V.matchEntries('人民', null).length, 0, 'null 索引不崩');
 
-// ---------- filterLabels ----------
+// ---------- filterLabels（zoom 门槛层；2026-11-22 普通站门槛 12→11，组门槛 10 不动） ----------
 console.log('filterLabels:');
+ok(V.LABEL_ZOOM_STOP === 11 && V.LABEL_ZOOM_GROUP === 10, '门槛常量：普通站 11、组 10');
 const bigLabels = [];
 for (let i = 0; i < 900; i++) bigLabels.push({ key: 's' + i, name: '站' + i, group: false });
 for (let i = 0; i < 100; i++) bigLabels.push({ key: 'g' + i, name: '组' + i, group: true });
 const smallLabels = bigLabels.slice(0, 700).concat(bigLabels.slice(900));   // 700 普通站＋100 组
 eq(V.filterLabels(bigLabels, 9, 800).length, 0, 'z9 无标签');
 eq(V.filterLabels(bigLabels, 10, 800).length, 100, 'z10 只组标签');
-eq(V.filterLabels(bigLabels, 11.9, 800).length, 100, 'z11.9 仍只组标签');
-eq(V.filterLabels(smallLabels, 12, 800).length, 800, 'z12 未超上限全部显示');
-eq(V.filterLabels(bigLabels, 12, 800).length, 100, 'z12 超上限只显示换乘组');
-eq(V.filterLabels(bigLabels, 12, 800).filter((l) => !l.group).length, 0, '超上限时普通站全滤除');
-eq(V.filterLabels(bigLabels, 12, 2000).length, 1000, '上限放大则全显');
+eq(V.filterLabels(bigLabels, 10.9, 800).length, 100, 'z10.9 仍只组标签');
+eq(V.filterLabels(smallLabels, 11, 800).length, 800, 'z11 未超上限全部显示（门槛已降）');
+eq(V.filterLabels(smallLabels, 10.99, 800).length, 100, 'z10.99 仍只组标签（门槛边界）');
+eq(V.filterLabels(bigLabels, 11, 800).length, 100, 'z11 超上限只显示换乘组');
+eq(V.filterLabels(bigLabels, 11, 800).filter((l) => !l.group).length, 0, '超上限时普通站全滤除');
+eq(V.filterLabels(bigLabels, 11, 2000).length, 1000, '上限放大则全显');
 eq(V.filterLabels([], 15).length, 0, '空标签不崩');
 eq(V.filterLabels(null, 15).length, 0, 'null 不崩');
-eq(V.filterLabels(bigLabels, 12), V.filterLabels(bigLabels, 12, V.LABEL_CAP), '默认上限＝LABEL_CAP');
+eq(V.filterLabels(bigLabels, 11), V.filterLabels(bigLabels, 11, V.LABEL_CAP), '默认上限＝LABEL_CAP');
 
-// ---------- buildLineOpacity ----------
-console.log('buildLineOpacity:');
-const statusExpr = ['match', ['get', 'segStatus'], 'existing', 1.0, 'approved', 0.5, 'future', 0.85, 0.9];
-eq(V.buildLineOpacity([], true), statusExpr, '未选＋开关开 → 状态三档');
-eq(V.buildLineOpacity([], false), 1.0, '未选＋开关关 → 全 1.0');
-eq(V.buildLineOpacity(['la', 'lb'], true),
-  ['case', ['in', ['get', 'lineId'], ['literal', ['la', 'lb']]], statusExpr, 0.08], '选中集 → 其余淡化 0.08');
-eq(V.buildLineOpacity(['la'], false),
-  ['case', ['in', ['get', 'lineId'], ['literal', ['la']]], 1.0, 0.08], '选中＋开关关 → 选中线全 1.0');
-eq(V.buildLineOpacity(['la', 'la'], false), V.buildLineOpacity(['la'], false), '选中集去重');
-eq(V.buildLineOpacity(null, true), statusExpr, 'null 选中集不崩');
+// ---------- 调光纯逻辑：linePhaseOf / lineLayerRank / computeDimmedSet / nextPhase ----------
+console.log('dim / phase:');
+ok(V.DIM_OPACITY === 0.5, '调光系数 DIM_OPACITY＝0.5（旧「突出既有」approved 档数值演化，占位待目验）');
+ok(V.HIDDEN_LIST_LAYERS.join(',') === '联络线', '左栏隐藏类别常量＝[联络线]（2026-11-22 用户裁定）');
+ok(V.DISPLAY_ONLY_LAYERS.join(',') === '他省', '「仅显示」级类别常量＝[他省]');
+// 线路期次归类：全线最先进段（推定待用户确认——既有线的远期延伸整线归「既有」）
+eq(V.linePhaseOf(lm.get('la')), 'existing', 'la（existing＋future）→ existing（最先进段）');
+eq(V.linePhaseOf(lm.get('lb')), 'approved', 'lb（两段 approved）→ approved');
+eq(V.linePhaseOf(lm.get('lc')), 'future', 'lc（未知状态归 future）→ future');
+eq(V.linePhaseOf({ segments: [] }), null, '无段线 → null（防御）');
+eq(V.linePhaseOf(null), null, 'null 线不崩');
+eq(V.linePhaseOf({ segments: [{ segStatus: 'existing' }, { segStatus: 'approved' }] }), 'existing', 'existing＞approved');
+eq(V.linePhaseOf({ segments: [{ segStatus: 'future' }, { segStatus: 'approved' }] }), 'approved', 'approved＞future');
+// 分期四档循环
+eq(V.nextPhase('none'), 'existing', '循环 无→既有');
+eq(V.nextPhase('existing'), 'approved', '既有→已批复');
+eq(V.nextPhase('approved'), 'future', '已批复→远期');
+eq(V.nextPhase('future'), 'none', '远期→无');
+eq(V.nextPhase('weird'), 'existing', '非法输入回「无」再前进一步＝existing');
+// 可交互层级：他省线 displayOnly，其余 normal（集中判断）
+eq(V.lineLayerRank(lm.get('lc')), 'normal', '联络线是 normal（可交互，仅左栏列表隐藏）');
+eq(V.lineLayerRank({ layer: '他省' }), 'displayOnly', '他省线 displayOnly（仅显示级）');
+eq(V.lineLayerRank({ layer: '市区线' }), 'normal', '市区线 normal');
+eq(V.lineLayerRank({}), 'normal', '类别缺失 → normal');
+const lmTP = V.normalizeLines(fc(
+  lineFeat('tp', 0, 'existing', [[0, 0], [1, 0]], { layer: '他省' }),
+));
+// 调光线集：默认态（无分期＋无聚焦）空集
+eq([...V.computeDimmedSet(lm, { phase: 'none', focus: null })], [], '默认态不调光');
+eq([...V.computeDimmedSet(lm, {})], [], '缺省 state 不调光');
+eq([...V.computeDimmedSet(null, { phase: 'existing' })], [], 'null linesMap 不崩');
+// 分期档：期次不匹配的线调光（fixture：la=existing、lb=approved、lc=future）
+eq([...V.computeDimmedSet(lm, { phase: 'existing' })].sort(), ['lb', 'lc'], '分期「既有」→ lb/lc 调光');
+eq([...V.computeDimmedSet(lm, { phase: 'approved' })].sort(), ['la', 'lc'], '分期「已批复」→ la/lc 调光');
+eq([...V.computeDimmedSet(lm, { phase: 'future' })].sort(), ['la', 'lb'], '分期「远期」→ la/lb 调光');
+// 聚焦：非聚焦线调光
+eq([...V.computeDimmedSet(lm, { phase: 'none', focus: 'la' })].sort(), ['lb', 'lc'], '聚焦 la → lb/lc 调光');
+// 叠加：任一条件命中即调光（并集）
+eq([...V.computeDimmedSet(lm, { phase: 'existing', focus: 'lb' })].sort(), ['la', 'lb', 'lc'],
+  '分期既有＋聚焦 lb：lb 期次不匹配（approved）同样被调光——聚焦不豁免期次，并集叠加');
+eq([...V.computeDimmedSet(lm, { phase: 'existing', focus: 'la' })].sort(), ['lb', 'lc'],
+  '分期既有＋聚焦 la（期次恰好匹配）→ 仍只 lb/lc 调光');
+// 「仅显示」级：任何调光场合恒半透明（即便期次恰好匹配）
+const mixTP = new Map([...lm, ...lmTP]);
+eq([...V.computeDimmedSet(mixTP, { phase: 'existing' })].sort(), ['lb', 'lc', 'tp'],
+  '他省线期次恰好匹配 existing 仍被调光（用户裁定硬规则 2）');
+eq([...V.computeDimmedSet(mixTP, { phase: 'none', focus: 'la' })].sort(), ['lb', 'lc', 'tp'],
+  '聚焦场合他省线恒在半透明侧');
+eq([...V.computeDimmedSet(mixTP, { phase: 'none', focus: null })], [],
+  '默认态（无任何调光）他省线正常显示');
+eq([...V.computeDimmedSet(mixTP, { focus: 'tp' })].includes('tp'), true,
+  '聚焦他省线时其自身也在调光侧（setFocus 入口另有拦截，不产生此态）');
 
-// ---------- statusOpacity / buildSegLayerOpacity（按 segStatus 拆层版） ----------
-console.log('statusOpacity / buildSegLayerOpacity:');
-eq(V.statusOpacity('existing', true), 1.0, '既有全不透明');
-eq(V.statusOpacity('approved', true), 0.5, '已批复 0.5（编辑器同值）');
-eq(V.statusOpacity('future', true), 0.85, '远期 0.85（编辑器同值——远期反而比批复亮）');
-eq(V.statusOpacity('weird', true), 0.9, '未知状态兜 0.9（与 match 版默认一致）');
-eq(V.statusOpacity('future', false), 1.0, '开关关＝全 1.0');
-eq(V.buildSegLayerOpacity([], 'future', true), 0.85, '无选中 → 常量透明度');
-eq(V.buildSegLayerOpacity(null, 'approved', false), 1.0, 'null 选中集不崩');
-eq(V.buildSegLayerOpacity(['la', 'la'], 'future', true),
-  ['case', ['in', ['get', 'lineId'], ['literal', ['la']]], 0.85, 0.08], '选中集去重＋未选淡化 0.08');
-eq(V.buildSegLayerOpacity(['lb'], 'existing', false),
-  ['case', ['in', ['get', 'lineId'], ['literal', ['lb']]], 1.0, 0.08], '开关关＋选中 → 选中线 1.0');
+// ---------- visibleLabels（优先级：全局开关 ＞ 聚焦常显 ＞ 调光隐藏 ＞ zoom 门槛） ----------
+console.log('visibleLabels:');
+const vlLabels = [
+  { key: 's1', name: '甲1', group: false, lineIds: ['la'] },
+  { key: 's2', name: '乙1', group: false, lineIds: ['lb'] },
+  { key: 'g1', name: '组1', group: true, lineIds: ['la', 'lb'] },    // 任一成员未调光 → 显示
+  { key: 'g2', name: '组2', group: true, lineIds: ['lb', 'lc'] },    // 全成员被调光 → 隐藏
+  { key: 'x1', name: '无所属', group: false, lineIds: [] },          // 防御：不因调光隐藏
+];
+const dimLB = new Set(['lb', 'lc']);
+eq(V.visibleLabels(vlLabels, 13, 800, { hideAll: true }), [], '全局站名开关隐藏 → 一切站名不显示');
+eq(V.visibleLabels(vlLabels, 13, 800, { hideAll: true, focus: 'la' }), [], '全局开关优先级最高（压过聚焦常显）');
+eq(V.visibleLabels(vlLabels, 13, 800, { dimmedSet: dimLB }).map((l) => l.key), ['s1', 'g1', 'x1'],
+  '调光线站名隐藏：乙1 隐藏、组2（全成员调光）隐藏、组1（la 未调光）保留');
+eq(V.visibleLabels(vlLabels, 13, 800, {}).map((l) => l.key), ['s1', 's2', 'g1', 'g2', 'x1'],
+  '无调光无聚焦 → zoom 门槛层原样（z13 全显）');
+eq(V.visibleLabels(vlLabels, 9, 800, {}).map((l) => l.key), [], 'z9 门槛层全隐');
+eq(V.visibleLabels(vlLabels, 9, 800, { focus: 'la' }).map((l) => l.key).sort(), ['g1', 's1'],
+  '聚焦线站名无视 zoom 门槛常显（组1 含 la 也常显）');
+eq(V.visibleLabels(vlLabels, 9, 800, { focus: 'la', dimmedSet: dimLB }).map((l) => l.key).sort(), ['g1', 's1'],
+  '聚焦常显优先于调光隐藏（优先级序：聚焦线标签先捞出，其余才走调光过滤）');
+eq(V.visibleLabels(vlLabels, 9, 800, { focus: 'lb', dimmedSet: dimLB }).map((l) => l.key).sort(), ['g1', 'g2', 's2'],
+  '聚焦被调光线（lb）站名仍常显：s2/g2/g1（均含 lb）无视调光与 zoom，s1/x1 不含 lb 走 z9 门槛被隐');
+eq(V.visibleLabels(vlLabels, 13, 800, { dimmedSet: ['lb', 'lc'] }).map((l) => l.key), ['s1', 'g1', 'x1'],
+  'dimmedSet 传数组（非 Set）也能容错');
+eq(V.visibleLabels(null, 13, 800, { focus: 'la' }), [], 'null 标签不崩');
+eq(V.visibleLabels(vlLabels, 13, 800), V.visibleLabels(vlLabels, 13, 800, {}), '缺省 state＝无约束');
+
+// ---------- visibleListGroups（左栏类别过滤；地图照画、搜索照收） ----------
+console.log('visibleListGroups:');
+const lgrVis = V.visibleListGroups(lm, ['联络线']);
+eq(lgrVis.map((g) => g.layer), ['市区线', null], '隐藏「联络线」后仅剩市区线＋未分类');
+ok(!lgrVis.some((g) => g.layer === '联络线'), '联络线不出现在左栏列表');
+eq(V.visibleListGroups(lm, []).map((g) => g.layer), V.layerGroups(lm).map((g) => g.layer), '空隐藏集＝原样');
+eq(V.visibleListGroups(lm, V.HIDDEN_LIST_LAYERS).length, 2, '默认常量（联络线）过滤后两组');
+eq(V.visibleListGroups(new Map(), ['联络线']), [], '空 Map 不崩');
+eq(V.visibleListGroups(lm, null).length, 3, 'null 隐藏集不崩（不过滤）');
+
+// ---------- layerGroups 自定义显示序（manifest.lineOrder → net/index.json 链路终端） ----------
+console.log('layerGroups lineOrder:');
+eq(V.layerGroups(lm).map((g) => g.layer), ['联络线', '市区线', null], '无序＝旧惯例：组中文拼音序（联 lián＜市 shì）、未分类最后');
+eq(V.layerGroups(lm, ['lc', 'lb', 'la']).map((g) => g.layer), ['联络线', null, '市区线'],
+  '全线倒序：组序按组内最靠前成员（未分类居中＝保真用户序优先于「未分类恒最后」惯例）');
+eq(V.layerGroups(lm, ['lb']).map((g) => g.layer), [null, '联络线', '市区线'],
+  '只序未分类线：该组置首，其余组间回落中文序');
+eq(V.layerGroups(lm, ['lx-unknown', 'la']).map((g) => g.layer), ['市区线', '联络线', null],
+  '未知 id 忽略：仅 la 生效（市区线有序置首），其余组回落旧惯例');
+eq(V.layerGroups(lm, 'not-array').map((g) => g.layer), ['联络线', '市区线', null], '非数组容错＝无序');
+const lmo = new Map([['l1', { lineId: 'l1', layer: '市区线' }], ['l2', { lineId: 'l2', layer: '市区线' }],
+  ['l3', { lineId: 'l3', layer: '市区线' }]]);
+eq(V.layerGroups(lmo, ['l3', 'l1', 'l2'])[0].lines.map((l) => l.lineId), ['l3', 'l1', 'l2'], '组内按自定义序');
+eq(V.layerGroups(lmo, ['l2'])[0].lines.map((l) => l.lineId), ['l2', 'l1', 'l3'], '组内未列入者靠后 tie-break id 升序');
+eq(V.visibleListGroups(lm, ['联络线'], ['lc', 'la', 'lb']).map((g) => g.layer), ['市区线', null],
+  '过滤＋自定义序叠加：隐藏组整组剔除，余组仍按组内最靠前成员排序');
+
+// ---------- zoomInterp / scaledSize（尺寸缩放冻结表达式） ----------
+console.log('zoomInterp / scaledSize:');
+ok(V.SIZE_ZOOM_MIN === 8 && V.SIZE_ZOOM_HOLD === 11 && V.SIZE_MIN_RATIO === 0.30, '冻结常量 8/11/0.30');
+eq(V.zoomInterp(2.1, 7), ['interpolate', ['linear'], ['zoom'], 8, 2.1, 11, 7], '线宽 7 表达式（z8=2.1、z11=7，两端 clamp）');
+eq(V.scaledSize(7), 2.1, 'scaledSize(7)＝2.1');
+eq(V.scaledSize(5.5), 1.65, '站圈 5.5 → 1.65');
+eq(V.scaledSize(7.5), 2.25, '大圈 7.5 → 2.25');
+eq(V.scaledSize(2), 0.6, '描边 2 → 0.6');
+eq(V.scaledSize(2.2), 0.66, '黑边 2.2 → 0.66');
+eq(V.scaledSize(15), 4.5, '药丸 15 → 4.5');
+eq(V.scaledSize(19.4), 5.82, '药丸外层 19.4 → 5.82（两位小数舍入防浮点噪声）');
+eq(V.scaledSize(1), 0.3, 'icon-size 1 → 0.3');
 
 // ---------- stopDisplayName / formatTerminals（显示文案） ----------
 console.log('stopDisplayName / formatTerminals:');
@@ -266,17 +370,17 @@ const kml = V.buildLineKML('la', lm, escStops);
 ok(kml.startsWith('<?xml version="1.0" encoding="UTF-8"?>'), 'XML 声明头');
 ok(kml.endsWith('</kml>'), 'kml 闭合尾');
 ok(kml.includes('<kml xmlns="http://www.opengis.net/kml/2.2">'), 'KML 命名空间');
-for (const sid of ['seg-existing', 'seg-approved', 'seg-future']) ok(kml.includes('id="' + sid + '"'), '样式 ' + sid);
-ok((kml.match(/<Placemark>/g) || []).length === 4, 'Placemark＝2 段＋2 站');
+ok(kml.includes('id="line"'), '单一样式 id="line"（不再按分段状态拆 Style）');
+ok(!kml.includes('seg-existing') && !kml.includes('seg-approved') && !kml.includes('seg-future'),
+  '三档状态样式全删（2026-11-22 改版：导出纯色实线）');
+ok((kml.match(/<Placemark>/g) || []).length === 4, 'Placemark＝2 段＋2 站（段仍拆分、段名保留状态文字）');
 ok(kml.includes('<name>' + V.xmlEscape('甲<&>"\'站') + '</name>'), '站名 XML 转义');
 ok(kml.includes('0.200000,0.300000,0'), '站坐标 6 位小数');
-ok(kml.includes('0.000000,0.000000,0 1.000000,0.000000,0'), '段坐标逐点一致');
-ok(kml.includes('<color>ff0000ff</color>'), 'existing 段全不透明（#ff0000 → ff0000ff）');
-const kmlFut = V.buildLineKML('lc', lm, []);
-ok(kmlFut.includes('<color>d9'), 'lc（未知状态退 future）alpha 0xd9（0.85）');
-const kmlFlat = V.buildLineKML('lc', lm, [], { emphasizeExisting: false });
-ok(kmlFlat.includes('<color>ff'), '关闭突出既有时 KML 全不透明');
-ok(!kmlFlat.includes('<color>73'), '不再含半透明色');
+ok(kml.includes('0.000000,0.000000,0 1.000000,0.000000,0'), '段坐标逐点一致（WGS84 不动）');
+ok(kml.includes('<color>ff0000ff</color>'), '线色全不透明（#ff0000 → ff0000ff，alpha 恒 ff）');
+const kmlLc = V.buildLineKML('lc', lm, []);
+ok(kmlLc.includes('<color>ff'), '任意线（含全 future 段）同样统一不透明');
+ok(!kmlLc.match(/<color>(?!ff)[0-9a-f]{2}/), '不再含任何半透明 alpha');
 ok(V.buildLineKML('nope', lm, st) === null, '未知线路返回 null');
 ok(V.buildLineKML('la', lm, escStops, { lineWidth: 5 }).includes('<width>5</width>'), 'lineWidth 透传');
 

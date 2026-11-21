@@ -56,13 +56,13 @@
       border: 1px solid var(--panel-border); border-radius: 6px; outline: none;
     }
     #searchInput:focus { border-color: var(--accent); }
-    /* 测试阶段底图开关（三态 无→OSM→高德 循环；2026-11-22 用户豁免，正式上线可能移除） */
-    #btnBasemap {
+    /* 顶栏三按钮共用样式（2026-11-22 改版）：分期四档循环 / 全局站名开关 / 测试阶段底图 */
+    #btnPhase, #btnNames, #btnBasemap {
       flex: none; padding: 6px 10px; cursor: pointer; white-space: nowrap;
       background: #0d0f13; color: var(--text);
       border: 1px solid var(--panel-border); border-radius: 6px;
     }
-    #btnBasemap:hover { border-color: var(--accent); color: #fff; }
+    #btnPhase:hover, #btnNames:hover, #btnBasemap:hover { border-color: var(--accent); color: #fff; }
     #searchDrop {
       position: absolute; top: calc(100% + 4px); left: 0; right: 0;
       margin: 0; padding: 4px 0; list-style: none;
@@ -96,16 +96,22 @@
     }
     .line-group-head:hover { color: var(--text); }
     .line-group.collapsed .line-item { display: none; }
+    /* 2026-11-22 改版：复选框/多选高亮删除；双击行＝聚焦该线 */
     .line-item {
       display: flex; align-items: center; gap: 8px;
       padding: 3px 12px; cursor: pointer; user-select: none;
     }
     .line-item:hover { background: #232833; }
-    .line-item input { accent-color: var(--accent); flex: none; }
+    .line-item.focused { background: #24406b; }
+    .line-item.display-only { opacity: 0.45; cursor: default; }   /* 他省线「仅显示」级：不可聚焦 */
     .line-swatch {
       flex: none; width: 14px; height: 4px; border-radius: 2px;
     }
     .line-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .line-chip {
+      flex: none; font-size: 11px; color: var(--text-dim);
+      padding: 0 5px; border: 1px solid var(--panel-border); border-radius: 8px;
+    }
     .panel-tip { padding: 8px 12px; color: var(--text-dim); font-size: 12px; }
 
     /* 右：信息面板（点线 / 点站 / 搜索选择） */
@@ -146,34 +152,39 @@
     #centerMsgText { font-size: 16px; font-weight: 600; }
     #centerMsgDetail { margin-top: 6px; color: var(--text-dim); font-size: 13px; }
 
-    /* 左下：状态图例（三档线样＋「突出既有」开关同处，色块透明度随开关联动） */
+    /* 左下：图例卡（2026-11-22 改版：三档线样说明与「突出既有」开关退役，只剩测试阶段
+       底图署名行；无底图时整卡由 viewer.js 隐藏）。不设 display 属性保证 [hidden] 生效。 */
     #legendPanel {
       position: absolute; left: 12px; bottom: 12px; z-index: 10;
       background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
-      backdrop-filter: blur(6px); padding: 10px 12px 8px;
+      backdrop-filter: blur(6px); padding: 8px 12px;
     }
-    .legend-title { font-size: 12px; color: var(--text-dim); letter-spacing: 1px; margin-bottom: 6px; }
-    .legend-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
-    .legend-swatch {
-      flex: none; width: 30px; height: 0;
-      border-top: 4px solid #7f93b0; border-radius: 1px;
-    }
-    .legend-swatch.is-future { border-top-style: dashed; }
-    .legend-note { color: var(--text-dim); font-size: 12px; }
-    #legendPanel #emphasisWrap {
-      display: flex; align-items: center; gap: 6px;
-      color: var(--text); cursor: pointer; user-select: none; white-space: nowrap;
-      margin-top: 8px; padding-top: 8px;
-      border-top: 1px solid var(--panel-border);
-    }
-    #legendPanel #emphasisWrap input { accent-color: var(--accent); }
     /* 测试阶段底图署名（attributionControl:false，此行即署名载体；无底图时隐藏）——
-       放图例卡尾行：恒在左下、与右下 NavigationControl 天然不重叠。不设 display 属性，
-       保证 [hidden] 生效。 */
+       恒在左下、与右下 NavigationControl 天然不重叠。 */
     #basemapAttr {
-      margin-top: 8px; padding-top: 8px;
-      border-top: 1px solid var(--panel-border);
       color: var(--text-dim); font-size: 11px; white-space: nowrap;
+    }
+
+    /* 屏幕下方居中：聚焦线路信息框（2026-11-22 改版；占位内容，用户稍后定） */
+    #focusBox {
+      position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+      z-index: 10; min-width: 260px; max-width: min(480px, calc(100vw - 24px));
+      background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
+      backdrop-filter: blur(6px); overflow: hidden;
+    }
+    #focusHead {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 8px 8px 12px; border-bottom: 1px solid var(--panel-border);
+    }
+    #focusTitle { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #focusClose {
+      flex: none; border: none; background: none; color: var(--text-dim);
+      font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 6px;
+    }
+    #focusClose:hover { color: var(--text); }
+    #focusBody { padding: 8px 12px; }
+    #focusTip {
+      padding: 4px 12px 8px; color: var(--text-dim); font-size: 11px;
     }
 
     /* 站点 hover 提示（浮于图例之上、面板之下） */
@@ -191,7 +202,6 @@
       #linePanel { width: 190px; }
       #infoPanel { width: calc(100vw - 24px); }
       #legendPanel { padding: 8px 10px 6px; }
-      .legend-swatch { width: 24px; }
     }
   </style>
 </head>
@@ -205,6 +215,12 @@
       <input id="searchInput" type="text" placeholder="搜索线路或车站…" autocomplete="off" spellcheck="false">
       <ul id="searchDrop" hidden></ul>
     </div>
+    <!-- 2026-11-22 改版：分期四档循环（无＝全部正常；非「无」档＝选中期次的线路正常显示、
+         其他线路半透明并隐去站名）＋全局站名开关（隐藏时一切站名不显示，优先级最高）。不持久化。 -->
+    <button id="btnPhase" type="button"
+      title="分期四档循环：无 → 既有 → 已批复 → 远期 → 无。「无」＝全部正常显示；非「无」档＝选中期次的线路正常显示，其他线路半透明并隐去站名（站圈符号保留）。">分期：无</button>
+    <button id="btnNames" type="button"
+      title="全局站名开关：显示 ⇄ 隐藏。隐藏时一切站名不显示（优先级最高），站圈符号保留。">站名：显示</button>
     <!-- 测试阶段功能（正式上线可能移除）：底图三态循环。默认「无」＝零外部资源、零网络请求；
          高德为 GCJ02，仅显示坐标做偏移对齐，数据与导出仍为 WGS84。状态不持久化。 -->
     <button id="btnBasemap" type="button"
@@ -229,17 +245,21 @@
     <div id="centerMsgDetail"></div>
   </div>
 
-  <aside id="legendPanel" aria-label="状态图例">
-    <div class="legend-title">线路状态</div>
-    <div class="legend-row"><span class="legend-swatch" id="swExisting"></span>既有</div>
-    <div class="legend-row"><span class="legend-swatch" id="swApproved"></span>已批复</div>
-    <div class="legend-row"><span class="legend-swatch is-future" id="swFuture"></span>远期<span class="legend-note">（虚线）</span></div>
-    <label id="emphasisWrap" title="开启后：既有段不透明、已批复段 75%、远期段 45%；关闭后三档同等不透明（远期仍为虚线）">
-      <input type="checkbox" id="emphasisToggle" checked>突出既有
-    </label>
-    <!-- 测试阶段底图署名行（文案由 viewer.js 随三态切换；「无」时隐藏） -->
+  <!-- 2026-11-22 改版：三档线样说明与「突出既有」开关退役（渲染已不区分期次），
+       图例卡只剩测试阶段底图署名行；无底图时整卡隐藏（viewer.js 控制）。 -->
+  <aside id="legendPanel" aria-label="底图署名" hidden>
     <div id="basemapAttr" hidden title="测试阶段底图署名（无底图时隐藏）"></div>
   </aside>
+
+  <!-- 聚焦线路信息框（屏幕下方居中；占位内容，用户稍后定） -->
+  <div id="focusBox" hidden>
+    <div id="focusHead">
+      <div id="focusTitle"></div>
+      <button id="focusClose" title="退出聚焦（或按 Esc）" type="button">×</button>
+    </div>
+    <div id="focusBody"></div>
+    <div id="focusTip">双击左栏同一行或按 Esc 退出聚焦</div>
+  </div>
 
   <div id="stopTip" hidden>
     <div id="stopTipName"></div>

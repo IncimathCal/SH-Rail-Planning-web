@@ -1,28 +1,51 @@
 // viewer_core.js —— 阶段 3 查看器·纯逻辑层（2026-11-21）
 // 不依赖 DOM / maplibre / editor.js：数据归一（线路聚合、站点平表、换乘组归并）、
-// 搜索匹配、标签分级、单线导出（GeoJSON 对象 / KML 字符串）、线层透明度表达式构造
-//（单层 match 版＋按 segStatus 拆层版）、显示文案（起讫格式化、未名站占位）。
+// 搜索匹配、标签分级与可见性（全局开关/聚焦常显/调光隐藏/zoom 门槛）、单线导出
+//（GeoJSON 对象 / KML 字符串）、调光纯逻辑（线路期次归类、调光线集计算）、
+// 尺寸缩放冻结表达式构造、显示文案（起讫格式化、未名站占位）。
 // 浏览器端挂 globalThis.VIEWER_CORE；node 端（tools/test_viewer_logic.js）走 module.exports。
 // 数据契约：net/lines.geojson（每 feature＝线×分段）、net/stops.geojson（每 feature＝线×站）。
 // 2026-11-21 增：出省箭头（stop.kind:'arrow'——非站，不进组/标签/摘要/导出，仅出 arrows 视图）、
 // ≥3 线同站组药丸链序（planGroupPillChain 贪心最近邻，与编辑器侧逐字节同规格）。
 // 2026-11-22 增：GCJ02 显示变换三件套（outOfChina/wgs84ToGcj02＝src/geom.js 同源受控副本＋
 // makeDispCoord 显示坐标工厂）——测试阶段底图（高德）对齐用，仅显示侧，权威数据不动。
+// 2026-11-22 改版（用户八条指示）：渲染不再区分期次（删三档透明/远期虚线，导出同步纯色实线）、
+// 分期四档＋聚焦双模式调光（computeDimmedSet）、标签可见性优先级（visibleLabels）、
+// 普通站标签门槛 12→11、z<11 尺寸线性缩小（zoomInterp/scaledSize）、左栏类别过滤常量。
 
 (function (G) {
   'use strict';
 
   // ---------- 常量（结构字段与枚举全英文；中文仅显示文案） ----------
-  // 三档透明度＝编辑器画布同值（2026-11-22 用户裁定：查看器风格未定前复用编辑器画布参数；
-  // editor.html .seg-existing/.seg-approved/.seg-future），地图层与 KML 导出 alpha 同源
-  const SEG_STATUS_OPACITY = { existing: 1.0, approved: 0.5, future: 0.85 };
+  // 2026-11-22 用户改版：渲染不再区分期次，三档透明/远期虚线全删。旧 SEG_STATUS_OPACITY
+  //（existing 1 / approved .5 / future .85，编辑器画布同值）的「默认显示三档」使命终结，
+  // 调光取值由它演化：DIM_OPACITY 沿用其中「已批复 0.5」作统一半透明系数（占位参数，
+  // 用户目验后可调）。
+  const DIM_OPACITY = 0.5;
+  // 分段状态合法性名单＋线路期次归类的优先级（越大越「先进」）：线路期次＝全线最先进段
+  //（existing ＞ approved ＞ future；既有线的远期延伸整线归「既有」——推定待用户确认）
+  const SEG_STATUS_RANK = { existing: 3, approved: 2, future: 1 };
   const DEFAULT_LINE_COLOR = '#888888';
   const GROUP_TYPE_ZH = { 'same-station': '同站换乘', 'out-of-station': '出闸换乘', junction: '接轨站' };
   const ROLE_ZH = { main: '主线', branch: '支线', connector: '联络线', standalone: '独立线' };
   const SEG_STATUS_ZH = { existing: '既有', approved: '已批复', future: '远期' };
+  // 分期四档循环（顶栏按钮）：无 → 既有 → 已批复 → 远期 → 无
+  const PHASE_CYCLE = ['none', 'existing', 'approved', 'future'];
+  const PHASE_LABEL_ZH = { none: '无', existing: '既有', approved: '已批复', future: '远期' };
+  // 左栏线路列表隐藏的类别（2026-11-22 用户裁定：仅「联络线」隐藏；地图照画、搜索照收）
+  const HIDDEN_LIST_LAYERS = ['联络线'];
+  // 「仅显示」级类别（2026-11-22 用户裁定：他省线）——列表双击不聚焦、地图点选不开面板、
+  // 一切调光场合（分期非「无」档/任何聚焦）恒在半透明侧（即便期次恰好匹配）
+  const DISPLAY_ONLY_LAYERS = ['他省'];
   const LABEL_CAP = 800;        // 标签数量上限：超过则只显示换乘组标签（防低 zoom 糊屏）
-  const LABEL_ZOOM_GROUP = 10;  // 换乘组标签最低 zoom
-  const LABEL_ZOOM_STOP = 12;   // 普通站标签最低 zoom
+  const LABEL_ZOOM_GROUP = 10;  // 换乘组标签最低 zoom（不动）
+  const LABEL_ZOOM_STOP = 11;   // 普通站标签最低 zoom（2026-11-22 用户指示 12→11）
+  // 尺寸缩放冻结（2026-11-22 用户指示）：z≥11 各尺寸维持基准值；z<11 随 zoom 线性缩小，
+  // 至 z=SIZE_ZOOM_MIN 缩到基准 ×SIZE_MIN_RATIO（两端 clamp——MapLibre interpolate 原生行为）。
+  // 比例 0.30 为占位参数，用户目验后会调。z=11 与普通站名门槛一致（用户指定）。
+  const SIZE_ZOOM_MIN = 8;
+  const SIZE_ZOOM_HOLD = 11;
+  const SIZE_MIN_RATIO = 0.30;
 
   // ---------- 小工具 ----------
   // XML 文本转义（KML 用）
@@ -126,7 +149,7 @@
       }
       line.segments.push({
         segIndex: Number.isFinite(p.segIndex) ? p.segIndex : line.segments.length,
-        segStatus: Object.prototype.hasOwnProperty.call(SEG_STATUS_OPACITY, p.segStatus) ? p.segStatus : 'future',
+        segStatus: Object.prototype.hasOwnProperty.call(SEG_STATUS_RANK, p.segStatus) ? p.segStatus : 'future',
         coords: g.coordinates,
       });
     }
@@ -317,7 +340,9 @@
     });
     for (const s of singles) {
       pins.push(pinOfStop(s, null));
-      labels.push({ key: s.sid, name: s.name, lon: s.lon, lat: s.lat, group: false, groupType: null, lineNames: s.lineName ? [s.lineName] : [] });
+      // lineIds＝站名可见性判定用（全局开关/聚焦常显/调光隐藏，见 visibleLabels）
+      labels.push({ key: s.sid, name: s.name, lon: s.lon, lat: s.lat, group: false, groupType: null,
+        lineNames: s.lineName ? [s.lineName] : [], lineIds: s.lineId ? [s.lineId] : [] });
     }
     for (const grp of byGroup.values()) {
       const n = grp.members.length || 1;
@@ -349,7 +374,7 @@
           groupType: grp.type, big: grp.type === 'same-station', lon, lat,
         });
       }
-      labels.push({ key: 'g:' + grp.groupId, name, lon, lat, group: true, groupType: grp.type, lineNames });
+      labels.push({ key: 'g:' + grp.groupId, name, lon, lat, group: true, groupType: grp.type, lineNames, lineIds });
     }
     return { pins, pills, arrows, labels };
   }
@@ -383,8 +408,11 @@
     return out;
   }
 
-  // 线路分类分组（layer 字段）：组名按中文本地序，未分类恒最后，组内按 lineId 升序。
-  function layerGroups(linesMap) {
+  // 线路分类分组（layer 字段）。lineOrder（可选，线 id 数组＝编辑器排序面板定的自定义显示序，
+  // 经 manifest.lineOrder → flatten → net/index.json 传入）：组内按自定义序、组序按组内最靠前
+  // 成员——跨类交错的自定义序在分组展示下尽可能保真；未列入的线排在已列入者之后（tie-break
+  // 与无序时一致）。无 lineOrder 时维持原行为：组名中文本地序、组内 lineId 升序、未分类恒最后。
+  function layerGroups(linesMap, lineOrder) {
     const named = new Map(), unclassified = [];
     for (const line of linesMap.values()) {
       if (typeof line.layer === 'string' && line.layer) {
@@ -392,12 +420,28 @@
         named.get(line.layer).push(line);
       } else unclassified.push(line);
     }
-    const byId = (a, b) => (a.lineId < b.lineId ? -1 : a.lineId > b.lineId ? 1 : 0);
-    const groups = [...named.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0], 'zh'))
-      .map(([layer, lines]) => ({ layer, lines: lines.slice().sort(byId) }));
-    if (unclassified.length) groups.push({ layer: null, lines: unclassified.slice().sort(byId) });
-    return groups;
+    const rank = new Map();
+    if (Array.isArray(lineOrder)) {
+      lineOrder.forEach((id, i) => { const k = String(id); if (!rank.has(k)) rank.set(k, i); });
+    }
+    const rOf = (l) => (rank.has(l.lineId) ? rank.get(l.lineId) : Infinity);
+    const byOrder = (a, b) => {
+      const ra = rOf(a), rb = rOf(b);
+      return ra !== rb ? ra - rb : (a.lineId < b.lineId ? -1 : a.lineId > b.lineId ? 1 : 0);
+    };
+    const gRank = (lines) => lines.reduce((m, l) => Math.min(m, rOf(l)), Infinity);
+    // 组间排序：有自定义序的组按组内最靠前成员；全部无序（或并列 Infinity）时回落旧惯例
+    // ——组名中文本地序、未分类恒最后（含未分类线被显式排序的情形：保真用户序优先于惯例）。
+    const legacyCmp = (a, b) => {
+      if (a.layer == null) return b.layer == null ? 0 : 1;
+      if (b.layer == null) return -1;
+      return a.layer.localeCompare(b.layer, 'zh');
+    };
+    const all = [...named.entries()].map(([layer, lines]) => ({ layer, lines }));
+    if (unclassified.length) all.push({ layer: null, lines: unclassified });
+    return all
+      .sort((a, b) => (gRank(a.lines) - gRank(b.lines)) || legacyCmp(a, b))
+      .map((g) => ({ layer: g.layer, lines: g.lines.slice().sort(byOrder) }));
   }
 
   // ---------- 搜索匹配 ----------
@@ -426,8 +470,9 @@
     return hits.slice(0, cap).map((h) => h.ent);
   }
 
-  // ---------- 标签分级 ----------
-  // z≥12 显示全部（超上限只显示换乘组）；z≥10 只显示换乘组；更低不显示。
+  // ---------- 标签分级（zoom 门槛层；上层优先级见 visibleLabels） ----------
+  // z≥11 显示全部（超上限只显示换乘组）；z≥10 只显示换乘组；更低不显示。
+  //（普通站门槛 2026-11-22 由 12 降为 11，用户指定；组门槛 10 不动）
   function filterLabels(labels, zoom, cap) {
     const arr = Array.isArray(labels) ? labels : [];
     const c = Number.isFinite(cap) && cap > 0 ? cap : LABEL_CAP;
@@ -436,31 +481,104 @@
     return [];
   }
 
-  // ---------- 线层透明度 paint 表达式 ----------
-  // 优先级：选中集淡化（未选线 0.08）＞「突出既有」分段半透明（开关关闭＝全部 1.0）。
-  // 单层 match 版（备用/文档语义；查看器现行按 segStatus 拆三层渲染，走 buildSegLayerOpacity）。
-  function buildLineOpacity(selectedIds, emphasizeExisting) {
-    const statusExpr = emphasizeExisting
-      ? ['match', ['get', 'segStatus'],
-        'existing', SEG_STATUS_OPACITY.existing, 'approved', SEG_STATUS_OPACITY.approved,
-        'future', SEG_STATUS_OPACITY.future, 0.9]
-      : 1.0;
-    const sel = Array.isArray(selectedIds) ? [...new Set(selectedIds.filter(Boolean).map(String))] : [];
-    if (!sel.length) return statusExpr;
-    return ['case', ['in', ['get', 'lineId'], ['literal', sel]], statusExpr, 0.08];
+  // ---------- 标签可见性（优先级：全局站名开关 ＞ 聚焦线常显 ＞ 被调光线隐藏 ＞ zoom 门槛） ----------
+  // state：{ hideAll: 全局站名开关（true＝一切站名不显示，优先级最高）,
+  //          dimmedSet: Set<lineId> 被调光线集, focus: 聚焦 lineId|null }。
+  // 调光隐藏规则与药丸/大圈符号一致：组标签全部成员线被调光才隐藏（任一成员未调光则显示）；
+  // 无所属线信息的标签（防御）不因调光隐藏。聚焦线的标签无视 zoom 门槛常显（也不占 LABEL_CAP）；
+  // 按用户给的优先级序，聚焦常显高于调光隐藏——聚焦线即便因分期不匹配被调光，其站名仍常显。
+  function labelHasLine(l, lineId) {
+    return Array.isArray(l.lineIds) && l.lineIds.indexOf(lineId) >= 0;
+  }
+  function labelShownUnderDim(l, dimSet) {
+    const ids = Array.isArray(l.lineIds) ? l.lineIds : [];
+    if (!ids.length) return true;                              // 无所属线信息（防御）→ 不因调光隐藏
+    for (const id of ids) if (!dimSet.has(id)) return true;    // 任一成员线未调光 → 显示
+    return false;                                              // 全部成员线被调光 → 隐藏
+  }
+  function visibleLabels(labels, zoom, cap, state) {
+    const st = state || {};
+    if (st.hideAll) return [];
+    const dimSet = st.dimmedSet instanceof Set ? st.dimmedSet
+      : new Set(Array.isArray(st.dimmedSet) ? st.dimmedSet.map(String) : []);
+    const arr = Array.isArray(labels) ? labels.filter(Boolean) : [];
+    const focus = st.focus != null && st.focus !== '' ? String(st.focus) : null;
+    if (!focus) return filterLabels(arr.filter((l) => labelShownUnderDim(l, dimSet)), zoom, cap);
+    // 聚焦常显：含聚焦线的标签先捞出（无视调光与 zoom 门槛——优先级序在调光隐藏之前），
+    // 其余标签走「调光隐藏 → zoom 门槛」；两类互斥不重复
+    const always = arr.filter((l) => labelHasLine(l, focus));
+    const rest = filterLabels(arr.filter((l) => !labelHasLine(l, focus) && labelShownUnderDim(l, dimSet)), zoom, cap);
+    return always.concat(rest);
   }
 
-  // 分段图层（按 segStatus 拆层）透明度：单状态常量三档（开关关＝1.0），选中集外 0.08。
-  // 拆层原因：line-dasharray 不支持数据驱动，远期虚线只能整层设。
-  function statusOpacity(segStatus, emphasizeExisting) {
-    if (!emphasizeExisting) return 1.0;
-    return Object.prototype.hasOwnProperty.call(SEG_STATUS_OPACITY, segStatus) ? SEG_STATUS_OPACITY[segStatus] : 0.9;
+  // ---------- 调光纯逻辑（2026-11-22 改版：分期四档＋聚焦双模式，任一条件调光即调光） ----------
+  // 线路期次归类：全线最先进段（existing ＞ approved ＞ future；未知段状态 rank 最低）。
+  // 无段的线返回 null（理论上 normalizeLines 产出的线至少一段，防御位）。
+  function linePhaseOf(line) {
+    let best = null, bestRank = -1;
+    for (const seg of (line && line.segments) || []) {
+      const r = Object.prototype.hasOwnProperty.call(SEG_STATUS_RANK, seg && seg.segStatus)
+        ? SEG_STATUS_RANK[seg.segStatus] : 0;
+      if (r > bestRank) { bestRank = r; best = seg.segStatus; }
+    }
+    return best;
   }
-  function buildSegLayerOpacity(selectedIds, segStatus, emphasizeExisting) {
-    const base = statusOpacity(segStatus, emphasizeExisting);
-    const sel = Array.isArray(selectedIds) ? [...new Set(selectedIds.filter(Boolean).map(String))] : [];
-    if (!sel.length) return base;
-    return ['case', ['in', ['get', 'lineId'], ['literal', sel]], base, 0.08];
+
+  // 线路可交互层级（集中判断，勿散落 if）：'displayOnly'＝仅显示（他省线，见 DISPLAY_ONLY_LAYERS）
+  // ——列表双击不聚焦、地图点选不开面板、一切调光场合恒在半透明侧；'normal'＝可交互。
+  function lineLayerRank(line) {
+    const layer = line && typeof line.layer === 'string' ? line.layer : '';
+    return DISPLAY_ONLY_LAYERS.indexOf(layer) >= 0 ? 'displayOnly' : 'normal';
+  }
+
+  // 调光线集：state＝{ phase: 'none'|'existing'|'approved'|'future', focus: lineId|null }。
+  // 分期非「无」档：期次不匹配的线调光；聚焦：非聚焦线调光；两者叠加取并集（任一命中即调光）。
+  // 「仅显示」级（displayOnly）线在任何调光场合（phase 或 focus 任一激活）恒入调光集——
+  // 即便期次恰好匹配（2026-11-22 用户裁定）。默认态（无分期＋无聚焦）不调光，displayOnly 正常显示。
+  function computeDimmedSet(linesMap, state) {
+    const dim = new Set();
+    const st = state || {};
+    const phase = st.phase && st.phase !== 'none' ? st.phase : null;
+    const focus = st.focus != null && st.focus !== '' ? String(st.focus) : null;
+    if (!phase && !focus) return dim;
+    const lines = linesMap instanceof Map ? [...linesMap.values()]
+      : (Array.isArray(linesMap) ? linesMap : []);
+    for (const line of lines) {
+      if (!line || line.lineId == null) continue;
+      const id = String(line.lineId);
+      if (lineLayerRank(line) === 'displayOnly') { dim.add(id); continue; }
+      if (phase && linePhaseOf(line) !== phase) dim.add(id);   // 两条件独立叠加（并集）
+      if (focus && id !== focus) dim.add(id);
+    }
+    return dim;
+  }
+
+  // 分期四档循环推进：'none' → 'existing' → 'approved' → 'future' → 'none'（非法输入回 'none'）
+  function nextPhase(cur) {
+    const i = PHASE_CYCLE.indexOf(cur);
+    return PHASE_CYCLE[((i < 0 ? 0 : i) + 1) % PHASE_CYCLE.length];
+  }
+
+  // ---------- 尺寸缩放冻结表达式（z≥11 恒基准、z<11 线性缩小） ----------
+  // zoomInterp(sizeLow, sizeHigh)：构造 ['interpolate',['linear'],['zoom'], 8, 低端, 11, 高端]；
+  // 两端自动 clamp（z≤8 恒低端、z≥11 恒高端）。scaledSize(base)：基准 ×SIZE_MIN_RATIO，
+  // 两位小数舍入防浮点噪声（如 0.30×19.4=5.819999…→5.82）。比例为占位参数待用户目验。
+  function zoomInterp(sizeLow, sizeHigh) {
+    return ['interpolate', ['linear'], ['zoom'], SIZE_ZOOM_MIN, sizeLow, SIZE_ZOOM_HOLD, sizeHigh];
+  }
+  function scaledSize(base) {
+    return Math.round(base * SIZE_MIN_RATIO * 100) / 100;
+  }
+
+  // ---------- 左栏列表分组＋类别过滤 ----------
+  // 在 layerGroups 之上套 HIDDEN_LIST_LAYERS 过滤（列表不显示、地图照画、搜索照收）；
+  // 类别缺失（layer 为空串）不过滤。空隐藏集＝原样返回。
+  function visibleListGroups(linesMap, hiddenList, lineOrder) {
+    const hid = new Set((Array.isArray(hiddenList) ? hiddenList : []).map(String));
+    if (!hid.size) return layerGroups(linesMap, lineOrder);
+    return layerGroups(linesMap, lineOrder)
+      .map((g) => ({ layer: g.layer, lines: g.lines.filter((l) => !hid.has(String(l && l.layer || ''))) }))
+      .filter((g) => g.lines.length);
   }
 
   // ---------- 显示文案（中文仅此层，结构字段不受影响） ----------
@@ -504,29 +622,27 @@
     return { type: 'FeatureCollection', features };
   }
 
-  // KML：手写模板。线按段分 Placemark，三种分段状态各一个 Style
-  //（KML 颜色 alpha 恰可表达「突出既有」的半透明：existing ff / approved bf / future 73）。
-  // 所有文本经 xmlEscape；坐标 6 位小数。未知 lineId → null。
+  // KML：手写模板。2026-11-22 改版：渲染不再区分期次，导出同步纯色实线、统一不透明——
+  // 单一样式（线色 alpha=1），不再按三种分段状态拆 Style；Placemark 仍按段拆分、段名保留
+  // 状态文字（信息性文字非样式，段状态数据同时保留在 GeoJSON 导出的 segStatuses）。
+  // 所有文本经 xmlEscape；坐标 6 位小数。未知 lineId → null。坐标恒 WGS84 不动。
   function buildLineKML(lineId, linesMap, stops, opts) {
     const line = linesMap.get(lineId != null ? String(lineId) : '');
     if (!line) return null;
     const o = opts || {};
     const docName = line.name || line.lineId;
-    const flat = o.emphasizeExisting === false ? 1 : null;   // 传 false 可导出全不透明版
-    const kmlColor = (status) => hexToKmlColor(line.color, flat != null ? flat : SEG_STATUS_OPACITY[status]);
+    const kmlColor = hexToKmlColor(line.color, 1);   // 统一全不透明
     const sts = stops.filter((s) => s.kind !== 'arrow' && s.lineId === line.lineId)
       .sort((a, b) => (a.t == null ? 1 : 0) - (b.t == null ? 1 : 0) || num(a.t) - num(b.t));
     const L = [];
     L.push('<?xml version="1.0" encoding="UTF-8"?>');
     L.push('<kml xmlns="http://www.opengis.net/kml/2.2"><Document>');
     L.push('<name>' + xmlEscape(docName) + '</name>');
-    for (const st of ['existing', 'approved', 'future']) {
-      L.push('<Style id="seg-' + st + '"><LineStyle><color>' + kmlColor(st) + '</color><width>'
-        + (Number.isFinite(o.lineWidth) ? o.lineWidth : 3) + '</width></LineStyle></Style>');
-    }
+    L.push('<Style id="line"><LineStyle><color>' + kmlColor + '</color><width>'
+      + (Number.isFinite(o.lineWidth) ? o.lineWidth : 3) + '</width></LineStyle></Style>');
     for (const seg of line.segments) {
       L.push('<Placemark><name>' + xmlEscape(docName + '（' + (SEG_STATUS_ZH[seg.segStatus] || seg.segStatus) + '段）') + '</name>');
-      L.push('<styleUrl>#seg-' + seg.segStatus + '</styleUrl>');
+      L.push('<styleUrl>#line</styleUrl>');
       L.push('<LineString><tessellate>1</tessellate><coordinates>');
       L.push(seg.coords.map((c) => num(c && c[0]).toFixed(6) + ',' + num(c && c[1]).toFixed(6) + ',0').join(' '));
       L.push('</coordinates></LineString></Placemark>');
@@ -545,13 +661,17 @@
 
   // ---------- 导出 ----------
   const Core = {
-    SEG_STATUS_OPACITY, DEFAULT_LINE_COLOR, GROUP_TYPE_ZH, ROLE_ZH, SEG_STATUS_ZH,
+    DIM_OPACITY, SEG_STATUS_RANK, DEFAULT_LINE_COLOR, GROUP_TYPE_ZH, ROLE_ZH, SEG_STATUS_ZH,
+    PHASE_CYCLE, PHASE_LABEL_ZH, HIDDEN_LIST_LAYERS, DISPLAY_ONLY_LAYERS,
     LABEL_CAP, LABEL_ZOOM_GROUP, LABEL_ZOOM_STOP,
+    SIZE_ZOOM_MIN, SIZE_ZOOM_HOLD, SIZE_MIN_RATIO,
     UNNAMED_STOP_ZH, stopDisplayName, formatTerminals,
     xmlEscape, normalizeHex, hexToKmlColor,
     normalizeLines, lineBboxOf, stopList, buildStopView, buildArrowViews,
-    planGroupPillChain, planarOf, lineSummaries, layerGroups,
-    matchEntries, filterLabels, buildLineOpacity, statusOpacity, buildSegLayerOpacity,
+    planGroupPillChain, planarOf, lineSummaries, layerGroups, visibleListGroups,
+    linePhaseOf, lineLayerRank, computeDimmedSet, nextPhase,
+    zoomInterp, scaledSize,
+    matchEntries, filterLabels, visibleLabels,
     buildLineGeoJSON, buildLineKML,
     outOfChina, wgs84ToGcj02, makeDispCoord,
   };

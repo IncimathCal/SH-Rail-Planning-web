@@ -1,18 +1,26 @@
 // viewer.js —— 阶段 3 查看器·DOM/MapLibre 胶水层（2026-11-21）
 // 职责：fetch net/{lines,stops}.geojson（相对路径 net → build/net 依次回退；加载/空/错三态
 // 中文覆盖）→ 纯逻辑归一（VIEWER_CORE）→ 内联 style 渲染（无 glyphs、无文本 symbol——
-// 纯深色画布）→ 搜索 / 多选高亮 / 线·站信息面板 / 状态图例＋「突出既有」开关 / 站点 hover
-// 提示 / 单线导出 / 中文 HTML 标签叠加。
+// 纯深色画布）→ 搜索 / 聚焦（列表双击）·线路·车站信息面板 / 站点 hover 提示 / 单线导出 /
+// 中文 HTML 标签叠加。
 // 渲染坐标系＝WGS84（无底图设计，零外部资源）；S.linesMap/S.stops 即权威结构，
 // GeoJSON/KML 导出与其同坐标。2026-11-22 增：测试阶段底图三态（无→OSM→高德循环，
 // 用户阶段性豁免——早前「查看器不放底图」裁定在测试期让位，正式上线可能保留也可能移除）；
 // 高德为 GCJ02，对齐走显示侧坐标变换（S.dispCoord，权威数据/导出一律 WGS84 不动）。
-// 线层按 segStatus 拆三层（远期虚线只能整层设——line-dasharray 不支持数据驱动）。
+// 2026-11-22 改版（用户八条指示）：①渲染不再区分期次——单一线层纯色实线统一不透明
+//（三档透明/远期虚线/按 segStatus 拆层全删）；②分期四档循环按钮（无→既有→已批复→远期），
+// 非选中期的线半透明并隐站名；③左栏列表双击聚焦（其他线半透明隐站名、聚焦线站名常显、
+// 屏幕下方居中信息框）；④左栏按类别过滤（HIDDEN_LIST_LAYERS）＋他省线「仅显示」级
+//（不聚焦/不点选/一切调光场合恒半透明）；⑤普通站名门槛 12→11；⑥全局站名开关；
+// ⑦z<11 尺寸线性缩小（zoomInterp 冻结表达式）；⑧图例卡三档线样与「突出既有」开关退役。
+// 调光实现：S.dimmed＝computeDimmedSet 的线集，渲染特征带 dim 位，各层 paint 用
+// ['case',['==',['get','dim'],1], DIM_OPACITY, 1]；调光线站圈/药丸/大圈/箭头同步半透明
+//（组符号＝全成员被调光才半透明，任一成员未调光则正常）。
 // 2026-11-21 增：①出省箭头（kind:'arrow'）——线色三角 glyph 指向线路外侧（方向在
 // VIEWER_CORE 按 t 序邻站推导；icon-rotate 数据驱动旋转；图标 canvas 本地绘制＋
 // styleimagemissing 按需注册，零外部资源零网络请求；不进搜索/hover/点选面板）；
 // ②≥3 线同站组药丸——沿贪心最近邻链序画双层折线（外黑内白＋圆头端帽＝白底黑边胶囊，
-// 厚度＝双线换乘大圈直径视觉等宽），成员站圈照常叠于其上；恰 2 线组维持合并大圈不动。
+// 厚度＝双线换乘大圈直径视觉等宽）；恰 2 线组维持合并大圈不动。
 // 与编辑器完全独立：不加载 editor.js 的任何代码。中文标签走 HTML 叠加（架构方案 §6 备案路线）。
 
 (function (G) {
@@ -31,8 +39,11 @@
     dispLabels: [],               // 标签列表（map.project 定位用，WGS84）
     summaries: new Map(),         // lineId → 摘要
     pinByKey: new Map(),
-    selected: new Set(),          // 高亮线路（空＝不高亮、全部正常显示）
-    emphasize: true,              // 「突出既有」开关（默认开）
+    phase: 'none',                // 分期四档：'none'|'existing'|'approved'|'future'（默认无＝全部正常）
+    focus: null,                  // 聚焦线路 lineId（null＝未聚焦；双击左栏行切换、Esc 退出）
+    namesOn: true,                // 全局站名开关（false＝一切站名不显示，优先级最高）
+    dimmed: new Set(),            // 调光线集（computeDimmedSet 按 phase/focus 叠加算出）
+    dimPending: false,            // 样式未就绪时切分期/聚焦的补应用标记（目标态恒存 S.phase/S.focus）
     labelPool: new Map(),         // 标签元素复用池 key → div
     labelFrame: 0,                // rAF 合帧令牌
     searchIdx: [],                // 搜索条目
@@ -52,7 +63,8 @@
   }
   // 数据目录候选（相对路径，docs/ 项目页部署不破）：'net'＝发布快照位（publish 产物），
   // 'build/net'＝本地 flatten 默认输出位。stops 缺失按零站容错（只看线网也成立）；
-  // lines 在所有候选位都取不到才算加载失败。
+  // lines 在所有候选位都取不到才算加载失败。index.json（线路自定义显示序，编辑器排序面板
+  // → manifest.lineOrder → flatten 产出）缺失按「无自定义序」容错——旧快照/旧 flatten 产物照常工作。
   const NET_BASES = ['net', 'build/net'];
   async function fetchNetFiles() {
     let lastErr = null;
@@ -67,7 +79,14 @@
       } catch (e) {
         console.warn('提示：' + base + '/stops.geojson 缺失，按零站处理（' + (e && e.message) + '）');
       }
-      return { linesFC, stopsFC, base };
+      let indexOrder = null;
+      try {
+        const idx = await fetchJSON(base + '/index.json');
+        if (idx && idx.fmt === 'net-index@1' && Array.isArray(idx.lineOrder)) {
+          indexOrder = idx.lineOrder.map(String);
+        }
+      } catch (e) { /* 无 index.json＝无自定义序，容错直通 */ }
+      return { linesFC, stopsFC, base, indexOrder };
     }
     throw lastErr || new Error('net/lines.geojson 与 build/net/lines.geojson 均不可用');
   }
@@ -101,12 +120,15 @@
   // 权威结构（S.linesMap/S.stops）恒 WGS84；渲染特征逐坐标过 S.dispCoord（测试阶段底图：
   // 'off'/'osm' 恒等直通、'gaode' 变 GCJ02）——bbox 也按显示坐标记账（fitAll/选中定位与
   // 渲染同帧一致；与 WGS84 差数百米，全图 fit 无感）。导出走权威结构，不经此处。
+  // 2026-11-22 改版：特征带 dim 位（S.dimmed 调光线集），各图层 paint 据此半透明
+  //（分期四档/聚焦两模式共用；调光状态下重设 source 即刷新）。
   function renderLinesFC() {
     S.dispBbox = new Map();
     const dc = S.dispCoord;
     const features = [];
     for (const line of S.linesMap.values()) {
       let bb = null;
+      const dim = S.dimmed.has(line.lineId) ? 1 : 0;
       for (const seg of line.segments) {
         const coords = [];
         for (const pt of seg.coords) {
@@ -119,7 +141,7 @@
         features.push({
           type: 'Feature',
           geometry: { type: 'LineString', coordinates: coords },
-          properties: { lineId: line.lineId, name: line.name, color: line.color, segStatus: seg.segStatus, segIndex: seg.segIndex },
+          properties: { lineId: line.lineId, name: line.name, color: line.color, segStatus: seg.segStatus, segIndex: seg.segIndex, dim },
         });
       }
       S.dispBbox.set(line.lineId, bb);
@@ -138,6 +160,14 @@
       if (p > pri) { pri = p; best = l.color; }
     }
     return best || '#000000';
+  }
+  // pin 调光位：单站按本线；组符号（合并大圈/junction 圈）按「全成员被调光才半透明，
+  // 任一成员未调光则正常」（与药丸同规则；出闸组成员是各自独立的单站圈，按本线各自调光）
+  function pinDimmed(pin) {
+    const ids = (pin.kind === 'group' && Array.isArray(pin.lineIds) && pin.lineIds.length)
+      ? pin.lineIds : (pin.lineId ? [pin.lineId] : []);
+    if (!ids.length) return 0;
+    return ids.every((id) => S.dimmed.has(id)) ? 1 : 0;
   }
   function renderStopsFC() {
     // pin → circle：白填充；描边＝无组站取线色、同站组/出闸成员黑边（换乘语义）、
@@ -159,7 +189,7 @@
       features.push({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [p[0], p[1]] },
-        properties: { key: pin.key, name: pin.name, lineId: pin.lineId || '', big: pin.big ? 1 : 0, dark, stroke },
+        properties: { key: pin.key, name: pin.name, lineId: pin.lineId || '', big: pin.big ? 1 : 0, dark, stroke, dim: pinDimmed(pin) },
       });
     }
     return { type: 'FeatureCollection', features };
@@ -180,7 +210,11 @@
       features.push({
         type: 'Feature',
         geometry: { type: 'LineString', coordinates: coords },
-        properties: { key: pill.key, name: (pill.pin && pill.pin.name) || '' },
+        properties: {
+          key: pill.key, name: (pill.pin && pill.pin.name) || '',
+          // 药丸调光规则：全成员线被调光才半透明（任一成员未调光则正常——2026-11-22 用户裁定）
+          dim: (pill.lineIds || []).length && pill.lineIds.every((id) => S.dimmed.has(id)) ? 1 : 0,
+        },
       });
     }
     return { type: 'FeatureCollection', features };
@@ -199,58 +233,71 @@
       features.push({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [p[0], p[1]] },
-        properties: { key: a.key, icon, angle: Math.round((a.angleDeg || 0) * 10) / 10 },
+        properties: { key: a.key, icon, angle: Math.round((a.angleDeg || 0) * 10) / 10, dim: S.dimmed.has(a.lineId) ? 1 : 0 },
       });
     }
     return { type: 'FeatureCollection', features };
   }
 
   // ---------- 地图 ----------
-  // 画布视觉参数＝编辑器同值常量（2026-11-22 用户裁定：查看器风格未定前复用编辑器画布，
-  // 不自创「成品地图」的随 zoom 缩细——那会让深色系线色在初始视野下糊成黑底）：
-  // 线宽 7px 圆帽、远期虚线 10/7（MapLibre dasharray 单位＝线宽倍数，10/7÷7 → [1.4286, 1]）、
-  // 药丸厚度 15（＝2×大圈半径 7.5）＋黑边 2.2、箭头 icon-size 1.0（glyph 24px 画布 ≈ 编辑器
-  // 18×12 三角）。透明度走 buildSegLayerOpacity（编辑器三档 1/.5/.85 同源）。
-  // 站名标签分级保留（2026-11-22 用户裁定「拉近再显示的设计非常好」），本段不涉及。
-  const LINE_LAYER_IDS = ['lines-future', 'lines-approved', 'lines-existing'];
-  function lineLayerDef(id) {
-    const status = id.replace(/^lines-/, '');
-    const paint = {
-      'line-color': ['get', 'color'],
-      'line-opacity': V.buildSegLayerOpacity([], status, S.emphasize),
-      'line-width': 7,
+  // 画布视觉参数＝编辑器同值常量（2026-11-22 用户裁定：查看器风格未定前复用编辑器画布）：
+  // 线宽 7px 圆帽、药丸厚度 15（＝2×大圈半径 7.5）＋黑边 2.2、箭头 icon-size 1.0（glyph 24px
+  // 画布 ≈ 编辑器 18×12 三角）、站圈 5.5/大圈 7.5/描边 2、黑边 2.2。
+  // 2026-11-22 改版①⑦：渲染不再区分期次——单一线层、纯色实线、统一不透明（默认 dim=0 → 1.0；
+  // 调光表达式恒挂，dim 位由渲染特征携带）；三档透明与远期虚线删除，无需按 segStatus 拆层。
+  // 尺寸缩放冻结：z≥11 恒基准、z<11 线性缩小至 z=8 的 0.30×（V.zoomInterp/V.scaledSize，
+  // 比例占位待用户目验）；z=11 与普通站名门槛一致（用户指定）。
+  // 调光：line-opacity＝['case',['==',['get','dim'],1], DIM_OPACITY, 1]——被调光线（分期
+  // 非选中/非聚焦/他省线）半透明；DIM_OPACITY＝0.5（旧「突出既有」档数值演化，占位待调）。
+  // ⚠ line-cap/line-join 是 layout 属性——放 paint 会被样式校验判非法、整个 style 拒载
+  //（2026-11-22 黑屏根因：药丸层初版起就放错在 paint，全部图层因此一个都不渲染）。
+  const LINE_LAYER_IDS = ['lines'];
+  function lineLayerDef() {
+    return {
+      id: 'lines', type: 'line', source: 'lines',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': ['get', 'color'],
+        'line-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
+        'line-width': V.zoomInterp(V.scaledSize(7), 7),
+      },
     };
-    if (status === 'future') paint['line-dasharray'] = [1.4286, 1];
-    // line-cap/line-join 是 layout 属性——放 paint 会被样式校验判非法、整个 style 拒载
-    //（2026-11-22 黑屏根因：药丸层初版起就放错在 paint，全部图层因此一个都不渲染）
-    return { id, type: 'line', source: 'lines', filter: ['==', ['get', 'segStatus'], status],
-      layout: { 'line-cap': 'round', 'line-join': 'round' }, paint };
   }
   // 药丸：外黑宽＝2×7.5＋2×2.2＝19.4、内白宽 15（编辑器 grp-pill thick/border 同值）；圆帽即胶囊。
-  // line-cap 属 layout（放 paint 会致样式校验拒载——黑屏根因，见上）。
+  // 调光与线层同规则（全成员被调光才半透明）；宽度同套缩放冻结。
   const PILL_LAYER_DEFS = [
     {
       id: 'pills-outer', type: 'line', source: 'pills',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#000000', 'line-width': 19.4 },
+      paint: {
+        'line-color': '#000000',
+        'line-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
+        'line-width': V.zoomInterp(V.scaledSize(19.4), 19.4),
+      },
     },
     {
       id: 'pills-inner', type: 'line', source: 'pills',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#ffffff', 'line-width': 15 },
+      paint: {
+        'line-color': '#ffffff',
+        'line-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
+        'line-width': V.zoomInterp(V.scaledSize(15), 15),
+      },
     },
   ];
   // 箭头 glyph：canvas 本地绘制（无 sprite 文件、零网络请求），icon-rotate 数据驱动旋转；
   // 不挂 click/mouseenter → 不触发 hover 提示与信息面板（搜索侧已无条目）。
+  // icon-size 同套缩放冻结；icon-opacity 随所属线调光（调光线的出省箭头一并半透明）。
   const ARROWS_LAYER_DEF = {
     id: 'arrows', type: 'symbol', source: 'arrows',
     layout: {
       'icon-image': ['get', 'icon'],
       'icon-rotate': ['get', 'angle'],
-      'icon-size': 1.0,
+      'icon-size': V.zoomInterp(V.scaledSize(1.0), 1.0),
       'icon-allow-overlap': true,
       'icon-ignore-placement': true,
     },
+    paint: { 'icon-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1] },
   };
   // 箭头 glyph 本地绘制（24×24 逻辑尺寸，2 倍像素密度抗锯齿；canvas → ImageData）：
   // 'arrow'＝指北实心三角（风筝形箭头，旋转交给 icon-rotate），'dot'＝无邻站可定向的退化小圆点。
@@ -299,10 +346,18 @@
             id: 'stops', type: 'circle', source: 'stops',
             paint: {
               // 编辑器同值常量：普通站圈 r 5.5/描边 2，换乘大圈 r 7.5/黑边 2.2（.stop-c/.stop-merge）
+              // 尺寸同套缩放冻结（z≥11 恒基准、z<11 线性缩小——interpolate 外层、case 做档位值）；
+              // 被调光线的站圈半透明（同系数，填充与描边一起）
               'circle-color': '#ffffff',
-              'circle-radius': ['case', ['get', 'big'], 7.5, 5.5],
+              'circle-radius': ['interpolate', ['linear'], ['zoom'],
+                V.SIZE_ZOOM_MIN, ['case', ['get', 'big'], V.scaledSize(7.5), V.scaledSize(5.5)],
+                V.SIZE_ZOOM_HOLD, ['case', ['get', 'big'], 7.5, 5.5]],
               'circle-stroke-color': ['get', 'stroke'],
-              'circle-stroke-width': ['case', ['get', 'dark'], 2.2, 2],
+              'circle-stroke-width': ['interpolate', ['linear'], ['zoom'],
+                V.SIZE_ZOOM_MIN, ['case', ['get', 'dark'], V.scaledSize(2.2), V.scaledSize(2)],
+                V.SIZE_ZOOM_HOLD, ['case', ['get', 'dark'], 2.2, 2]],
+              'circle-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
+              'circle-stroke-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
             },
           },
           ARROWS_LAYER_DEF,            // 箭头压顶（线端标志，盖过站圈不被遮挡）
@@ -325,7 +380,13 @@
     for (const id of LINE_LAYER_IDS) {
       map.on('click', id, (e) => {
         const p = e.features && e.features[0] && e.features[0].properties;
-        if (p && p.lineId != null && p.lineId !== '') openLinePanel(String(p.lineId));
+        if (p && p.lineId != null && p.lineId !== '') {
+          // 「仅显示」级（他省线）点选不开线路信息面板（2026-11-22 用户裁定：仅显示，无交互）；
+          // hover 光标为层粒度技术所限保留 pointer（见文件头说明），点选无动作即无交互
+          const line = S.linesMap.get(String(p.lineId));
+          if (line && V.lineLayerRank(line) === 'displayOnly') return;
+          openLinePanel(String(p.lineId));
+        }
       });
       map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; });
@@ -355,6 +416,8 @@
       S.styleReady = true;
       // 补应用样式未就绪期间点的底图目标态（目标恒存 S.basemap，此处只补地图侧动作）
       if (S.basemapPending) { S.basemapPending = false; applyBasemapToMap(); }
+      // 同理补应用提前切换的分期/聚焦调光（目标态恒存 S.phase/S.focus）
+      if (S.dimPending) { S.dimPending = false; applyDimState(); }
       fitAll(); scheduleLabels();
       console.info('viewer map loaded: layers=' + (map.getStyle().layers || []).length
         + ', center=' + JSON.stringify(map.getCenter()) + ', zoom=' + map.getZoom().toFixed(2)
@@ -380,11 +443,16 @@
     const b = $('btnBasemap');
     if (b) b.textContent = '底图：' + (BASEMAP_LABEL_ZH[S.basemap] || S.basemap);
     const attr = $('basemapAttr');
+    let text = '';
     if (attr) {
-      const text = BASEMAP_ATTR_ZH[S.basemap] || '';
+      text = BASEMAP_ATTR_ZH[S.basemap] || '';
       attr.textContent = text;
       attr.hidden = !text;   // 「无」时隐藏（attributionControl:false，此行即署名载体）
     }
+    // 2026-11-22 改版：三档线样说明与「突出既有」开关已删，图例卡只剩署名行——
+    // 无底图时整卡隐藏，有底图才现身（避免空卡片悬在左下角）
+    const panel = $('legendPanel');
+    if (panel) panel.hidden = !text;
   }
   // 惰性建层：首次开底图才 addSource/addLayer（默认路径零请求）；raster 插到首条线路图层
   // 之下——数据压瓦片、bg 背景层被瓦片盖住（无妨，瓦片即底色）。切回「无」只藏不删
@@ -438,35 +506,89 @@
     applyBasemapToMap();
   }
 
-  // ---------- 高亮 / 突出既有 ----------
-  function applyLinePaint() {
-    if (!S.map) return;
-    for (const id of LINE_LAYER_IDS) {
-      if (!S.map.getLayer(id)) continue;
-      S.map.setPaintProperty(id, 'line-opacity',
-        V.buildSegLayerOpacity([...S.selected], id.replace(/^lines-/, ''), S.emphasize));
+  // ---------- 分期四档 / 聚焦 / 调光 / 全局站名开关 ----------
+  // 调光应用：重算 S.dimmed → 四个 source 全量重设（渲染特征重带 dim 位）→ 标签重排。
+  // 与底图切换共用 render* 函数（互相独立、叠加不冲突——坐标变换与 dim 位各管各的）。
+  // 样式未就绪时只置 pending 标记（同底图三态模式），on('load') 后补应用，点击不丢失。
+  function applyDimState() {
+    S.dimmed = V.computeDimmedSet(S.linesMap, { phase: S.phase, focus: S.focus });
+    if (!S.map || !(S.styleReady || S.map.isStyleLoaded())) { S.dimPending = true; return; }
+    S.dimPending = false;
+    if (S.map.getSource('lines')) S.map.getSource('lines').setData(renderLinesFC());
+    if (S.map.getSource('stops')) S.map.getSource('stops').setData(renderStopsFC());
+    if (S.map.getSource('pills')) S.map.getSource('pills').setData(renderPillsFC());
+    if (S.map.getSource('arrows')) S.map.getSource('arrows').setData(renderArrowsFC());
+    scheduleLabels();
+  }
+  // 分期四档循环：无 → 既有 → 已批复 → 远期 → 无（「无」＝全部正常显示）
+  function syncPhaseUI() {
+    const b = $('btnPhase');
+    if (b) b.textContent = '分期：' + (V.PHASE_LABEL_ZH[S.phase] || S.phase);
+  }
+  function setPhase(mode) {
+    S.phase = mode;
+    syncPhaseUI();
+    applyDimState();
+  }
+  // 聚焦：双击列表行切换（再双击同一行退出、双击别的行切换）、Esc 退出；
+  // 「仅显示」级（他省线）不可聚焦——setFocus 入口统一拦截（列表双击/搜索选中都走这里）
+  function setFocus(lineId) {
+    const id = lineId || null;
+    if (id != null) {
+      const line = S.linesMap.get(id);
+      if (line && V.lineLayerRank(line) === 'displayOnly') return;
     }
+    S.focus = id;
+    syncFocusRows();
+    syncFocusBox();
+    applyDimState();
   }
-  function setSelected(ids) {
-    S.selected = new Set(ids);
-    syncChecks();
-    applyLinePaint();
-  }
-  function syncChecks() {
-    document.querySelectorAll('#lineList input[type="checkbox"]').forEach((cb) => {
-      cb.checked = S.selected.has(cb.dataset.line);
+  function toggleFocus(lineId) { setFocus(S.focus === lineId ? null : lineId); }
+  function clearFocus() { if (S.focus != null) setFocus(null); }
+  // 列表行聚焦态高亮（行上 .focused 类）
+  function syncFocusRows() {
+    document.querySelectorAll('#lineList .line-item').forEach((el) => {
+      el.classList.toggle('focused', S.focus != null && el.dataset.line === S.focus);
     });
   }
+  // 屏幕下方居中聚焦信息框（占位内容，用户稍后定）：线名、类别、分段状态统计、车站数、起讫站
+  function syncFocusBox() {
+    const box = $('focusBox');
+    if (!box) return;
+    const sum = S.focus != null ? S.summaries.get(S.focus) : null;
+    if (!sum) { box.hidden = true; return; }
+    $('focusTitle').textContent = sum.name || sum.lineId;
+    const body = $('focusBody');
+    body.textContent = '';
+    infoRow(body, '类别', sum.layer || '未分类');
+    infoRow(body, '分段状态', '既有 ' + sum.segCounts.existing + ' 段 · 已批复 ' + sum.segCounts.approved + ' 段 · 远期 ' + sum.segCounts.future + ' 段');
+    infoRow(body, '车站数', String(sum.stopCount));
+    infoRow(body, '起讫站', V.formatTerminals(sum));
+    box.hidden = false;
+  }
+  // 全局站名开关：隐藏时一切站名不显示（优先级最高，只影响 HTML 标签、站圈符号保留）
+  function syncNamesUI() {
+    const b = $('btnNames');
+    if (b) b.textContent = '站名：' + (S.namesOn ? '显示' : '隐藏');
+  }
+  function toggleNames() {
+    S.namesOn = !S.namesOn;
+    syncNamesUI();
+    scheduleLabels();
+  }
 
-  // ---------- 线路列表面板（按 layer 分组、多选高亮） ----------
+  // ---------- 线路列表面板（按 layer 分组；双击聚焦；类别过滤＋「仅显示」级禁用态） ----------
+  // 2026-11-22 改版：复选框与多选高亮整套删除；双击行＝聚焦该线（再双击/Esc 退出）。
+  // HIDDEN_LIST_LAYERS 类别（默认「联络线」）不出现在列表（地图照画、搜索照收）；
+  // 「仅显示」级（他省线）行加禁用态样式且双击不聚焦。类别在行上以 chip 小字展示。
   function buildLineList() {
     const host = $('lineList');
     host.textContent = '';
-    const groups = V.layerGroups(S.linesMap);
+    const groups = V.visibleListGroups(S.linesMap, V.HIDDEN_LIST_LAYERS, S.lineOrder);
     if (!groups.length) {
       const tip = document.createElement('div');
       tip.className = 'panel-tip';
-      tip.textContent = '（net/lines.geojson 中没有可列出的线路）';
+      tip.textContent = '（没有可列出的线路：net/lines.geojson 为空，或全部被左栏类别隐藏设置过滤）';
       host.appendChild(tip);
       return;
     }
@@ -480,27 +602,32 @@
       head.addEventListener('click', () => gEl.classList.toggle('collapsed'));
       gEl.appendChild(head);
       for (const line of grp.lines) {
-        const lab = document.createElement('label');
-        lab.className = 'line-item';
-        const cb = document.createElement('input');
-        cb.type = 'checkbox'; cb.dataset.line = line.lineId;
+        const item = document.createElement('div');
+        item.className = 'line-item';
+        item.dataset.line = line.lineId;
         const sw = document.createElement('span');
         sw.className = 'line-swatch'; sw.style.background = line.color;
         const nm = document.createElement('span');
         nm.className = 'line-name'; nm.textContent = line.name || line.lineId;
-        lab.append(cb, sw, nm);
-        lab.title = '单击勾选高亮，双击查看线路信息';
-        lab.addEventListener('dblclick', () => openLinePanel(line.lineId));
-        gEl.appendChild(lab);
+        item.append(sw, nm);
+        if (line.layer) {   // 类别 chip（小字展示；分组头已示类别，此为行级冗余展示）
+          const chip = document.createElement('span');
+          chip.className = 'line-chip'; chip.textContent = line.layer;
+          item.appendChild(chip);
+        }
+        const displayOnly = V.lineLayerRank(line) === 'displayOnly';
+        if (displayOnly) {   // 「仅显示」级：双击不聚焦（setFocus 亦有兜底拦截），视觉弱化
+          item.classList.add('display-only');
+          item.title = '他省线（仅显示）：不参与聚焦与分期高亮';
+        } else {
+          item.title = '双击聚焦该线路（再双击同一行或按 Esc 退出）';
+          item.addEventListener('dblclick', () => toggleFocus(line.lineId));
+        }
+        if (S.focus === line.lineId) item.classList.add('focused');
+        gEl.appendChild(item);
       }
       host.appendChild(gEl);
     }
-    host.addEventListener('change', () => {   // 勾选变化 → 收集选中集
-      const sel = new Set();
-      host.querySelectorAll('input[type="checkbox"]:checked').forEach((cb) => sel.add(cb.dataset.line));
-      S.selected = sel;
-      applyLinePaint();
-    });
   }
 
   // ---------- 信息面板 ----------
@@ -586,7 +713,7 @@
       if (!obj) return;
       downloadText(base + '.geojson', JSON.stringify(obj, null, 2), 'application/geo+json');
     } else {
-      const kml = V.buildLineKML(lineId, S.linesMap, S.stops, { emphasizeExisting: S.emphasize });
+      const kml = V.buildLineKML(lineId, S.linesMap, S.stops);
       if (!kml) return;
       downloadText(base + '.kml', kml, 'application/vnd.google-earth.kml+xml');
     }
@@ -635,12 +762,18 @@
     input.value = '';
     input.blur();
     if (ent.type === 'line') {
-      setSelected([ent.id]);
+      // 搜索选中线路＝聚焦（多选高亮已删）；「仅显示」级（他省线）不聚焦不开面板，
+      // 仅飞过去看（与地图点选/列表双击的「仅显示、无交互」裁定一致）
+      const line = S.linesMap.get(ent.id);
+      const displayOnly = !!line && V.lineLayerRank(line) === 'displayOnly';
       const bb = S.dispBbox.get(ent.id) || (ent.ref && ent.ref.bbox);
       if (bb) {
         S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 80, duration: 600, maxZoom: 13 });
       }
-      openLinePanel(ent.id);
+      if (!displayOnly) {
+        setFocus(ent.id);
+        openLinePanel(ent.id);
+      }
     } else {
       const lb = ent.ref;
       if (!lb) return;
@@ -679,7 +812,9 @@
     const wrap = $('labelLayer');
     const map = S.map;
     if (!wrap || !map) return;
-    const items = V.filterLabels(S.dispLabels, map.getZoom(), V.LABEL_CAP);
+    // 站名可见性（优先级：全局站名开关 ＞ 聚焦线常显 ＞ 被调光线隐藏 ＞ zoom 门槛）
+    const items = V.visibleLabels(S.dispLabels, map.getZoom(), V.LABEL_CAP,
+      { hideAll: !S.namesOn, dimmedSet: S.dimmed, focus: S.focus });
     const w = wrap.clientWidth, h = wrap.clientHeight, M = 60;   // 视口外裁剪边距
     const seen = new Set();
     for (const it of items) {
@@ -727,32 +862,27 @@
   }
   function hideStopTip() { $('stopTip').hidden = true; }
 
-  // ---------- 状态图例（三档线样与「突出既有」开关同处；透明度随开关联动） ----------
-  const LEGEND_SWATCHES = [['swExisting', 'existing'], ['swApproved', 'approved'], ['swFuture', 'future']];
-  function updateLegend() {
-    for (const [id, st] of LEGEND_SWATCHES) {
-      const el = $(id);
-      if (el) el.style.opacity = V.statusOpacity(st, S.emphasize);
-    }
-  }
-
   // ---------- 顶栏 / 面板交互 ----------
+  //（2026-11-22 改版：图例联动段删除——三档线样与「突出既有」开关退役，图例卡只剩底图署名行）
   function wireUI() {
-    $('emphasisToggle').addEventListener('change', (ev) => {
-      S.emphasize = ev.target.checked;
-      applyLinePaint();
-      updateLegend();
-    });
+    // 分期四档循环：无 → 既有 → 已批复 → 远期 → 无（不持久化，刷新回默认「无」）
+    $('btnPhase').addEventListener('click', () => setPhase(V.nextPhase(S.phase)));
+    // 全局站名开关：显示 ⇄ 隐藏（优先级最高——隐藏时一切站名不显示，站圈符号保留）
+    $('btnNames').addEventListener('click', toggleNames);
     // 测试阶段底图三态循环：无 → OSM → 高德 → 无（不持久化，刷新回默认「无」）
     $('btnBasemap').addEventListener('click', () => {
       setBasemap(S.basemap === 'off' ? 'osm' : (S.basemap === 'osm' ? 'gaode' : 'off'));
     });
+    syncPhaseUI();     // 与 S.phase 初始态（'none'）对齐：按钮文案「分期：无」
+    syncNamesUI();     // 与 S.namesOn 初始态（true）对齐：按钮文案「站名：显示」
     syncBasemapUI();   // 与 S.basemap 初始态（'off'）对齐：按钮文案「底图：无」、署名隐藏
     $('infoClose').addEventListener('click', () => { $('infoPanel').hidden = true; });
+    $('focusClose').addEventListener('click', clearFocus);
     document.addEventListener('keydown', (ev) => {
       if (ev.key !== 'Escape') return;
       if (ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA')) return;
-      $('infoPanel').hidden = true;   // 输入框内的 Esc 归搜索框自己处理
+      clearFocus();                    // Esc 退出聚焦（输入框内的 Esc 归搜索框自己处理）
+      $('infoPanel').hidden = true;
     });
     wireSearch();
   }
@@ -781,6 +911,7 @@
     }
     S.linesMap = V.normalizeLines(net.linesFC);
     S.stops = V.stopList(net.stopsFC);
+    S.lineOrder = net.indexOrder || null;   // 线路列表自定义显示序（无则组内 id 升序）
     if (!S.linesMap.size && !S.stops.length) {
       showCenter('暂无数据', '已读取 ' + net.base + '/，但其中没有可显示的线路或车站。'
         + '请确认编辑器已录入数据，并重新运行 flatten（或 publish）。');
@@ -796,7 +927,6 @@
     buildMap();
     buildLineList();
     wireUI();
-    updateLegend();
     hideCenter();
     scheduleLabels();
   }
