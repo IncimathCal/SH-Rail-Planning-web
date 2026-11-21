@@ -82,6 +82,10 @@
   .line-row .chip { width: 12px; height: 12px; border-radius: 3px; flex: none; border: 1px solid #000; }
   .line-row .nm { flex: 1; }
   .line-row .id { color: var(--dim); font-size: 11px; }
+  .layer-head { display: flex; justify-content: space-between; align-items: baseline;
+    color: var(--dim); font-size: 11px; margin: 6px 0 2px; padding: 0 4px 2px;
+    border-bottom: 1px dashed var(--border); }
+  #lineList .layer-head:first-child { margin-top: 0; }
   .badge { font-size: 10px; padding: 0 4px; border-radius: 3px; background: #444;
     color: #ddd; vertical-align: 1px; }
   .badge.arch { background: #5f2a2a; color: #ffb0b0; }
@@ -100,6 +104,7 @@
   .stop-row input { flex: 1; min-width: 0; }
   .stop-row .tin { color: var(--dim); font-size: 11px; width: 66px; text-align: right;
     flex: none; padding: 2px 4px; font-family: ui-monospace, Consolas, monospace; }
+  .stop-row .kind-tgl { flex: none; padding: 1px 5px; font-size: 11px; }
   .stop-row.sel { background: #1e3a5f; border-radius: 3px; }
   .stop-row.pend { background: #4a3a10; border-radius: 3px; }
   .stop-row input.warn { border-color: var(--err); }
@@ -116,7 +121,10 @@
   #rubber { fill: rgba(77, 163, 255, .12); stroke: var(--acc); stroke-dasharray: 5 4; }
   .svg-line { fill: none; }
   .line-base { stroke-width: 5; opacity: .28; }
-  .line-raw { stroke-width: 3; stroke-dasharray: 2 6; opacity: .8; }
+  .line-raw-halo { stroke: #fff; stroke-width: 6; pointer-events: none; }
+  .line-raw { stroke: #333; stroke-width: 3; stroke-dasharray: 3 5; opacity: 1; }
+  .line-raw.sel { stroke: var(--acc); stroke-width: 4.5; }
+  .line-raw-hit { fill: none; stroke: transparent; stroke-width: 20; cursor: pointer; }
   .seg-common { fill: none; stroke-width: 7; stroke-linecap: round; }
   .seg-existing { opacity: 1; }
   .seg-approved { opacity: .5; }
@@ -193,9 +201,16 @@
   <section id="secStops">
     <h3>设站（当前线）</h3>
     <div class="body">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+        <label>加站类型</label>
+        <button id="akStop" class="mini primary" title="普通设站：需站名">车站</button>
+        <button id="akBlock" class="mini"
+          title="线路所：中途接轨点（不在车站的接轨），虚线圆、可无名，仅编辑器可见（正式网页隐藏）；只能与线路所编为接轨站组">线路所</button>
+        <span style="color:var(--dim);font-size:11px">仅「加站」模式落站生效</span>
+      </div>
       <details id="bulkName">
         <summary>批量命名（先点完全线设站，再一次贴入名字）</summary>
-        <textarea id="bulkNames" rows="6" placeholder="每行一个站名，按线路走向顺序；只填入当前线站名为空的站，已命名的跳过"></textarea>
+        <textarea id="bulkNames" rows="6" placeholder="每行一个站名，按线路走向顺序；只填入当前线站名为空的普通站，已命名的与线路所跳过"></textarea>
         <div style="margin-top:4px;display:flex;align-items:center;gap:6px">
           <button class="mini primary" id="btnBulkFill">按序填入空名站</button>
           <span style="color:var(--dim);font-size:11px">逐站命名照常可用，两种方式可混用</span>

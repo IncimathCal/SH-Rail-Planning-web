@@ -72,7 +72,8 @@
   function lineIssues(l) {
     const issues = [];
     l.stops.forEach((st, i) => {
-      if (!st.name || !st.name.trim()) issues.push(`${st.id} 站名为空`);
+      // 线路所（kind:'block'）站名可空；普通站空名仍报
+      if (st.kind !== 'block' && (!st.name || !st.name.trim())) issues.push(`${st.id} 站名为空`);
       if (i > 0 && st.t <= l.stops[i - 1].t) issues.push(`${st.id} t 未递增`);
     });
     const want = l.loop ? l.stops.length : Math.max(l.stops.length - 1, 0);
@@ -85,14 +86,16 @@
     return issues;
   }
 
-  /** 批量命名规划：names 每行一个，按序配给 line.stops 中站名为空（含纯空白）的站；
-   *  已命名的站跳过不动——「先点完设站再一次贴名」与逐站命名两种方式并存。
+  /** 批量命名规划：names 每行一个，按序配给 line.stops 中站名为空（含纯空白）的普通站；
+   *  已命名的站与线路所（kind:'block'，可无名）都跳过不动——
+   *  「先点完设站再一次贴名」与逐站命名两种方式并存。
    *  返回 {pairs:[[stop,name]...], total}；写入由调用方执行（便于先快照后改）。 */
   function planBulkFill(line, names) {
     const clean = (names || []).map((s) => String(s).trim()).filter(Boolean);
     const pairs = [];
     let k = 0;
     for (const st of line.stops) {
+      if (st.kind === 'block') continue;
       if (st.name && st.name.trim()) continue;
       if (k >= clean.length) break;
       pairs.push([st, clean[k++]]);
@@ -101,6 +104,8 @@
   }
 
   /** 站圆预置批量落站规划（fmt/stations-import@1；node 单测覆盖）。
+   *  t 域 [0,1] 双闭（2026-11-21 用户裁定：开线终点站可精确落 1；环线 t=1≡t=0 同一物理点，
+   *  不设特殊拦截，物理同点重复设站由用户自律 + t 严格递增兜底）。
    *  preset stops（tools/station_extract.py 产物，t 6 位小数）逐个判定：
    *  与「原有站」|Δt| < dtEps → 跳过（exists，用户已设过的不动）；
    *  与「原有站或已接纳预置站」间隔 < eps → 跳过（conflict，如环线自交/共线重叠圆）；
@@ -108,7 +113,7 @@
    *  写入由 applyStopImport 执行（调用方先做整批快照，撤销一次回退整批）。 */
   function planStopImport(line, stops, dtEps = 0.002, eps = EPS) {
     const cand = (stops || []).map((s) => Math.round(s.t * 1e6) / 1e6)
-      .filter((t) => t >= 0 && t < 1).sort((a, b) => a - b);
+      .filter((t) => t >= 0 && t <= 1).sort((a, b) => a - b);
     const out = { inserts: [], skippedExist: 0, skippedConflict: 0, total: cand.length };
     const orig = line.stops.map((s) => s.t);          // 原有站（exists 只对照这些）
     const ts = orig.slice().sort((a, b) => a - b);    // 原有 + 已接纳（conflict 对照）
@@ -154,6 +159,51 @@
       if (d <= dtEps && (!best || d < best.d)) best = { name: s.nameSuggestion, dist: s.suggestDist, d };
     }
     return best;
+  }
+
+  /** 线路按 meta.layer 分组（分类＝源图 Line 直属子图层名，用户自有图层词汇，与 sourceLayer 同性质）。
+   *  返回 [{layer, lines}]：有分类的组按名称拼音序（localeCompare 'zh'）排列，
+   *  未分类（layer 缺失/空/非字符串）组固定最后；组内按 id 升序。
+   *  只有一类且无未分类时也照常返回单组（组头保持一致显示）。 */
+  function layerGroupsOf(lines) {
+    const byLayer = new Map();   // layer（可为 null）-> [line...]
+    for (const l of lines || []) {
+      const key = (l.meta && typeof l.meta.layer === 'string' && l.meta.layer) || null;
+      if (!byLayer.has(key)) byLayer.set(key, []);
+      byLayer.get(key).push(l);
+    }
+    const names = [...byLayer.keys()].filter((k) => k !== null)
+      .sort((a, b) => a.localeCompare(b, 'zh'));
+    if (byLayer.has(null)) names.push(null);
+    return names.map((k) => ({ layer: k, lines: byLayer.get(k).sort((a, b) => (a.id < b.id ? -1 : 1)) }));
+  }
+
+  /** 接轨站（stationGroups type:'junction'）合并圈描边色：按成员线角色优先级取色，
+   *  main > standalone > branch > connector（main 胜 branch、非联络线胜联络线为用户明定；
+   *  standalone 与 branch 的先后为本实现假设，待用户确认）。
+   *  members 传 [{role, color}]；同优先级取先出现者，无可用成员线颜色时退回 '#000'。 */
+  const ROLE_RANK = { main: 0, standalone: 1, branch: 2, connector: 3 };
+  function junctionStroke(members) {
+    let bestRank = Infinity, bestColor = null;
+    for (const m of members || []) {
+      const rank = ROLE_RANK[m && m.role];
+      if (rank === undefined) continue;
+      if (rank < bestRank && m.color) { bestRank = rank; bestColor = m.color; }
+    }
+    return bestColor || '#000';
+  }
+
+  /** 建组类型判定（拉框/点选攒组共用；node 单测覆盖）。
+   *  kinds＝候选成员的 stop.kind 列表（'block'＝线路所，其余/null＝普通车站）：
+   *  含线路所 → 组类型强制 junction（接轨站）且成员必须全为线路所；
+   *  线路所与普通车站混选 → 拒绝（ok:false, reason:'mixed'）；
+   *  全普通车站 → 默认 same-station（既有行为不变）。 */
+  function planStationGroup(kinds) {
+    const arr = kinds || [];
+    const nBlock = arr.filter((k) => k === 'block').length;
+    if (nBlock > 0 && nBlock < arr.length) return { ok: false, reason: 'mixed' };
+    if (nBlock > 0) return { ok: true, type: 'junction', allBlock: true };
+    return { ok: true, type: 'same-station', allBlock: false };
   }
 
   // ---------- 标定变换与瓦片数学（fmt/calibration@1 deg3 / fmt/calibration@2 tps；node 单测覆盖往返与 Python 对拍） ----------
@@ -286,6 +336,7 @@
   const SHLogic = { SEG_ORDER, SEG_LABEL, ROLE_LABEL, EPS, segInsert, segRemove,
     nextStopSeq, fixStatusField, lineIssues, planBulkFill,
     planStopImport, applyStopImport, suggestForStop,
+    layerGroupsOf, junctionStroke, planStationGroup,
     calibForward, calibInverse, tpsForward, tpsInverse, poly3Forward, poly3Inverse,
     lonToTileX, latToTileY, tileXToLon, tileYToLat };
   global.SHEditorLogic = SHLogic;
@@ -325,6 +376,7 @@
     arcs: new Map(),         // lid -> SHGeom.ArcPath
     view: null,              // {x,y,w,h}，null = 待适配内容
     mode: 'select',
+    addKind: null,           // 加站拍放类型：null＝车站（缺省），'block'＝线路所（中途接轨点）
     activeLine: null,        // lid
     selStop: null,           // sid
     selImport: null,         // {source, sourceLayer}
@@ -707,24 +759,33 @@
     const scale = S.view ? Math.max(svg.clientWidth, 1) / S.view.w : 1;
     const rStop = 5.5 / scale, ringR = 8.5 / scale, hintR = 12 / scale;
 
-    // 换乘组索引：同站组隐藏成员小圈（画合并圈）；出闸组成员圈描黑边
+    // 换乘组索引：同站/接轨组成员隐藏小圈（画合并圈）；出闸组成员圈描黑边
     const stationGroups = (S.groups && S.groups.stationGroups) || [];
     const grpOf = new Map();               // sid -> 组对象
-    const mergedHidden = new Set();        // 同站组成员 sid
+    const mergedHidden = new Set();        // 同站/接轨组成员 sid
     for (const g of stationGroups) {
       for (const sid of g.stops) grpOf.set(sid, g);
-      if (g.type === 'same-station') for (const sid of g.stops) mergedHidden.add(sid);
+      if (g.type === 'same-station' || g.type === 'junction') for (const sid of g.stops) mergedHidden.add(sid);
     }
 
-    // 未建线的导入 path（灰色虚线）
+    // 未建线的导入 path：白色 halo 垫底（OSM 底图上抬可见度）＋加浓虚线本体＋透明加宽命中线；
+    // 选中态（S.selImport 命中）虚线改强调色加粗。halo pointer-events:none 不截点击
     const boundPaths = new Set([...S.lines.values()].map((l) => l.path));
     for (const imp of S.imports) {
       for (const p of imp.paths) {
         if (boundPaths.has(p.path)) continue;
-        const path = el('path', { d: p.path, class: 'svg-line line-raw',
-          stroke: '#666', 'vector-effect': 'non-scaling-stroke' }, world);
+        const sel = S.selImport && S.selImport.source === imp.source
+          && S.selImport.sourceLayer === p.sourceLayer;
+        el('path', { d: p.path, class: 'svg-line line-raw-halo',
+          'vector-effect': 'non-scaling-stroke' }, world);
+        const path = el('path', { d: p.path, class: 'svg-line line-raw' + (sel ? ' sel' : ''),
+          'vector-effect': 'non-scaling-stroke' }, world);
         path.dataset.impSource = imp.source;
         path.dataset.impLayer = p.sourceLayer;
+        const hit = el('path', { d: p.path, class: 'svg-line line-raw-hit',
+          'vector-effect': 'non-scaling-stroke' }, world);
+        hit.dataset.impSource = imp.source;
+        hit.dataset.impLayer = p.sourceLayer;
       }
     }
 
@@ -768,7 +829,8 @@
         hit.dataset.lid = lid; hit.dataset.seg = i;
       }
 
-      // 设站（同站换乘组成员的独立小圈不画，统一画合并圈；出闸换乘描黑边）
+      // 设站（同站/接轨组成员的独立小圈不画，统一画合并圈；出闸换乘描黑边；
+      // 线路所 kind:'block'＝虚线圆（同尺寸、线色），仅编辑器可见、正式网页隐藏）
       stops.forEach((st, idx) => {
         if (mergedHidden.has(st.id)) return;
         const [x, y] = ap.pointAt(st.t);
@@ -776,27 +838,33 @@
         const isPend = S.pending.includes(st.id);
         const grp = grpOf.get(st.id);
         const oos = grp && grp.type === 'out-of-station';
+        const isBlk = st.kind === 'block';
         if (isSel) el('circle', { cx: x, cy: y, r: ringR, class: 'stop-ring',
           'vector-effect': 'non-scaling-stroke' }, gLine);
         const c = el('circle', { cx: x, cy: y, r: rStop, class: 'stop-c' + (isPend ? ' pend' : ''),
           stroke: oos ? '#000' : line.color, 'stroke-width': 2 / scale }, gLine);
+        if (isBlk) c.setAttribute('stroke-dasharray', `${3 / scale} ${3 / scale}`);   // 屏幕恒定虚线（同 hint-ring 3 3 习惯）
         c.dataset.lid = lid; c.dataset.sid = st.id;
         const t = el('title', {}, c);
-        t.textContent = `${idx + 1}. ${st.name || '（未命名）'}  t=${st.t.toFixed(4)}`
+        t.textContent = `${idx + 1}. ${st.name || (isBlk ? '（线路所）' : '（未命名）')}  t=${st.t.toFixed(4)}`
+          + (isBlk ? '  线路所：仅编辑器可见，正式网页隐藏' : '')
           + (oos ? `  ${grp.id}（出闸换乘）` : '');
       });
     }
 
-    // 同站换乘合并圈：位置取距所有成员线路最近点（投影质心迭代收敛）
+    // 同站换乘/接轨站合并圈：位置取距所有成员线路最近点（投影质心迭代收敛）。
+    // 接轨站（junction，支线/联络线接轨用）：尺寸与普通设站圆一致（不做换乘大圈）、
+    // 不画黑边（黑边是换乘语义），描边色按成员线角色优先级 main > standalone > branch > connector
+    // 取（junctionStroke；取不到成员线颜色退 '#000'）；fill 仍白底。就近提示/点选/编组交互复用既有机制。
     for (const g of stationGroups) {
-      if (g.type !== 'same-station') continue;
+      if (g.type !== 'same-station' && g.type !== 'junction') continue;
       const members = [];
       for (const sid of g.stops) {
         for (const [lid2, line2] of S.lines) {
           const st = line2.stops.find((x) => x.id === sid);
           if (st) {
             const ap2 = arcOf(lid2);
-            if (ap2) members.push({ ap: ap2, st });
+            if (ap2) members.push({ ap: ap2, st, line: line2 });
           }
         }
       }
@@ -816,12 +884,19 @@
         if (moved < 1e-3) break;
       }
       const anyPend = g.stops.some((sid) => S.pending.includes(sid));
-      const c = el('circle', { cx: px, cy: py, r: 7.5 / scale,
+      const isJunc = g.type === 'junction';
+      const anyBlk = isJunc && members.some((m) => m.st.kind === 'block');   // 组内含线路所→虚线（属性可见）
+      const c = el('circle', { cx: px, cy: py, r: isJunc ? rStop : 7.5 / scale,
         class: 'stop-merge' + (anyPend ? ' pend' : ''),
-        stroke: '#000', 'stroke-width': 2.2 / scale }, world);
+        stroke: isJunc
+          ? junctionStroke(members.map((m) => ({ role: m.line.role, color: m.line.color })))
+          : '#000',
+        'stroke-width': (isJunc ? 2 : 2.2) / scale }, world);
+      if (anyBlk) c.setAttribute('stroke-dasharray', `${3 / scale} ${3 / scale}`);
       c.dataset.grp = g.id;
       const t = el('title', {}, c);
-      t.textContent = `${g.id} 同站换乘：${g.stops.map((sid) => stopLabel(sid)).join('；')}`;
+      t.textContent = `${g.id} ${isJunc ? '接轨站' : '同站换乘'}：${g.stops.map((sid) => stopLabel(sid)).join('；')}`
+        + (anyBlk ? '（含线路所：仅编辑器可见，正式网页隐藏）' : '');
     }
 
     // 编组就近提示（纯视觉，绝不自动成组）
@@ -889,13 +964,19 @@
   function renderLineList() {
     const box = $('lineList');
     if (!S.lines.size) { box.innerHTML = '<div style="color:var(--dim)">暂无线路。</div>'; return; }
-    const arr = [...S.lines.values()].sort((a, b) => a.id < b.id ? -1 : 1);
-    box.innerHTML = arr.map((l) => `
-      <div class="line-row ${l.id === S.activeLine ? 'active' : ''}" data-lid="${l.id}">
-        <span class="chip" style="background:${esc(l.color)}"></span>
-        <span class="nm">${esc(l.name)} ${l.meta && l.meta.archived ? '<span class="badge arch">归档</span>' : ''}</span>
-        <span class="id">${l.id} · ${l.stops.length}站</span>
-      </div>`).join('');
+    // 按 meta.layer 分组渲染：组头（分类名＋条数）＋组内按 id 升序；未分类组固定最后；
+    // 只有一类且无未分类时也照常显示组头（layerGroupsOf 保证，保持一致）
+    let html = '';
+    for (const grp of layerGroupsOf([...S.lines.values()])) {
+      html += `<div class="layer-head"><span>${esc(grp.layer || '未分类')}</span><span>${grp.lines.length}</span></div>`;
+      html += grp.lines.map((l) => `
+        <div class="line-row ${l.id === S.activeLine ? 'active' : ''}" data-lid="${l.id}">
+          <span class="chip" style="background:${esc(l.color)}"></span>
+          <span class="nm">${esc(l.name)} ${l.meta && l.meta.archived ? '<span class="badge arch">归档</span>' : ''}</span>
+          <span class="id">${l.id} · ${l.stops.length}站</span>
+        </div>`).join('');
+    }
+    box.innerHTML = html;
   }
 
   // 本线 path 对应的导入建议名（自动就近匹配的源图文字，仅供参考）
@@ -946,6 +1027,19 @@
       lgs.map((g) => `<option value="${g.id}" ${l.groupId === g.id ? 'selected' : ''}>${g.id} ${esc(g.name)}</option>`),
       ['<option value="__new__">＋ 新建线组…</option>']).join('');
     const needStatus = l.stops.length < 2;
+    // 分类下拉：选项＝已载入导入记录里所有非空 layer 去重（拼音序）＋「（未分类）」空值；
+    // 当前线 meta.layer 为手输历史值不在选项里时补一项保底显示（不得丢弃用户已存的值）
+    const curLayer = (l.meta && typeof l.meta.layer === 'string' && l.meta.layer) || '';
+    const layerSet = new Set();
+    for (const imp of S.imports) {
+      for (const p of imp.paths) {
+        if (p && typeof p.layer === 'string' && p.layer) layerSet.add(p.layer);
+      }
+    }
+    if (curLayer) layerSet.add(curLayer);
+    const layerOpts = ['<option value="">（未分类）</option>'].concat(
+      [...layerSet].sort((a, b) => a.localeCompare(b, 'zh'))
+        .map((v) => `<option value="${esc(v)}" ${curLayer === v ? 'selected' : ''}>${esc(v)}</option>`));
     box.innerHTML = `
       <div class="fld"><label>id</label><input type="text" value="${l.id}" disabled></div>
       <div class="fld"><label>名称</label><input type="text" id="lfName" value="${esc(l.name)}"></div>
@@ -973,6 +1067,8 @@
         ${SEG_ORDER.map((s2) => `<option value="${s2}" ${l.status === s2 ? 'selected' : ''}>${SEG_LABEL[s2]}</option>`).join('')}
         </select><span style="color:var(--dim);font-size:11px">（站数&lt;2 时必填）</span></div>` : `
       <div class="fld" id="lfStatusRow"><label>状态</label><span style="flex:1;color:var(--dim);font-size:11px">≥2 站后整线状态停用——状态按分段设置：点击画布分段循环 既有→已批复→远期</span></div>`}
+      <div class="fld"><label>分类</label><select id="lfLayer" style="flex:1"
+        title="＝源图 Line 直属子图层名（如 市区线/市域线/联络线）；建线时自动带入，可改">${layerOpts.join('')}</select></div>
       <div class="fld"><label>源图层</label><input type="text" value="${esc((l.meta && l.meta.sourceLayer) || '')}" disabled></div>
       ${(() => {
         const it = matchPresetForLine(l);
@@ -981,7 +1077,7 @@
         return `<div class="fld"><label>站圆预置</label><span style="flex:1" class="preset-line">
           <button class="mini primary" id="lfImportStops" title="按站圆圆心的弧长投影 t 批量落站；已有站 |Δt|<0.002 跳过；撤销一次回退整批">从预置导入车站</button>
           <button class="mini primary" id="lfAdoptNames" ${ns ? '' : 'disabled'}
-            title="当前线所有空名站按 t 就近采纳站圆预置的建议名；已有名站跳过；错了可手动改；撤销一次回退整批">采用全部建议名</button>
+            title="当前线所有空名普通站按 t 就近采纳站圆预置的建议名；已有名站与线路所跳过；错了可手动改；撤销一次回退整批">采用全部建议名</button>
           <span style="color:var(--dim);font-size:11px">${esc(it.stationGroup)} · ${it.stops.length} 圆${ns ? ` · ${ns} 带站名建议` : ''}</span>
         </span></div>`;
       })()}
@@ -997,25 +1093,28 @@
     const box = $('stopList');
     const l = S.lines.get(S.activeLine);
     if (!l || !l.stops.length) {
-      box.innerHTML = '<div style="color:var(--dim)">在「加站」模式下点击线路加站；站名在此录入。</div>';
+      box.innerHTML = '<div style="color:var(--dim)">在「加站」模式下点击线路加站；站名在此录入。加站类型（车站/线路所）用上方按钮切换。</div>';
       return;
     }
     const preset = matchPresetForLine(l);   // 站名建议来源（无匹配则无 chips）
     box.innerHTML = l.stops.map((st, i) => {
       const prev = i > 0 ? l.stops[i - 1].t : null;
       const next = i < l.stops.length - 1 ? l.stops[i + 1].t : null;
-      const tBad = st.t < 0 || st.t >= 1 || (prev !== null && st.t <= prev) || (next !== null && st.t >= next);
-      // 站名建议 chip：仅空名站展示（源图就近文字，点选才写入；绝不自动命名）
-      const sug = preset && !(st.name && st.name.trim()) ? suggestForStop(preset, st.t) : null;
+      const tBad = st.t < 0 || st.t > 1 || (prev !== null && st.t <= prev) || (next !== null && st.t >= next);
+      const isBlk = st.kind === 'block';
+      // 站名建议 chip：仅普通空名站展示（源图就近文字，点选才写入；绝不自动命名；线路所不参与）
+      const sug = preset && !isBlk && !(st.name && st.name.trim()) ? suggestForStop(preset, st.t) : null;
       return `
       <div class="stop-row ${S.selStop === st.id ? 'sel' : ''} ${S.pending.includes(st.id) ? 'pend' : ''}" data-sid="${st.id}">
         <span class="idx">${i + 1}</span>
         <input type="text" value="${esc(st.name)}" data-ren="${st.id}"
-          class="${st.name ? '' : 'warn'}" placeholder="（站名）">
+          class="${(st.name || isBlk) ? '' : 'warn'}" placeholder="${isBlk ? '（线路所，可无名）' : '（站名）'}">
         ${sug ? `<span class="namehint stop-suggest" data-sugsid="${st.id}" data-sugname="${esc(sug.name)}"
           title="源图就近文字（距站圆 ${sug.dist}pt），仅供参考、不保证正确；点击采用">${esc(sug.name)}</span>` : ''}
         <input type="text" value="${st.t.toFixed(6)}" data-tedit="${st.id}"
-          class="tin${tBad ? ' warn' : ''}" title="弧长位置 t∈[0,1)，可手改（如起点改 0）">
+          class="tin${tBad ? ' warn' : ''}" title="弧长位置 t∈[0,1]，可手改（如起点改 0、开线终点改 1）">
+        <button class="mini kind-tgl ${isBlk ? 'primary' : ''}" data-kind="${st.id}"
+          title="${isBlk ? '转回普通车站（有名、正式网页可见）' : '转为线路所：中途接轨点，虚线圆、可无名，仅编辑器可见（正式网页隐藏）；只能与线路所编为接轨站组'}">所</button>
         <button class="mini danger" data-del="${st.id}" title="删除设站">✕</button>
       </div>`;
     }).join('');
@@ -1024,9 +1123,18 @@
   function stopLabel(sid) {
     for (const l of S.lines.values()) {
       const st = l.stops.find((x) => x.id === sid);
-      if (st) return `${l.id} ${st.name || '（未命名）'}`;
+      if (st) return `${l.id} ${st.name || (st.kind === 'block' ? '（线路所）' : '（未命名）')}`;
     }
     return sid;
+  }
+
+  /** sid → 设站类型（'block'＝线路所；null＝普通车站；找不到站也返回 null） */
+  function stopKindOf(sid) {
+    for (const l of S.lines.values()) {
+      const st = l.stops.find((x) => x.id === sid);
+      if (st) return st.kind === 'block' ? 'block' : null;
+    }
+    return null;
   }
 
   function renderGroupsPanel() {
@@ -1039,20 +1147,25 @@
         <button class="mini primary" id="btnMkGroup" ${S.pending.length >= 2 ? '' : 'disabled'}>编组</button>
         <button class="mini" id="btnClearPend" ${S.pending.length ? '' : 'disabled'}>清空</button></div>
       <div style="font-size:11px;color:var(--dim)">黄色虚线圈=就近提示，仅供参考，绝不自动合并。</div>` : '';
-    // 换乘节点组
+    // 换乘节点组（含线路所的组：线路所不得进 same-station/out-of-station，类型下拉锁死 junction）
     const sgs = S.groups.stationGroups || [];
     $('stationGroups').innerHTML = '<div style="margin-bottom:2px"><b>换乘节点组</b></div>' +
-      (sgs.length ? sgs.map((g) => `
+      (sgs.length ? sgs.map((g) => {
+        const hasBlk = g.stops.some((sid) => stopKindOf(sid) === 'block');
+        const lock = hasBlk ? ' title="组内含线路所：只能为接轨站（junction）"' : '';
+        return `
         <div class="grp-row" data-gid="${g.id}">
           <b>${g.id}</b>
-          <select data-gtype="${g.id}">
-            <option value="same-station" ${g.type === 'same-station' ? 'selected' : ''}>同站</option>
-            <option value="out-of-station" ${g.type === 'out-of-station' ? 'selected' : ''}>出闸</option>
-            <option value="" ${!g.type ? 'selected' : ''}>type 未定</option>
+          <select data-gtype="${g.id}"${lock}>
+            <option value="same-station" ${g.type === 'same-station' ? 'selected' : ''} ${hasBlk ? 'disabled' : ''}>同站</option>
+            <option value="out-of-station" ${g.type === 'out-of-station' ? 'selected' : ''} ${hasBlk ? 'disabled' : ''}>出闸</option>
+            <option value="junction" ${g.type === 'junction' ? 'selected' : ''}>接轨站</option>
+            <option value="" ${!g.type ? 'selected' : ''} ${hasBlk ? 'disabled' : ''}>type 未定</option>
           </select>
           <button class="mini danger" data-gdel="${g.id}">拆组</button>
           <div class="m">${g.stops.map((s2) => esc(stopLabel(s2))).join('；')}</div>
-        </div>`).join('')
+        </div>`;
+      }).join('')
         : '<div style="color:var(--dim);font-size:12px">（暂无）</div>');
     // 线组
     const lgs = S.groups.lineGroups || [];
@@ -1103,6 +1216,9 @@
       meta: { created: today(), updated: today(), archived: false,
         aliases: [], sourceLayer: sourceLayer, stopSeq: 0 },
     };
+    // 分类继承：path 记录带 layer 字段（.ai Line 直属子图层名，可能不存在——防御式读取）则原样带入。
+    // 「更新path」不回写分类——layer 只在建线时作初始值，此后属人工设定（renderLineForm 分类下拉改）。
+    if (typeof p.layer === 'string' && p.layer) line.meta.layer = p.layer;
     S.lines.set(lid, line);
     S.activeLine = lid; S.selStop = null;
     renderAll();
@@ -1155,9 +1271,10 @@
     if (!l) { setStatus('没有当前线路，无法采用建议名。', true); return; }
     const preset = matchPresetForLine(l);
     if (!preset) { setStatus('当前线路没有匹配的站圆预置（预置按几何签名绑定，与 path-NN 命名无关）。', true); return; }
-    let named = 0, noSug = 0;
+    let named = 0, noSug = 0, blk = 0;
     const pairs = [];
     for (const st of l.stops) {
+      if (st.kind === 'block') { blk++; continue; }   // 线路所可无名，不参与建议名
       if (st.name && st.name.trim()) { named++; continue; }
       const sug = suggestForStop(preset, st.t);
       if (sug) pairs.push([st, sug]);
@@ -1174,12 +1291,14 @@
     renderAll();
     setStatus(`已采用 ${pairs.length} 个建议名（空名站按 t 就近写入，可手动修改）`
       + `、跳过 ${named} 个已有名`
+      + (blk ? `、${blk} 个线路所` : '')
       + (noSug ? `、${noSug} 个空名站无就近建议（|Δt|>0.002）` : '')
       + '；撤销一次回退整批。');
   }
 
   // ---------- 设站操作 ----------
-  function addStop(lid, t) {
+  /** kind：null＝车站（缺省，stop 不写 kind 字段——老数据零迁移），'block'＝线路所（中途接轨点） */
+  function addStop(lid, t, kind) {
     const line = S.lines.get(lid);
     const ap = arcOf(lid);
     if (!line || !ap) return;
@@ -1191,20 +1310,25 @@
     const nextT = i < line.stops.length ? line.stops[i].t : null;
     if (prevT !== null && t - prevT < EPS) t = prevT + EPS;
     if (nextT !== null && nextT - t < EPS) t = nextT - EPS;
-    if (t < 0 || t >= 1 || (prevT !== null && t <= prevT) || (nextT !== null && t >= nextT)) {
+    // t 域 [0,1] 双闭：开线终点站可精确落 1（t=1 时 while 循环必推到末位，nextT=null，
+    // EPS 微调不会把合法的 1 挪成 1-ε；与已有 t=1 站重复/过近仍走上方微调或在此拒绝）
+    if (t < 0 || t > 1 || (prevT !== null && t <= prevT) || (nextT !== null && t >= nextT)) {
       setStatus('此处与相邻设站过近，未添加。', true); return;
     }
     snapshot();
     const seq = nextStopSeq(line);
     const sid = `${lid}-s${String(seq).padStart(2, '0')}`;
     const st = { id: sid, name: '', t: t, geo: null };
+    if (kind === 'block') st.kind = 'block';
     line.stops.splice(i, 0, st);
     segInsert(line, i);
     fixStatusField(line);
     line.meta.updated = today();
     S.selStop = sid;
     renderAll();
-    setStatus(`已加站 ${sid}（t=${t}）。请在左侧录入站名。`);
+    setStatus(kind === 'block'
+      ? `已加线路所 ${sid}（t=${t}，可无名；虚线圆，仅编辑器可见）。`
+      : `已加站 ${sid}（t=${t}）。请在左侧录入站名。`);
     const input = document.querySelector(`#stopList input[data-ren="${sid}"]`);
     if (input) input.focus();
   }
@@ -1242,7 +1366,9 @@
     const i = line.stops.findIndex((s) => s.id === sid);
     if (i < 0) return false;
     const lo = i > 0 ? line.stops[i - 1].t + EPS : 0;
-    const hi = i < line.stops.length - 1 ? line.stops[i + 1].t - EPS : 1 - EPS;
+    // 末站拖动上界放开到 1（t 域双闭，2026-11-21；与手改/加站一致——否则拖动是唯一落不到 1 的路径）。
+    // 环线末站拖至 1 与首站 t=0 物理同点，不拦截（用户自律 + 严格递增兜底）。
+    const hi = i < line.stops.length - 1 ? line.stops[i + 1].t - EPS : 1;
     if (t < lo) t = lo;
     if (t > hi) t = hi;
     t = Math.round(t * 1e6) / 1e6;
@@ -1360,7 +1486,7 @@
     if (S.mode === 'add') {
       const hit = nearestLineAt(wx, wy);
       if (hit) {
-        addStop(hit.lid, hit.pr.t);
+        addStop(hit.lid, hit.pr.t, S.addKind);
       } else {
         setStatus('点击位置不在任何线路附近（吸附半径 40px）。', true);
       }
@@ -1393,7 +1519,7 @@
     const mgSel = e.target.closest('.stop-merge');
     if (mgSel) {
       const g = S.groups.stationGroups.find((x) => x.id === mgSel.dataset.grp);
-      if (g) setStatus(`${g.id} 同站换乘组：${g.stops.map((sid) => stopLabel(sid)).join('；')}`);
+      if (g) setStatus(`${g.id} ${g.type === 'junction' ? '接轨站' : '同站换乘'}组：${g.stops.map((sid) => stopLabel(sid)).join('；')}`);
       return;
     }
     const segEl = e.target.closest('.seg-hit');
@@ -1461,14 +1587,25 @@
         + (skipped.length ? `（${skipped.length} 站已在其他组，先拆组再框）` : '') + '，不足 2 站，未建组。', true);
       return;
     }
+    // 线路所编组约束（planStationGroup）：混选拒绝；全线路所强制 junction；全普通站默认同站
+    const plan = planStationGroup(fresh.map((sid) => stopKindOf(sid)));
+    if (!plan.ok) {
+      setStatus(`框内可建组的 ${fresh.length} 站中线路所与普通车站混选，未建组`
+        + '（线路所只能与线路所编为接轨站组）'
+        + (skipped.length ? `；另有 ${skipped.length} 站已在其他组。` : '。'), true);
+      return;
+    }
     if (!S.groups) S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
     snapshot();
     const id = bumpCounter('nextG', 'g', 4);
-    S.groups.stationGroups.push({ id, stops: fresh, type: 'same-station', info: {} });
+    S.groups.stationGroups.push({ id, stops: fresh, type: plan.type, info: {} });
     S.pending = S.pending.filter((sid) => !fresh.includes(sid));   // 已入组的不再留在待编组
     renderAll();
-    setStatus(`拉框已建换乘节点组 ${id}（${fresh.length} 站，默认同站；可改出闸/未定）`
-      + (skipped.length ? `；跳过 ${skipped.length} 站（已在其他组）。` : '。'));
+    setStatus(plan.allBlock
+      ? `拉框已建接轨站组 ${id}（${fresh.length} 个线路所；描边取成员线角色最高优先级色）`
+        + (skipped.length ? `；跳过 ${skipped.length} 站（已在其他组）。` : '。')
+      : `拉框已建换乘节点组 ${id}（${fresh.length} 站，默认同站；可改出闸/接轨站/未定）`
+        + (skipped.length ? `；跳过 ${skipped.length} 站（已在其他组）。` : '。'));
   }
 
   svg.addEventListener('pointercancel', () => {
@@ -1510,6 +1647,31 @@
   $('stopList').addEventListener('click', (e) => {
     const del = e.target.dataset.del;
     if (del) { deleteStop(S.activeLine, del); return; }
+    const kindEl = e.target.closest('[data-kind]');   // 线路所↔普通车站切换（互相转换）
+    if (kindEl) {
+      const line = S.lines.get(S.activeLine);
+      const st = line && line.stops.find((s) => s.id === kindEl.dataset.kind);
+      if (st) {
+        // 普通站转线路所时守住组约束：线路所只能进 junction（接轨站）组
+        if (st.kind !== 'block') {
+          const grp = S.groups && (S.groups.stationGroups || []).find((g) => g.stops.includes(st.id));
+          if (grp && grp.type !== 'junction') {
+            setStatus(`${st.id} 在 ${grp.id}（${grp.type === 'out-of-station' ? '出闸' : '同站'}换乘）组中：`
+              + '线路所只能进接轨站组，请先拆组或改组类型。', true);
+            return;
+          }
+        }
+        snapshot();
+        if (st.kind === 'block') delete st.kind;
+        else st.kind = 'block';
+        line.meta.updated = today();
+        renderAll();
+        setStatus(st.kind === 'block'
+          ? `${st.id} 已转为线路所（虚线圆、可无名、仅编辑器可见）。`
+          : `${st.id} 已转回普通车站。`);
+      }
+      return;
+    }
     const sugEl = e.target.closest('[data-sugsid]');   // 站名建议 chip：点选采用（人工确认写入）
     if (sugEl) {
       const line = S.lines.get(S.activeLine);
@@ -1541,7 +1703,7 @@
     if (st) {
       st.name = e.target.value;
       line.meta.updated = today();
-      e.target.classList.toggle('warn', !st.name);
+      e.target.classList.toggle('warn', !st.name && st.kind !== 'block');
       renderWorld(); autosave();
     }
   });
@@ -1553,10 +1715,10 @@
     const st = line && line.stops.find((s) => s.id === sid);
     if (!st) return;
     const v = parseFloat(e.target.value);
-    if (!isFinite(v) || v < 0 || v >= 1) {
+    if (!isFinite(v) || v < 0 || v > 1) {
       e.target.value = st.t.toFixed(6);
       e.target.classList.add('warn');
-      setStatus('t 需为 [0,1) 内的数字，已还原。', true);
+      setStatus('t 需为 [0,1] 内的数字，已还原。', true);
       return;
     }
     const nv = Math.round(v * 1e6) / 1e6;
@@ -1575,6 +1737,20 @@
     e.target.value = st.t.toFixed(6);
     if (bad) setStatus('警告：t 未严格递增（保存线路时会被拦截）。', true);
     else setStatus(`t 已更新为 ${st.t}。`);
+  });
+
+  // 加站类型切换（车站/线路所）：只影响「加站」模式落站写入的 stop.kind（默认车站＝不写字段）
+  function syncAddKindButtons() {
+    $('akStop').classList.toggle('primary', S.addKind !== 'block');
+    $('akBlock').classList.toggle('primary', S.addKind === 'block');
+  }
+  $('akStop').addEventListener('click', () => {
+    S.addKind = null; syncAddKindButtons();
+    setStatus('加站类型：车站（普通设站，需站名）。');
+  });
+  $('akBlock').addEventListener('click', () => {
+    S.addKind = 'block'; syncAddKindButtons();
+    setStatus('加站类型：线路所（中途接轨点：虚线圆、可无名、仅编辑器可见；只能与线路所编为接轨站组）。');
   });
 
   // 批量命名：先点完全线设站、再一次贴入名字（与逐站命名并存，互不破坏）
@@ -1627,6 +1803,13 @@
         l.connects = e.target.value.split(',').map((s) => s.trim()).filter(Boolean);
         break;
       case 'lfStatus': l.status = e.target.value; break;
+      case 'lfLayer': {
+        // 分类改动即生效（同 lfName 模式）；选「（未分类）」即删除字段，不留空串
+        const v = e.target.value;
+        if (v) { l.meta = l.meta || {}; l.meta.layer = v; }
+        else if (l.meta) delete l.meta.layer;
+        break;
+      }
       default: touched = false;
     }
     if (touched) { l.meta.updated = today(); renderLineList(); renderWorld(); renderGroupsPanel(); autosave(); }
@@ -1706,7 +1889,14 @@
     const gid = e.target.dataset.gtype;
     if (!gid) return;
     const g = S.groups.stationGroups.find((x) => x.id === gid);
-    if (g) { g.type = e.target.value || null; renderWorld(); autosave(); }
+    if (!g) return;
+    // 防御：含线路所的组不得改为 junction 之外的类型（下拉已 disabled，此处兜底还原）
+    if (e.target.value !== 'junction' && g.stops.some((sid) => stopKindOf(sid) === 'block')) {
+      setStatus(`${gid} 组内含线路所：只能为接轨站（junction），已还原。`, true);
+      renderGroupsPanel();
+      return;
+    }
+    g.type = e.target.value || null; renderWorld(); autosave();
   });
 
   $('pendingBox').addEventListener('click', (e) => {
@@ -1722,12 +1912,20 @@
         setStatus('冲突：' + conflict.join('；') + '。请先拆组。', true);
         return;
       }
+      // 线路所编组约束（planStationGroup）：混选拒绝；全线路所强制 junction；全普通站默认同站
+      const plan = planStationGroup(S.pending.map((sid) => stopKindOf(sid)));
+      if (!plan.ok) {
+        setStatus('编组拒绝：待编组里线路所与普通车站混选（线路所只能与线路所编为接轨站组）。', true);
+        return;
+      }
       snapshot();
       const id = bumpCounter('nextG', 'g', 4);
-      S.groups.stationGroups.push({ id, stops: [...S.pending], type: 'same-station', info: {} });
+      S.groups.stationGroups.push({ id, stops: [...S.pending], type: plan.type, info: {} });
       S.pending = [];
       renderAll();
-      setStatus(`已建换乘节点组 ${id}（默认同站：合并为一个黑边大圈；可在列表改出闸/未定）。`);
+      setStatus(plan.allBlock
+        ? `已建接轨站组 ${id}（全线路所：合并为普通尺寸虚线圈，描边取成员线角色最高优先级色）。`
+        : `已建换乘节点组 ${id}（默认同站：合并为一个黑边大圈；可在列表改出闸/接轨站/未定）。`);
     }
   });
 
@@ -1755,7 +1953,7 @@
 
   const MODE_HINT = {
     select: '选择：点击设站选中（左侧改名）、拖动设站沿线移动、点击线段循环切换状态；左键拖动平移、滚轮缩放。',
-    add: '加站：点击线路附近即可加站（吸附半径 40px，自动记弧长 t）。可以先一路点完，再展开「批量命名」一次贴入站名。',
+    add: '加站：点击线路附近即可加站（吸附半径 40px，自动记弧长 t）。加站类型（车站/线路所）用左侧设站面板顶部按钮切换；可以先一路点完，再展开「批量命名」一次贴入站名（线路所跳过）。',
     group: '编组：任意处拉框直接建组（框内 ≥2 站即建，已在其他组的跳过）；也可点选站圈攒待编组后点「编组」；中键拖动平移。',
   };
   for (const btn of document.querySelectorAll('#toolbar [data-mode]')) {
@@ -1888,6 +2086,7 @@
     loadCounters();
     await bootFetchData();
     syncCountersWithLoaded();
+    syncAddKindButtons();
     $('btnBasemap').classList.toggle('primary', S.basemapOn && !!S.calib);
     offerRestore();
     if (!S.view) fitView();

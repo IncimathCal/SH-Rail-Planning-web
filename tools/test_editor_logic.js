@@ -189,9 +189,9 @@ eq(plan.skippedExist, 1, '|Δt|<0.002 计 exists');
 plan = L.planStopImport(mkLine(false), [{ t: 0.3 }, { t: 0.30008 }, { t: 0.30004 }]);
 eq(plan.inserts, [0.3], '过近预置圆只落一个');
 eq(plan.skippedConflict, 2, '其余计 conflict');
-// 4) 越界 t 不计
+// 4) 越界 t 不计（域 [0,1] 双闭，2026-11-21：t=1 计入，仅负值/超 1 不计）
 plan = L.planStopImport(mkLine(false), [{ t: -0.1 }, { t: 1.0 }, { t: 0.5 }]);
-eq([plan.total, plan.inserts.length], [1, 1], 't∈[0,1) 之外不计');
+eq([plan.total, plan.inserts], [2, [0.5, 1]], 't=1 合法计入、负值不计');
 // 5) apply：簿记 + 编号 + 空名（建议绝不自动写入）
 let pa = mkLine(false);
 pa.stops = [{ id: 'l0001-s09', name: '已有名', t: 0.5 }];   // 水位外的既有编号
@@ -237,6 +237,68 @@ eq(L.suggestForStop(item, 0.2).name, '乙站', '精确匹配建议');
 ok(L.suggestForStop(item, 0.7) === null, '超出 dtEps 无建议');
 ok(L.suggestForStop({ stops: [{ t: 0.5 }] }, 0.5) === null, '无 nameSuggestion 不建议');
 ok(L.suggestForStop(null, 0.5) === null, '无预置项不崩');
+// 11) t=1 合法（域改 [0,1] 双闭，2026-11-21）：落末位、簿记成立、不触发递增告警
+let pt = mkLine(false);
+pt.stops = [{ id: 'l0001-s01', name: 'a', t: 0.3 }];
+pt.segments = [];
+L.applyStopImport(pt, L.planStopImport(pt, [{ t: 1 }]));
+eq(pt.stops.map((s) => s.t), [0.3, 1], 't=1 落末位');
+eq(pt.segments.length, pt.stops.length - 1, 't=1 落站后段数不变量');
+ok(!L.lineIssues(pt).some((x) => x.includes('t 未递增')), 't=1 不触发递增告警');
+
+// ---------- 线路分类分组 layerGroupsOf（meta.layer；2026-11-21） ----------
+console.log('layerGroupsOf:');
+const mkL = (id, layer) => ({ id, name: '', color: '#888', stops: [],
+  meta: layer === undefined ? {} : { layer } });
+let lgr = L.layerGroupsOf([mkL('l0003', '联络线'), mkL('l0001', '市区线'), mkL('l0002'),
+  mkL('l0004', '市区线'), mkL('l0005', ''), mkL('l0006', 7)]);
+eq(lgr.map((x) => x.layer), ['联络线', '市区线', null], '组序＝拼音序（联<市）、未分类最后');
+eq(lgr[0].lines.map((l) => l.id), ['l0003'], '组内成员正确');
+eq(lgr[1].lines.map((l) => l.id), ['l0001', 'l0004'], '组内按 id 升序');
+eq(lgr[2].lines.map((l) => l.id), ['l0002', 'l0005', 'l0006'], '缺失/空串/非字符串都归未分类');
+eq(L.layerGroupsOf([mkL('l0001', '市区线')]).map((x) => x.layer), ['市区线'], '仅一类也照常返回组（组头一致显示）');
+eq(L.layerGroupsOf([]), [], '空列表返回空');
+
+// ---------- 接轨站描边色 junctionStroke（stationGroups type:'junction'；2026-11-21） ----------
+console.log('junctionStroke:');
+eq(L.junctionStroke([{ role: 'branch', color: '#A' }, { role: 'main', color: '#B' }]), '#B', 'main 胜 branch（用户明定）');
+eq(L.junctionStroke([{ role: 'connector', color: '#A' }, { role: 'branch', color: '#B' }]), '#B', 'branch 胜 connector（非联络线胜联络线，用户明定）');
+eq(L.junctionStroke([{ role: 'connector', color: '#A' }, { role: 'standalone', color: '#B' }]), '#B', 'standalone 胜 connector');
+eq(L.junctionStroke([{ role: 'standalone', color: '#A' }, { role: 'branch', color: '#B' }]), '#A', 'standalone 胜 branch（实现假设，待用户确认）');
+eq(L.junctionStroke([{ role: 'main', color: '#A' }, { role: 'main', color: '#B' }]), '#A', '同优先级取先出现者');
+eq(L.junctionStroke([{ role: 'weird', color: '#A' }, { role: 'main', color: '#B' }]), '#B', '未知角色跳过');
+eq(L.junctionStroke([{ role: 'main', color: '' }, { role: 'branch', color: '#B' }]), '#B', '空色成员跳过取次优');
+eq(L.junctionStroke([{ role: 'main' }]), '#000', '成员无 color 退默认黑');
+eq(L.junctionStroke([]), '#000', '空成员退默认黑');
+eq(L.junctionStroke(null), '#000', 'null 不崩');
+
+// ---------- 线路所 stop.kind:'block'（2026-11-21）：编组约束 planStationGroup ----------
+console.log('planStationGroup:');
+eq(L.planStationGroup([null, null]), { ok: true, type: 'same-station', allBlock: false }, '全普通站→默认同站');
+eq(L.planStationGroup(['block', 'block']), { ok: true, type: 'junction', allBlock: true }, '全线路所→强制接轨站');
+eq(L.planStationGroup(['block']), { ok: true, type: 'junction', allBlock: true }, '单个线路所也判 junction（≥2 由调用方把门）');
+eq(L.planStationGroup(['block', null, 'block']), { ok: false, reason: 'mixed' }, '混选拒绝');
+eq(L.planStationGroup([null, undefined, '']), { ok: true, type: 'same-station', allBlock: false }, '缺省/undefined/空串都算普通站');
+eq(L.planStationGroup([]), { ok: true, type: 'same-station', allBlock: false }, '空列表不崩');
+
+// ---------- 线路所：lineIssues 空名合法 / planBulkFill 跳过 ----------
+console.log('block stop isolation:');
+let bl3 = mkLine(false);
+bl3.stops = [
+  { id: 'l0001-s01', name: 'a', t: 0.1 },
+  { id: 'l0001-s02', kind: 'block', name: '', t: 0.2 },
+  { id: 'l0001-s03', name: '', t: 0.3 },
+];
+bl3.segments = ['existing', 'existing'];
+bl3.status = null;
+ok(!L.lineIssues(bl3).some((x) => x.includes('s02')), '线路所空名不报 issue');
+ok(L.lineIssues(bl3).some((x) => x.includes('s03 站名为空')), '普通站空名照报');
+let bp3 = L.planBulkFill(bl3, ['甲', '乙']);
+eq(bp3.pairs.map((p) => p[0].id), ['l0001-s03'], '批量命名跳过线路所');
+eq(bp3.pairs.map((p) => p[1]), ['甲'], '名字不被线路所消耗');
+let bl4 = mkLine(false);
+bl4.stops = [{ id: 'l0001-s01', kind: 'block', name: '', t: 0.5 }];
+eq(L.planBulkFill(bl4, ['甲']).pairs.length, 0, '全线仅线路所时批量命名无可配对');
 
 // ---------- 标定变换与瓦片数学（fmt/calibration@1 deg3 / @2 tps，文件存在时） ----------
 console.log('calibration:');

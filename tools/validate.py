@@ -161,8 +161,8 @@ def main():
             if not isinstance(st.get("name"), str) or not st.get("name", "").strip():
                 err(fname, f"stop {sid}: empty name")
             t = st.get("t")
-            if not isinstance(t, (int, float)) or not (0 <= t < 1):
-                err(fname, f"stop {sid}: t out of range [0,1): {t!r}")
+            if not isinstance(t, (int, float)) or not (0 <= t <= 1):
+                err(fname, f"stop {sid}: t out of range [0,1]: {t!r}")
             elif prev_t is not None and t <= prev_t:
                 err(fname, f"stop {sid}: t not strictly increasing ({prev_t} -> {t})")
             else:

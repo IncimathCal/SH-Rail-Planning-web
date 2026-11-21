@@ -363,9 +363,7 @@ def main():
             sts.sort(key=lambda s: s["t"])
             stops_out = []
             for s in sts:
-                t = round(s["t"], 6)
-                if t >= 1.0:
-                    t = 0.999999   # 环线 t ∈ [0,1)
+                t = round(s["t"], 6)   # t ∈ [0,1] 双闭（2026-11-21 裁定；环线 t=1 与 t=0 物理同点，不另拦截）
                 entry = {"t": t, "x": s["circle"]["x"], "y": s["circle"]["y"],
                          "r": s["circle"]["r"], "d": round(s["d"], 1)}
                 if "nameSuggestion" in s:
