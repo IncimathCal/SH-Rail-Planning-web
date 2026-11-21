@@ -1,11 +1,16 @@
 // viewer.js —— 阶段 3 查看器·DOM/MapLibre 胶水层（2026-11-21）
 // 职责：fetch net/{lines,stops}.geojson（相对路径 net → build/net 依次回退；加载/空/错三态
-// 中文覆盖）→ 纯逻辑归一（VIEWER_CORE）→ 内联 style 渲染（无 glyphs、无 symbol 图层——
+// 中文覆盖）→ 纯逻辑归一（VIEWER_CORE）→ 内联 style 渲染（无 glyphs、无文本 symbol——
 // 纯深色画布）→ 搜索 / 多选高亮 / 线·站信息面板 / 状态图例＋「突出既有」开关 / 站点 hover
 // 提示 / 单线导出 / 中文 HTML 标签叠加。
 // 渲染坐标系＝WGS84（无底图设计，零外部资源）；S.linesMap/S.stops 即权威结构，
 // GeoJSON/KML 导出与其同坐标。
 // 线层按 segStatus 拆三层（远期虚线只能整层设——line-dasharray 不支持数据驱动）。
+// 2026-11-21 增：①出省箭头（kind:'arrow'）——线色三角 glyph 指向线路外侧（方向在
+// VIEWER_CORE 按 t 序邻站推导；icon-rotate 数据驱动旋转；图标 canvas 本地绘制＋
+// styleimagemissing 按需注册，零外部资源零网络请求；不进搜索/hover/点选面板）；
+// ②≥3 线同站组药丸——沿贪心最近邻链序画双层折线（外黑内白＋圆头端帽＝白底黑边胶囊，
+// 厚度＝双线换乘大圈直径视觉等宽），成员站圈照常叠于其上；恰 2 线组维持合并大圈不动。
 // 与编辑器完全独立：不加载 editor.js 的任何代码。中文标签走 HTML 叠加（架构方案 §6 备案路线）。
 
 (function (G) {
@@ -146,6 +151,38 @@
     }
     return { type: 'FeatureCollection', features };
   }
+  // ≥3 线同站组药丸折线（view.pills 的 chain 已是贪心最近邻链序；退化共点组画不出胶囊，
+  // 成员圈照常渲染）。胶囊本体是装饰层：不挂任何交互。
+  function renderPillsFC() {
+    const features = [];
+    for (const pill of S.view.pills || []) {
+      const coords = (pill.chain || []).filter((c) => c && Number.isFinite(c[0]) && Number.isFinite(c[1]));
+      if (coords.length < 2) continue;
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: coords },
+        properties: { key: pill.key },
+      });
+    }
+    return { type: 'FeatureCollection', features };
+  }
+  // 出省箭头（view.arrows，非站）：icon 名按线色区分（arrow-xxxxxx 三角 / arrowdot-xxxxxx 退化小圆点），
+  // angle＝自北顺时针度数（icon-rotate 语义）。坐标并入站点 bbox 供 fitAll 兜底。
+  function renderArrowsFC() {
+    const features = [];
+    for (const a of S.view.arrows || []) {
+      const line = S.linesMap.get(a.lineId);
+      const color = line && line.color ? line.color : '#999999';
+      const icon = (a.angleDeg == null ? 'arrowdot-' : 'arrow-') + color.slice(1);
+      S.dispStopsBbox = mergeBbox(S.dispStopsBbox, [a.lon, a.lat, a.lon, a.lat]);
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [a.lon, a.lat] },
+        properties: { key: a.key, icon, angle: Math.round((a.angleDeg || 0) * 10) / 10 },
+      });
+    }
+    return { type: 'FeatureCollection', features };
+  }
 
   // ---------- 地图 ----------
   // 分段线层：按 segStatus 拆三份（绘制序 future → approved → existing，既有压顶）。
@@ -161,19 +198,80 @@
     if (status === 'future') paint['line-dasharray'] = [2, 2];
     return { id, type: 'line', source: 'lines', filter: ['==', ['get', 'segStatus'], status], paint };
   }
+  // 药丸厚度与双线换乘大圈直径视觉等宽：大圈半径 z8/13/16＝3.2/7/11、黑边 1.4/2.4/3.0，
+  // 外层黑宽＝2×半径＋黑边，内层白宽＝2×半径；line-cap round 端帽即得胶囊形。
+  const PILL_LAYER_DEFS = [
+    {
+      id: 'pills-outer', type: 'line', source: 'pills',
+      paint: {
+        'line-color': '#000000',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 8, 7.8, 13, 16.4, 16, 25],
+        'line-cap': 'round',
+      },
+    },
+    {
+      id: 'pills-inner', type: 'line', source: 'pills',
+      paint: {
+        'line-color': '#ffffff',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 8, 6.4, 13, 14, 16, 22],
+        'line-cap': 'round',
+      },
+    },
+  ];
+  // 箭头 glyph：canvas 本地绘制（无 sprite 文件、零网络请求），icon-rotate 数据驱动旋转；
+  // 不挂 click/mouseenter → 不触发 hover 提示与信息面板（搜索侧已无条目）。
+  const ARROWS_LAYER_DEF = {
+    id: 'arrows', type: 'symbol', source: 'arrows',
+    layout: {
+      'icon-image': ['get', 'icon'],
+      'icon-rotate': ['get', 'angle'],
+      'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.55, 13, 0.8, 16, 1.0],
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+    },
+  };
+  // 箭头 glyph 本地绘制（24×24 逻辑尺寸，2 倍像素密度抗锯齿；canvas → ImageData）：
+  // 'arrow'＝指北实心三角（风筝形箭头，旋转交给 icon-rotate），'dot'＝无邻站可定向的退化小圆点。
+  function drawArrowImageData(shape, color) {
+    const PX = 2, W = 24 * PX;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = W;
+    const ctx = cv.getContext('2d');
+    ctx.scale(PX, PX);
+    ctx.fillStyle = color;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    if (shape === 'arrow') {
+      ctx.moveTo(12, 2.5);    // 顶点（北）
+      ctx.lineTo(20, 20.5);   // 右翼
+      ctx.lineTo(12, 16.5);   // 尾部内凹
+      ctx.lineTo(4, 20.5);    // 左翼
+    } else {
+      ctx.arc(12, 12, 3.2, 0, Math.PI * 2);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    return ctx.getImageData(0, 0, W, W);
+  }
   function buildMap() {
     const map = new G.maplibregl.Map({
       container: 'map',
-      // 内联 style：无 glyphs、无 sources 底图、无 symbol 图层（中文标签走 HTML 叠加层）。
+      // 内联 style：无 glyphs、无 sources 底图、无文本 symbol（中文标签走 HTML 叠加层；
+      // arrows 为纯图标 symbol，不涉及字形）。
       style: {
         version: 8,
         sources: {
           lines: { type: 'geojson', data: renderLinesFC() },
           stops: { type: 'geojson', data: renderStopsFC() },
+          pills: { type: 'geojson', data: renderPillsFC() },
+          arrows: { type: 'geojson', data: renderArrowsFC() },
         },
         layers: [
           { id: 'bg', type: 'background', paint: { 'background-color': '#101216' } },
           ...LINE_LAYER_IDS.map(lineLayerDef),
+          ...PILL_LAYER_DEFS,          // 药丸垫在站圈之下
           {
             id: 'stops', type: 'circle', source: 'stops',
             paint: {
@@ -188,6 +286,7 @@
                 16, ['case', ['get', 'dark'], 3.0, 2.0]],
             },
           },
+          ARROWS_LAYER_DEF,            // 箭头压顶（线端标志，盖过站圈不被遮挡）
         ],
       },
       center: [121.48, 31.22], zoom: 9.5,
@@ -195,6 +294,12 @@
     });
     S.map = map;
     map.addControl(new G.maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
+    // 图标按需注册：渲染时缺哪张补哪张（icon 名＝arrow-<hex>/arrowdot-<hex>，颜色集有限）
+    map.on('styleimagemissing', (e) => {
+      const m = /^arrow(dot)?-([0-9a-f]{6})$/.exec(e && e.id ? e.id : '');
+      if (!m) return;
+      map.addImage(e.id, drawArrowImageData(m[1] ? 'dot' : 'arrow', '#' + m[2]), { pixelRatio: 2 });
+    });
 
     map.on('move', scheduleLabels);
     map.on('resize', scheduleLabels);
@@ -350,9 +455,11 @@
     const ls = linesOfPin(pin);
     infoRow(body, '所属线路', ls.length ? ls.join('、') : '—');
     infoRow(body, '换乘关系', pin.groupType ? (V.GROUP_TYPE_ZH[pin.groupType] || pin.groupType) : '无');
-    // 出闸换乘物理上是两个站：列出同组其余车站，让「出闸到哪」可读
-    if (pin.kind === 'stop' && pin.groupType === 'out-of-station' && pin.groupId) {
-      const others = S.stops.filter((s) => s.groupId === pin.groupId && s.sid !== pin.key)
+    // 出闸换乘物理上是两个站、药丸组（≥3 线）成员各自成圈：列出同组其余车站让换乘关系可读
+    //（药丸组原先由合并大圈承载的「几线交汇」信息由成员圈的组内车站行补回）
+    if (pin.kind === 'stop' && pin.groupId
+      && (pin.groupType === 'out-of-station' || pin.groupType === 'same-station')) {
+      const others = S.stops.filter((s) => s.kind !== 'arrow' && s.groupId === pin.groupId && s.sid !== pin.key)
         .map((s) => V.stopDisplayName(s.name) + (s.lineName ? '（' + s.lineName + '）' : ''));
       if (others.length) infoRow(body, '组内车站', others.join('、'));
     }

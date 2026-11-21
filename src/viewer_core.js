@@ -4,6 +4,8 @@
 //（单层 match 版＋按 segStatus 拆层版）、显示文案（起讫格式化、未名站占位）。
 // 浏览器端挂 globalThis.VIEWER_CORE；node 端（tools/test_viewer_logic.js）走 module.exports。
 // 数据契约：net/lines.geojson（每 feature＝线×分段）、net/stops.geojson（每 feature＝线×站）。
+// 2026-11-21 增：出省箭头（stop.kind:'arrow'——非站，不进组/标签/摘要/导出，仅出 arrows 视图）、
+// ≥3 线同站组药丸链序（planGroupPillChain 贪心最近邻，与编辑器侧逐字节同规格）。
 
 (function (G) {
   'use strict';
@@ -95,7 +97,8 @@
     return x0 === Infinity ? null : [x0, y0, x1, y1];
   }
 
-  // stops.geojson → 站点平表（非 Point / 坐标缺失跳过；groupId 空串归 null；groupType 未知归 null）
+  // stops.geojson → 站点平表（非 Point / 坐标缺失跳过；groupId 空串归 null；groupType 未知归 null；
+  // kind 缺省归 'stop'——flatten 侧 arrow 站保留输出（block 已在上游剔除））
   function stopList(fc) {
     const out = [];
     const feats = (fc && Array.isArray(fc.features)) ? fc.features : [];
@@ -113,34 +116,148 @@
         t: Number.isFinite(p.t) ? p.t : null,
         groupId: p.groupId != null && p.groupId !== '' ? String(p.groupId) : null,
         groupType: Object.prototype.hasOwnProperty.call(GROUP_TYPE_ZH, p.groupType) ? p.groupType : null,
+        kind: typeof p.kind === 'string' && p.kind ? p.kind : 'stop',
         lon, lat,
       });
     }
     return out;
   }
 
+  // ---------- 多线换乘药丸链序（与编辑器侧逐字节同规格） ----------
+  // planGroupPillChain(pts)：对每个起点 s∈[0,n) 各跑一次贪心最近邻——从 s 出发，每步从未访问
+  // 点中取距链尾最近者（平手取原始下标小者），累计总长；得 n 条候选链。取总长最小者；
+  // 平手取 order 序列字典序最小者。返回下标顺序数组（n 个点连 n−1 段，不是两两相连）。
+  // 点形：[x,y] 数组或 {x,y} 对象。查看器侧喂投影平面坐标（planarOf 纬度校正近似——
+  // 只影响选序不影响语义）。总长平手按浮点严格相等判定（对称几何下同序求和产生逐位一致的和）。
+  function planGroupPillChain(pts) {
+    const n = Array.isArray(pts) ? pts.length : 0;
+    if (n === 0) return [];
+    const px = new Array(n), py = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const p = pts[i];
+      if (Array.isArray(p)) { px[i] = num(p && p[0]); py[i] = num(p && p[1]); }
+      else { px[i] = num(p && p.x); py[i] = num(p && p.y); }
+    }
+    const d2 = (a, b) => { const dx = px[a] - px[b], dy = py[a] - py[b]; return dx * dx + dy * dy; };
+    const len = (a, b) => Math.sqrt(d2(a, b));
+    const lexLess = (a, b) => {
+      for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) return a[i] < b[i]; }
+      return false;
+    };
+    let bestOrder = null, bestTotal = Infinity;
+    for (let s = 0; s < n; s++) {
+      const used = new Array(n).fill(false);
+      const order = [s]; used[s] = true;
+      let total = 0, tail = s;
+      while (order.length < n) {
+        let pick = -1, pickD2 = Infinity;
+        for (let j = 0; j < n; j++) {           // j 升序＋严格小于：步内平手恒取更小下标
+          if (used[j]) continue;
+          const dj = d2(tail, j);
+          if (dj < pickD2) { pickD2 = dj; pick = j; }
+        }
+        used[pick] = true; order.push(pick);
+        total += len(tail, pick); tail = pick;
+      }
+      if (total < bestTotal || (total === bestTotal && lexLess(order, bestOrder))) {
+        bestTotal = total; bestOrder = order;
+      }
+    }
+    return bestOrder;
+  }
+
+  // lng/lat → 平面近似坐标（局部等距圆柱校正：x＝经度×cos(lat0)、y＝纬度，lat0＝共享参考纬度）。
+  // 只用于链序选点与方向推导，不作为真实投影。注意 lat0 必须对同一次比较/同一组点取同一常数：
+  // 常因子不改变相对几何；若逐点各乘自己的 cos(lat)，高经度处（上海 lon≈121°）的微小纬差
+  // 会被经度基数放大成伪形变（方向角可偏差数度），故调用方一律传组内/点对均值纬度。
+  function planarOf(lon, lat, lat0) {
+    const ref = Number.isFinite(lat0) ? num(lat0) : num(lat);
+    return [num(lon) * Math.cos(ref * Math.PI / 180), num(lat)];
+  }
+
+  // ---------- 出省箭头视图（kind:'arrow'，非真实车站） ----------
+  // 方向＝normalize(箭头位 − 同线真实邻站位)：邻站取该线按站序（t 序）与箭头相邻的真实站
+  //（|Δt| 最小；平手取 t 较小者）；箭头无 t 或该线站全无 t 时退化为几何最近站（防御）。
+  // angleDeg＝平面方向自北顺时针度数（icon-rotate 语义：0＝指北、90＝指东）；
+  // 取不到邻站或与邻站重合 → angleDeg=null（渲染层退化为小圆点）。
+  // 箭头不进 pins/labels（→不进搜索/hover/点选面板）、不进组、不算站数、不进导出。
+  function buildArrowViews(stops) {
+    const peersByLine = new Map();
+    for (const s of stops) {
+      if (s.kind === 'arrow') continue;
+      if (!peersByLine.has(s.lineId)) peersByLine.set(s.lineId, []);
+      peersByLine.get(s.lineId).push(s);
+    }
+    for (const arr of peersByLine.values()) {
+      arr.sort((a, b) => (a.t == null ? 1 : 0) - (b.t == null ? 1 : 0) || num(a.t) - num(b.t));
+    }
+    const arrows = [];
+    let seq = 0;
+    for (const a of stops) {
+      if (a.kind !== 'arrow') continue;
+      const peers = peersByLine.get(a.lineId) || [];
+      let nb = null;
+      if (a.t != null) {
+        let best = Infinity;
+        for (const p of peers) {               // 已按 t 升序：严格小于 → |Δt| 平手取 t 较小者
+          if (p.t == null) continue;
+          const d = Math.abs(num(p.t) - num(a.t));
+          if (d < best) { best = d; nb = p; }
+        }
+      }
+      if (!nb && peers.length) {               // 防御兜底：几何最近邻（lat0 取箭头自身纬度作共享常因子）
+        const [ax, ay] = planarOf(a.lon, a.lat, a.lat);
+        let best2 = Infinity;
+        for (const p of peers) {
+          const [bx, by] = planarOf(p.lon, p.lat, a.lat);
+          const dd = (ax - bx) * (ax - bx) + (ay - by) * (ay - by);
+          if (dd < best2) { best2 = dd; nb = p; }
+        }
+      }
+      let angleDeg = null;
+      if (nb) {
+        const lat0 = (num(a.lat) + num(nb.lat)) / 2;   // 点对共享参考纬度
+        const [ax, ay] = planarOf(a.lon, a.lat, lat0);
+        const [bx, by] = planarOf(nb.lon, nb.lat, lat0);
+        const dx = ax - bx, dy = ay - by;
+        if (dx !== 0 || dy !== 0) angleDeg = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+      }
+      arrows.push({
+        key: a.sid || 'arrow:' + (seq++), lineId: a.lineId, lineName: a.lineName || '',
+        lon: a.lon, lat: a.lat, angleDeg, neighborSid: nb ? nb.sid : null,
+      });
+    }
+    return arrows;
+  }
+
   // 换乘组归并 + 渲染/标签视图：
-  //   pins  —— circle 图层的渲染与点击单元：
+  //   pins —— circle 图层的渲染与点击单元：
   //     无组站：kind 'stop'（白填充、线色描边）；
-  //     same-station 组：合并一个「大圈」（成员坐标均值，big=true，黑边）；
+  //     same-station 组恰 2 线及以下：合并一个「大圈」（成员坐标均值，big=true，黑边）——现状不动；
+  //     same-station 组 ≥3 线：改画药丸（见 pills），成员站圈照常各自出现叠在其上（线色描边保留）；
   //     junction 组：合并普通尺寸圈（big=false 不放大——接轨站不出大圈；描边色由渲染层按成员线角色优先级取，不用黑边）；
   //     out-of-station 组：成员各自普通尺寸圈（出闸换乘物理上是两个站，不并点，黑边）；
-  //     组成员的个人小圈一律不再单独出现。
+  //     除药丸组外，组成员的个人小圈一律不再单独出现。
+  //   pills —— ≥3 线 same-station 组的胶囊折线：成员 geo 按 planGroupPillChain 链序串联
+  //（渲染层双层 line＋圆头端帽即得白底黑边胶囊；恰 2 线组不出药丸）。
+  //   arrows —— 出省箭头渲染单元（buildArrowViews 产物，非站）。
   //   labels —— HTML 标签与搜索条目单元：无组站各一；组（三种类型）各一（均值位置，同名取首个非空）。
   function buildStopView(stops) {
     const byGroup = new Map();   // groupId → {groupId,type,members}
     const singles = [];
+    const arrows = buildArrowViews(stops);
     for (const s of stops) {
+      if (s.kind === 'arrow') continue;   // 箭头不是站：不进组、不进 pin/label
       if (!s.groupId) { singles.push(s); continue; }
       let grp = byGroup.get(s.groupId);
       if (!grp) { grp = { groupId: s.groupId, type: s.groupType || 'same-station', members: [] }; byGroup.set(s.groupId, grp); }
       grp.members.push(s);
     }
-    const pins = [], labels = [];
+    const pins = [], pills = [], labels = [];
     const pinOfStop = (s, groupType) => ({
       kind: 'stop', key: s.sid, name: s.name, lineId: s.lineId,
       lineNames: s.lineName ? [s.lineName] : [], groupType: groupType || null,
-      groupId: s.groupId || null,   // 出闸组成员各自成圈，但保留组号供「组内车站」查询
+      groupId: s.groupId || null,   // 出闸组/药丸组成员各自成圈，但保留组号供「组内车站」查询
       big: false, lon: s.lon, lat: s.lat,
     });
     for (const s of singles) {
@@ -153,24 +270,36 @@
       const lat = grp.members.reduce((a, s) => a + num(s.lat), 0) / n;
       const name = (grp.members.find((s) => s.name) || {}).name || '';
       const lineNames = [...new Set(grp.members.map((s) => s.lineName).filter(Boolean))];
+      const lineIds = [...new Set(grp.members.map((s) => s.lineId).filter(Boolean))];
       if (grp.type === 'out-of-station') {
         for (const s of grp.members) pins.push(pinOfStop(s, 'out-of-station'));
+      } else if (grp.type === 'same-station' && lineIds.length >= 3) {
+        // ≥3 线：药丸替代合并大圈；成员站圈照常叠在药丸上（白填充、线色描边）
+        const lat0 = grp.members.reduce((acc, s) => acc + num(s.lat), 0) / n;   // 组内共享参考纬度
+        const order = planGroupPillChain(grp.members.map((s) => planarOf(s.lon, s.lat, lat0)));
+        pills.push({
+          key: 'p:' + grp.groupId, groupId: grp.groupId, lineIds,
+          chain: order.map((i) => [grp.members[i].lon, grp.members[i].lat]),
+        });
+        for (const s of grp.members) pins.push(pinOfStop(s, grp.type));
       } else {
         pins.push({
           kind: 'group', key: 'g:' + grp.groupId, groupId: grp.groupId, name, lineNames,
-          lineIds: [...new Set(grp.members.map((s) => s.lineId).filter(Boolean))],
+          lineIds,
           groupType: grp.type, big: grp.type === 'same-station', lon, lat,
         });
       }
       labels.push({ key: 'g:' + grp.groupId, name, lon, lat, group: true, groupType: grp.type, lineNames });
     }
-    return { pins, labels };
+    return { pins, pills, arrows, labels };
   }
 
   // 线路摘要（信息面板/搜索用）：站按 t 升序（t 缺失排最后），环线 terminals=null（无起讫）。
+  // arrow 非站：不计数、不进起讫与站序。
   function lineSummaries(linesMap, stops) {
     const byLine = new Map();
     for (const s of stops) {
+      if (s.kind === 'arrow') continue;
       if (!byLine.has(s.lineId)) byLine.set(s.lineId, []);
       byLine.get(s.lineId).push(s);
     }
@@ -294,7 +423,7 @@
   function buildLineGeoJSON(lineId, linesMap, stops) {
     const line = linesMap.get(lineId != null ? String(lineId) : '');
     if (!line) return null;
-    const sts = stops.filter((s) => s.lineId === line.lineId)
+    const sts = stops.filter((s) => s.kind !== 'arrow' && s.lineId === line.lineId)
       .sort((a, b) => (a.t == null ? 1 : 0) - (b.t == null ? 1 : 0) || num(a.t) - num(b.t));
     const features = [{
       type: 'Feature',
@@ -323,7 +452,7 @@
     const docName = line.name || line.lineId;
     const flat = o.emphasizeExisting === false ? 1 : null;   // 传 false 可导出全不透明版
     const kmlColor = (status) => hexToKmlColor(line.color, flat != null ? flat : SEG_STATUS_OPACITY[status]);
-    const sts = stops.filter((s) => s.lineId === line.lineId)
+    const sts = stops.filter((s) => s.kind !== 'arrow' && s.lineId === line.lineId)
       .sort((a, b) => (a.t == null ? 1 : 0) - (b.t == null ? 1 : 0) || num(a.t) - num(b.t));
     const L = [];
     L.push('<?xml version="1.0" encoding="UTF-8"?>');
@@ -358,7 +487,8 @@
     LABEL_CAP, LABEL_ZOOM_GROUP, LABEL_ZOOM_STOP,
     UNNAMED_STOP_ZH, stopDisplayName, formatTerminals,
     xmlEscape, normalizeHex, hexToKmlColor,
-    normalizeLines, lineBboxOf, stopList, buildStopView, lineSummaries, layerGroups,
+    normalizeLines, lineBboxOf, stopList, buildStopView, buildArrowViews,
+    planGroupPillChain, planarOf, lineSummaries, layerGroups,
     matchEntries, filterLabels, buildLineOpacity, statusOpacity, buildSegLayerOpacity,
     buildLineGeoJSON, buildLineKML,
   };

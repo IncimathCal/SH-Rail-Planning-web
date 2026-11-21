@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // viewer_core.js 纯逻辑单测：数据归一（normalizeLines/stopList）、组归并（buildStopView）、
 // 线路摘要与分组（lineSummaries/layerGroups）、搜索匹配（matchEntries）、标签分级（filterLabels）、
-// 透明度表达式（buildLineOpacity）、单线导出（buildLineGeoJSON/buildLineKML）、颜色与转义工具。
+// 透明度表达式（buildLineOpacity）、单线导出（buildLineGeoJSON/buildLineKML）、颜色与转义工具、
+// 药丸链序（planGroupPillChain：确定性/平手/共线点/n=2~4）、出省箭头（kind:'arrow' 方向推导、
+// 搜索/摘要/导出排除）、手造输入链路（arrow＋3 线 same 组）。
 // 用法：node tools/test_viewer_logic.js（纯 node，不引 jsdom/DOM/maplibre）
 
 const V = require(path_join('src', 'viewer_core.js'));
@@ -77,10 +79,12 @@ const stopsFC = fc(
   stopFeat('s9', '孤组', 'lb', '乙线', 0.4, 4, 4, 'g4', 'same-station'),
   stopFeat('s10', '空串组', 'la', '甲线', 0.2, 5, 5, '', null),        // groupId 空串 → 无组
   stopFeat('s11', '怪类型', 'la', '甲线', 0.9, 6, 6, 'g5', 'weird'),   // groupType 未知 → null
+  stopFeat('s12', '双线组', 'la', '甲线', 0.4, 7, 7, 'g6', 'same-station'),   // 恰 2 线同站组 → 维持合并大圈
+  stopFeat('s13', '双线组', 'lb', '乙线', 0.6, 7, 7, 'g6', 'same-station'),
   { type: 'Feature', geometry: { type: 'LineString', coordinates: [[0, 0], [1, 1]] }, properties: { sid: 'bad' } },  // 非 Point 跳过
 );
 const st = V.stopList(stopsFC);
-eq(st.length, 11, '合法站 11 个、非 Point 跳过');
+eq(st.length, 13, '合法站 13 个、非 Point 跳过');
 eq(st.find((s) => s.sid === 's10').groupId, null, '空串 groupId 归 null');
 eq(st.find((s) => s.sid === 's11').groupType, null, '未知 groupType 归 null');
 eq(st.find((s) => s.sid === 's2').groupType, 'same-station', '合法 groupType 保留');
@@ -88,15 +92,22 @@ eq(st.find((s) => s.sid === 's2').groupType, 'same-station', '合法 groupType �
 // ---------- buildStopView：组归并 ----------
 console.log('buildStopView:');
 const sv = V.buildStopView(st);
-eq(sv.pins.length, 8, 'pin 数＝单站2＋g1/g2/g4/g5合并各1＋g3成员2');
-const g1 = sv.pins.find((p) => p.key === 'g:g1');
-ok(g1 && g1.kind === 'group' && g1.big === true, 'g1 同站换乘合并大圈');
-eq([g1.lon, g1.lat], [1, 1], 'g1 均值几何');
-eq(g1.lineNames, ['甲线', '乙线', '丙线'], 'g1 成员线列表');
-eq(g1.name, '中央', '组名取成员名');
-ok(!sv.pins.some((p) => p.key === 's2' || p.key === 's3' || p.key === 's4'), '组成员个人小圈不画');
+eq(sv.pins.length, 11, 'pin 数＝单站2＋g1药丸成员3＋g2/g4/g5/g6合并各1＋g3成员2');
+const g1pill = sv.pills.find((p) => p.key === 'p:g1');
+ok(g1pill && g1pill.lineIds.join(',') === 'la,lb,lc', 'g1（3 线同站组）产出药丸');
+eq(g1pill.chain, [[1, 1], [1, 1], [1, 1]], 'g1 药丸链序（共点退化，顺序 [0,1,2]）');
+ok(!sv.pins.some((p) => p.key === 'g:g1'), 'g1 不再画合并大圈（药丸替代）');
+const g1m = sv.pins.filter((p) => p.key === 's2' || p.key === 's3' || p.key === 's4');
+eq(g1m.length, 3, 'g1 成员站圈照常各自出现（叠在药丸上）');
+eq(g1m.every((p) => p.kind === 'stop' && p.big === false && p.groupId === 'g1' && p.groupType === 'same-station'), true,
+  '药丸成员圈普通尺寸、带组号（线色描边走渲染层默认分支）');
+const g6 = sv.pins.find((p) => p.key === 'g:g6');
+ok(g6 && g6.kind === 'group' && g6.big === true, 'g6 恰 2 线同站组维持合并大圈（现状完全不动）');
+ok(!sv.pills.some((p) => p.groupId === 'g6'), '2 线组不出药丸');
+ok(!sv.pins.some((p) => p.key === 's12' || p.key === 's13'), '2 线组成员个人小圈仍不画');
 const g2 = sv.pins.find((p) => p.key === 'g:g2');
 ok(g2 && g2.kind === 'group' && g2.big === false && g2.groupType === 'junction', 'g2 接轨站合并普通尺寸（不出大圈）');
+ok(!sv.pills.some((p) => p.groupId === 'g2'), 'junction 组不出药丸');
 const g3pins = sv.pins.filter((p) => p.groupType === 'out-of-station');
 eq(g3pins.map((p) => p.key).sort(), ['s7', 's8'], '出闸组成员各自成圈');
 eq(g3pins.every((p) => p.kind === 'stop' && p.big === false), true, '出闸成员普通尺寸');
@@ -107,23 +118,26 @@ const g4 = sv.pins.find((p) => p.key === 'g:g4');
 ok(g4 && g4.kind === 'group' && g4.big === true, '单成员组照常成组');
 const g5 = sv.pins.find((p) => p.key === 'g:g5');
 ok(g5 && g5.kind === 'group' && g5.groupType === 'same-station', '组员 groupType 脏数据（stopList 归 null）兜底同站换乘');
-eq(sv.labels.length, 7, '标签数＝单站2＋组5（g1/g2/g3/g4/g5 各一）');
+eq(sv.pills.length, 1, '全库仅 g1 满足 ≥3 线（其余组不出药丸）');
+eq(sv.labels.length, 8, '标签数＝单站2＋组6（g1/g2/g3/g4/g5/g6 各一）');
+const lg1 = sv.labels.find((l) => l.key === 'g:g1');
+ok(lg1 && lg1.group === true && lg1.name === '中央', '药丸组仍合并为一个标签（均值位置）');
 const lg3 = sv.labels.find((l) => l.key === 'g:g3');
 ok(lg3 && lg3.group === true && lg3.name === '出闸西', '出闸组仍合并为一个标签');
-eq(sv.labels.filter((l) => l.group).length, 5, '组标签恰好 5 个');
+eq(sv.labels.filter((l) => l.group).length, 6, '组标签恰好 6 个');
 eq(sv.labels.filter((l) => !l.group).map((l) => l.key).sort(), ['s1', 's10'], '无组站标签');
-eq(V.buildStopView([]), { pins: [], labels: [] }, '空输入不崩');
+eq(V.buildStopView([]), { pins: [], pills: [], arrows: [], labels: [] }, '空输入不崩');
 
 // ---------- lineSummaries ----------
 console.log('lineSummaries:');
 const summ = V.lineSummaries(lm, st);
 const sa = summ.get('la');
-eq(sa.stopCount, 6, 'la 站数（s1/s2/s5/s7/s10/s11）');
+eq(sa.stopCount, 7, 'la 站数（s1/s2/s5/s7/s10/s11/s12）');
 eq(sa.firstStop, '单站甲', 'la 首站（t 最小）');
 eq(sa.lastStop, '怪类型', 'la 末站（t 最大 0.9）');
 eq(sa.terminals, ['单站甲', '怪类型'], 'la 起讫');
 eq(sa.segCounts, { existing: 1, approved: 0, future: 1 }, 'la 分段计数');
-eq(sa.stopsOrdered.map((s) => s.t), [0.1, 0.2, 0.3, 0.5, 0.8, 0.9], '站序 t 升序');
+eq(sa.stopsOrdered.map((s) => s.t), [0.1, 0.2, 0.3, 0.4, 0.5, 0.8, 0.9], '站序 t 升序');
 // t 缺失排最后
 const st2 = V.stopList(fc(stopFeat('x1', '有t', 'la', '甲线', 0.5, 0, 0), stopFeat('x2', '无t', 'la', '甲线', null, 1, 1)));
 const sa2 = V.lineSummaries(lm, st2).get('la');
@@ -234,7 +248,7 @@ ok(gj && gj.type === 'FeatureCollection', '导出为 FC');
 eq(gj.features[0].geometry.type, 'MultiLineString', '线为 MultiLineString');
 eq(gj.features[0].geometry.coordinates, [[[0, 0], [1, 0]], [[1, 0], [2, 0]]], '段序＝segIndex');
 eq(gj.features[0].properties.segStatuses, ['existing', 'future'], '段状态随线导出');
-eq(gj.features.length, 1 + 6, 'features＝1 线＋6 站');
+eq(gj.features.length, 1 + 7, 'features＝1 线＋7 站');
 eq(gj.features[1].properties.sid, 's1', '站序 t 升序（首个 t=0.1）');
 eq(gj.features.find((f) => f.properties.sid === 's2').properties.groupId, 'g1', '站 groupId 保留');
 ok(gj.features.slice(1).every((f) => f.geometry.type === 'Point'), '站全为 Point');
@@ -270,9 +284,96 @@ const lmI = V.normalizeLines(linesFC);
 const stI = V.stopList(stopsFC);
 const svI = V.buildStopView(stI);
 const summI = V.lineSummaries(lmI, stI);
-eq(svI.pins.length, 8, '集成视图 pin 数一致');
-eq(summI.get('la').stopCount, 6, '集成摘要站数一致');
+eq(svI.pins.length, 11, '集成视图 pin 数一致');
+eq(summI.get('la').stopCount, 7, '集成摘要站数一致');
 ok([...summI.keys()].sort().join(',') === 'la,lb,lc', '摘要覆盖全部线');
+
+// ---------- planGroupPillChain（≥3 线药丸链序，与编辑器侧逐字节同规格） ----------
+console.log('planGroupPillChain:');
+eq(V.planGroupPillChain([]), [], '空输入空序');
+eq(V.planGroupPillChain([[3, 4]]), [0], '单点返回 [0]');
+eq(V.planGroupPillChain([[5, 5], [1, 1]]), [0, 1], 'n=2 两向等长 → 字典序 [0,1]');
+eq(V.planGroupPillChain([[0, 0], [1, 0], [0, 1]]), [1, 0, 2], 'n=3 直角形中点作端（总长 2.0＜2.414），等长两条取字典序');
+eq(V.planGroupPillChain([[0, 0], [1, 0], [1, 1], [0, 1]]), [0, 1, 2, 3], 'n=4 正方形四起点等长 → 字典序 [0,1,2,3]');
+eq(V.planGroupPillChain([{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 1 }, { x: 0, y: 1 }]), [0, 3, 2, 1],
+  'n=4 矩形 {x,y} 对象点形 → [0,3,2,1]');
+eq(V.planGroupPillChain([[0, 0], [2, 0], [1, 0], [3, 0]]), [0, 2, 1, 3], '共线乱序点贪心往返（总长 3 平手取字典序）');
+eq(V.planGroupPillChain([[0, 0], [10, 0], [2, 0], [1, 0]]), [0, 3, 2, 1], '共线近簇先吃尽再走远端（整数坐标总长严格平手）');
+eq(V.planGroupPillChain([[0, 0], [1, 0], [2, 0], [0, 10]]), [2, 1, 0, 3], '跨起点总长分胜负（12.0＜12.198）＋等长链取字典序');
+eq(V.planGroupPillChain([[7, 7], [8, 8], [9, 9]]), V.planGroupPillChain([[7, 7], [8, 8], [9, 9]]), '同输入同输出（确定性）');
+eq(V.planGroupPillChain([null, [1, 1]]), [0, 1], '坏点容错（null 点按 0,0 参与选序不崩）');
+
+// ---------- 出省箭头（stop.kind:'arrow'，非站） ----------
+console.log('arrows:');
+const arFeat = (sid, lineId, t, lon, lat, lineName) => ({
+  type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] },
+  properties: { sid, name: '', lineId, lineName, t, kind: 'arrow' },
+});
+const arrowFC = fc(
+  lineFeat('lm', 0, 'future', [[0, 0], [3, 0]], { name: 'M线', color: '#00ff00' }),
+  lineFeat('ln', 0, 'future', [[0, 10], [0, 11]], { name: 'N线', color: '#0000ff' }),
+  stopFeat('m1', '甲站', 'lm', 'M线', 0, 0, 0),
+  stopFeat('m2', '乙站', 'lm', 'M线', 1, 2, 0),
+  stopFeat('n1', '丙站', 'ln', 'N线', 1, 0, 10),
+  arFeat('ar1', 'lm', 1.5, 3, 0, 'M线'),    // 东行：邻站＝乙站（t=1，|Δt|=0.5 最小）
+  arFeat('ar2', 'ln', 1.2, 0, 11, 'N线'),   // 北行：邻站＝丙站
+  arFeat('ar3', 'lo', 0.5, 1, 1, 'O线'),    // lo 线无真实站 → 无邻站
+  arFeat('ar4', 'lp', null, 1, 1, 'P线'),   // arrow 无 t → 几何最近邻兜底
+  stopFeat('p1', '丁站', 'lp', 'P线', null, 0, 0),
+  arFeat('ar5', 'lq', 0.5, 9, 9, 'Q线'),    // 与邻站重合 → 方向退化
+  stopFeat('q1', '戊站', 'lq', 'Q线', 0.4, 9, 9),
+);
+const stAr = V.stopList(arrowFC);
+eq(stAr.find((s) => s.sid === 'm1').kind, 'stop', '缺 kind 字段归 stop');
+eq(stAr.find((s) => s.sid === 'ar1').kind, 'arrow', 'kind:"arrow" 保留（不剔除）');
+const svAr = V.buildStopView(stAr);
+eq(svAr.arrows.length, 5, '5 个 arrow 全进 arrows 视图');
+ok(!svAr.pins.some((p) => String(p.key).indexOf('ar') === 0) && !svAr.labels.some((l) => String(l.key).indexOf('ar') === 0),
+  'arrow 不进 pins/labels（搜索索引随 labels 一并排除）');
+const ar1 = svAr.arrows.find((a) => a.key === 'ar1') || {};
+eq(ar1.neighborSid, 'm2', '邻站＝同线 t 序最近真实站');
+ok(Math.abs(ar1.angleDeg - 90) < 1e-9, '东向箭头 angleDeg=90（icon-rotate 语义：0 指北、顺时针）');
+const ar2 = svAr.arrows.find((a) => a.key === 'ar2') || {};
+eq(ar2.neighborSid, 'n1', '北向箭头邻站＝丙站');
+ok(Math.abs(ar2.angleDeg) < 1e-9, '北向箭头 angleDeg=0');
+const ar4 = svAr.arrows.find((a) => a.key === 'ar4') || {};
+eq(ar4.neighborSid, 'p1', 'arrow 无 t → 几何最近邻兜底（防御）');
+ok(Math.abs(ar4.angleDeg - 45) < 0.01, '东北向 ≈45°（经度×cos(纬度) 平面近似）');
+eq((svAr.arrows.find((a) => a.key === 'ar3') || {}).angleDeg, null, '取不到邻站 → angleDeg null（渲染退小圆点）');
+eq((svAr.arrows.find((a) => a.key === 'ar5') || {}).angleDeg, null, '与邻站重合 → angleDeg null');
+const lmAr = V.normalizeLines(arrowFC);
+const sumAr = V.lineSummaries(lmAr, stAr);
+eq(sumAr.get('lm').stopCount, 2, 'lineSummaries 不把 arrow 计为站');
+eq(sumAr.get('lm').terminals, ['甲站', '乙站'], '起讫不含 arrow');
+eq(sumAr.get('lm').stopsOrdered.map((s) => s.sid), ['m1', 'm2'], '站序不含 arrow');
+const gjAr = V.buildLineGeoJSON('lm', lmAr, stAr);
+eq(gjAr.features.filter((f) => f.geometry.type === 'Point').map((f) => f.properties.sid), ['m1', 'm2'],
+  'GeoJSON 导出剔除 arrow');
+ok(!V.buildLineKML('lm', lmAr, stAr).includes('ar1'), 'KML 导出剔除 arrow');
+
+// ---------- 手造输入链路自证：arrow＋3 线 same 组一起过纯逻辑（不起浏览器） ----------
+console.log('pill+arrow integration:');
+const pillFC = fc(
+  lineFeat('lx', 0, 'approved', [[8, 0], [9, 0], [9, 1]], { name: 'X线', color: '#ff0000' }),
+  lineFeat('ly', 0, 'approved', [[8, 0], [9, 1]], { name: 'Y线', color: '#00ff00' }),
+  lineFeat('lz', 0, 'approved', [[9, 0], [9, 1]], { name: 'Z线', color: '#0000ff' }),
+  stopFeat('x1', '药丸甲', 'lx', 'X线', 0.1, 8, 0, 'g9', 'same-station'),
+  stopFeat('y1', '药丸乙', 'ly', 'Y线', 0.9, 9, 0, 'g9', 'same-station'),
+  stopFeat('z1', '药丸丙', 'lz', 'Z线', 0.5, 9, 1, 'g9', 'same-station'),
+  arFeat('arx', 'lx', 1.5, 10, 0, 'X线'),   // 组外出省箭头：邻站＝x1（t 序唯一真实站）
+);
+const stP = V.stopList(pillFC);
+const svP = V.buildStopView(stP);
+const pill9 = svP.pills.find((p) => p.groupId === 'g9') || { chain: null };
+ok(svP.pills.length === 1, 'g9（3 线同站组）恰出一枚药丸');
+eq(pill9.chain, [[8, 0], [9, 0], [9, 1]], '链序＝贪心最近邻（n=3 连 2 段，非两两相连）');
+eq(svP.pins.filter((p) => p.groupId === 'g9').map((p) => p.key).sort(), ['x1', 'y1', 'z1'], '三成员圈照常叠于药丸上');
+ok(!svP.pins.some((p) => p.kind === 'group' && p.groupId === 'g9'), '药丸组不再有合并大圈 pin');
+eq(svP.arrows.map((a) => a.key), ['arx'], 'arrow 与药丸并存互不干扰');
+ok(Math.abs(svP.arrows[0].angleDeg - 90) < 1e-9, 'arx 东向 90°（邻站＝x1）');
+eq(svP.labels.filter((l) => l.group).map((l) => l.key), ['g:g9'], '药丸组合并为一个组标签');
+const sumP = V.lineSummaries(V.normalizeLines(pillFC), stP);
+eq(sumP.get('lx').stopCount, 1, 'lx 站数不含 arrow（药丸成员照常计数）');
 
 console.log(fails ? `\nFAIL - ${fails} assertion(s)` : '\nPASS - viewer logic OK');
 process.exit(fails ? 1 : 0);
