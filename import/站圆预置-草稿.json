@@ -9,16 +9,16 @@
  },
  "stats": {
   "groups": 54,
-  "groupsBound": 49,
-  "groupsUnbound": 5,
+  "groupsBound": 50,
+  "groupsUnbound": 4,
   "circles": 536,
   "circlesDeduped": 0,
-  "items": 54,
-  "stops": 491,
+  "items": 55,
+  "stops": 497,
   "outliers": 0,
-  "unboundCircles": 45,
-  "namesSuggested": 479,
-  "namesCoverage": 0.9756
+  "unboundCircles": 39,
+  "namesSuggested": 485,
+  "namesCoverage": 0.9759
  },
  "unbound": [
   {
@@ -59,14 +59,14 @@
     {
      "x": 10848.35,
      "y": 8450.1,
-     "nearest": "16",
-     "distance": 407.0
+     "nearest": "市域线/南汇线#1",
+     "distance": 112.3
     },
     {
      "x": 10870.14,
      "y": 8575.78,
-     "nearest": "16",
-     "distance": 333.6
+     "nearest": "市域线/南汇线#1",
+     "distance": 175.1
     },
     {
      "x": 10703.06,
@@ -77,8 +77,8 @@
     {
      "x": 10560.47,
      "y": 9366.32,
-     "nearest": "浦南线",
-     "distance": 247.1
+     "nearest": "市域线/南汇线#1",
+     "distance": 193.3
     },
     {
      "x": 10429.6,
@@ -113,38 +113,38 @@
     {
      "x": 9713.18,
      "y": 9137.08,
-     "nearest": "浦南线",
-     "distance": 151.7
+     "nearest": "市域线/南汇线#1",
+     "distance": 139.0
     },
     {
      "x": 9613.02,
      "y": 9122.15,
-     "nearest": "浦南线",
-     "distance": 167.0
+     "nearest": "市域线/南汇线#1",
+     "distance": 154.4
     },
     {
      "x": 9303.02,
      "y": 9119.9,
-     "nearest": "浦南线",
-     "distance": 214.1
+     "nearest": "市域线/南汇线#1",
+     "distance": 201.3
     },
     {
      "x": 9062.55,
      "y": 9202.8,
-     "nearest": "path-25",
+     "nearest": "南枫线",
      "distance": 133.5
     },
     {
      "x": 9168.69,
      "y": 9136.4,
-     "nearest": "path-25",
-     "distance": 199.2
+     "nearest": "市域线/南汇线#1",
+     "distance": 195.6
     },
     {
      "x": 10959.29,
      "y": 8782.43,
-     "nearest": "16",
-     "distance": 250.8
+     "nearest": "市域线/南汇线#1",
+     "distance": 85.9
     },
     {
      "x": 11211.5,
@@ -173,14 +173,14 @@
     {
      "x": 9072.46,
      "y": 9295.6,
-     "nearest": "path-44",
+     "nearest": "沪乍线",
      "distance": 27.4
     },
     {
      "x": 11045.21,
      "y": 8922.14,
-     "nearest": "16",
-     "distance": 213.0
+     "nearest": "市域线/南汇线#1",
+     "distance": 0.0
     },
     {
      "x": 10788.26,
@@ -252,64 +252,21 @@
    ]
   },
   {
-   "stationGroup": "南汇线",
-   "circles": 5,
+   "stationGroup": "宝嘉线",
+   "circles": 2,
    "reason": "圆心距所有 path 过远或无主导归属（多为隐藏层线路）——仅供人工核对",
    "circlesDetail": [
     {
-     "x": 11045.21,
-     "y": 8555.54,
-     "nearest": "16",
-     "distance": 471.8
+     "x": 4712.34,
+     "y": 3917.7,
+     "nearest": "path-80",
+     "distance": 0.0
     },
     {
-     "x": 10001.14,
-     "y": 7044.14,
-     "nearest": "21",
-     "distance": 262.7
-    },
-    {
-     "x": 10639.22,
-     "y": 9137.14,
-     "nearest": "16",
-     "distance": 226.3
-    },
-    {
-     "x": 10696.97,
-     "y": 8375.0,
-     "nearest": "大叶公路线",
-     "distance": 14.6
-    },
-    {
-     "x": 11045.21,
-     "y": 8908.6,
-     "nearest": "16",
-     "distance": 222.5
-    }
-   ]
-  },
-  {
-   "stationGroup": "4",
-   "circles": 3,
-   "reason": "圆心距所有 path 过远或无主导归属（多为隐藏层线路）——仅供人工核对",
-   "circlesDetail": [
-    {
-     "x": 6868.25,
-     "y": 5201.66,
-     "nearest": "浦南线",
-     "distance": 12.7
-    },
-    {
-     "x": 6706.16,
-     "y": 5100.99,
-     "nearest": "19",
-     "distance": 16.7
-    },
-    {
-     "x": 6457.95,
-     "y": 5809.06,
-     "nearest": "13",
-     "distance": 50.7
+     "x": 2520.46,
+     "y": 4835.35,
+     "nearest": "宝嘉线",
+     "distance": 0.0
     }
    ]
   },
@@ -2703,7 +2660,7 @@
   },
   {
    "stationGroup": "22",
-   "sourceLayer": "path-39",
+   "sourceLayer": "22",
    "signature": {
     "first": [
      10237.32,
@@ -4095,6 +4052,60 @@
    ]
   },
   {
+   "stationGroup": "4",
+   "sourceLayer": "4",
+   "signature": {
+    "first": [
+     6473.56,
+     5207.55
+    ],
+    "bbox": [
+     5932.0,
+     5090.5,
+     7026.7,
+     6001.7
+    ],
+    "length": 2282.6,
+    "cmyk": [
+     0.89,
+     1.0,
+     0.0,
+     0.0
+    ],
+    "dash": false
+   },
+   "circleCount": 3,
+   "stops": [
+    {
+     "t": 0.114811,
+     "x": 6706.16,
+     "y": 5100.99,
+     "r": 9.0,
+     "d": 0.0,
+     "nameSuggestion": "临平路",
+     "suggestDist": 12.3
+    },
+    {
+     "t": 0.210064,
+     "x": 6868.25,
+     "y": 5201.66,
+     "r": 9.0,
+     "d": 0.0,
+     "nameSuggestion": "杨树浦路",
+     "suggestDist": 13.4
+    },
+    {
+     "t": 0.71329,
+     "x": 6457.95,
+     "y": 5809.06,
+     "r": 9.0,
+     "d": 0.0,
+     "nameSuggestion": "鲁班路",
+     "suggestDist": 13.6
+    }
+   ]
+  },
+  {
    "stationGroup": "5",
    "sourceLayer": "5",
    "signature": {
@@ -4933,7 +4944,7 @@
   },
   {
    "stationGroup": "南枫线",
-   "sourceLayer": "path-25",
+   "sourceLayer": "南枫线",
    "signature": {
     "first": [
      9139.29,
@@ -5009,6 +5020,78 @@
      "d": 0.0,
      "nameSuggestion": "枫泾",
      "suggestDist": 16.3
+    }
+   ]
+  },
+  {
+   "stationGroup": "南汇线",
+   "sourceLayer": "市域线/南汇线#1",
+   "signature": {
+    "first": [
+     9822.9,
+     6710.78
+    ],
+    "bbox": [
+     9139.3,
+     6710.8,
+     11045.2,
+     9344.2
+    ],
+    "length": 4965.0,
+    "cmyk": [
+     0.61,
+     0.04,
+     0.0,
+     0.0
+    ],
+    "dash": false
+   },
+   "circleCount": 5,
+   "stops": [
+    {
+     "t": 0.076553,
+     "x": 10001.14,
+     "y": 7044.14,
+     "r": 9.0,
+     "d": 0.3,
+     "nameSuggestion": "鹏翔路",
+     "suggestDist": 18.1
+    },
+    {
+     "t": 0.397621,
+     "x": 10696.97,
+     "y": 8375.0,
+     "r": 9.0,
+     "d": 0.0,
+     "nameSuggestion": "滨海森林公园",
+     "suggestDist": 15.2
+    },
+    {
+     "t": 0.497624,
+     "x": 11045.21,
+     "y": 8555.54,
+     "r": 9.0,
+     "d": 0.0,
+     "nameSuggestion": "星海湾路",
+     "suggestDist": 14.6
+    },
+    {
+     "t": 0.568733,
+     "x": 11045.21,
+     "y": 8908.6,
+     "r": 9.0,
+     "d": 0.0,
+     "nameSuggestion": "滴水湖北",
+     "suggestDist": 14.7
+    },
+    {
+     "t": 0.67665,
+     "x": 10639.22,
+     "y": 9137.14,
+     "r": 9.0,
+     "d": 0.0,
+     "nameSuggestion": "花柏路",
+     "suggestDist": 9.6
     }
    ]
   },
@@ -5095,7 +5178,7 @@
   },
   {
    "stationGroup": "嘉松线",
-   "sourceLayer": "path-23",
+   "sourceLayer": "嘉松线",
    "signature": {
     "first": [
      3241.75,
@@ -5158,7 +5241,7 @@
   },
   {
    "stationGroup": "嘉闵线",
-   "sourceLayer": "path-30",
+   "sourceLayer": "嘉闵线",
    "signature": {
     "first": [
      3598.52,
@@ -5284,7 +5367,7 @@
   },
   {
    "stationGroup": "嘉青松金线",
-   "sourceLayer": "path-20",
+   "sourceLayer": "嘉青松金线",
    "signature": {
     "first": [
      2959.26,
@@ -5405,51 +5488,6 @@
      "d": 0.0,
      "nameSuggestion": "金汇",
      "suggestDist": 15.6
-    }
-   ]
-  },
-  {
-   "stationGroup": "宝嘉线",
-   "sourceLayer": "path-24",
-   "signature": {
-    "first": [
-     2009.12,
-     4909.91
-    ],
-    "bbox": [
-     2009.1,
-     3473.5,
-     6507.7,
-     4909.9
-    ],
-    "length": 5653.8,
-    "cmyk": [
-     0.75,
-     0.75,
-     0.3,
-     0.0
-    ],
-    "dash": true
-   },
-   "circleCount": 2,
-   "stops": [
-    {
-     "t": 0.093026,
-     "x": 2520.46,
-     "y": 4835.35,
-     "r": 9.0,
-     "d": 0.0,
-     "nameSuggestion": "花桥南",
-     "suggestDist": 10.3
-    },
-    {
-     "t": 0.580031,
-     "x": 4712.34,
-     "y": 3917.7,
-     "r": 9.0,
-     "d": 0.0,
-     "nameSuggestion": "励学路",
-     "suggestDist": 13.7
     }
    ]
   },
@@ -5644,7 +5682,7 @@
   },
   {
    "stationGroup": "沪乍线",
-   "sourceLayer": "path-44",
+   "sourceLayer": "沪乍线",
    "signature": {
     "first": [
      9202.9,
@@ -5698,7 +5736,7 @@
   },
   {
    "stationGroup": "沪崇线",
-   "sourceLayer": "path-18",
+   "sourceLayer": "沪崇线",
    "signature": {
     "first": [
      5845.21,
@@ -5752,7 +5790,7 @@
   },
   {
    "stationGroup": "沿江都市快线",
-   "sourceLayer": "path-17",
+   "sourceLayer": "沿江都市快线",
    "signature": {
     "first": [
      6519.43,
@@ -5932,7 +5970,7 @@
   },
   {
    "stationGroup": "示范区线",
-   "sourceLayer": "市域线/示范区线#3",
+   "sourceLayer": "市域线/示范区线#4",
    "signature": {
     "first": [
      5869.45,
@@ -5968,7 +6006,7 @@
   },
   {
    "stationGroup": "示范区线",
-   "sourceLayer": "市域线/示范区线#4",
+   "sourceLayer": "市域线/示范区线#5",
    "signature": {
     "first": [
      1819.68,
@@ -6049,7 +6087,7 @@
   },
   {
    "stationGroup": "苏淀沪线",
-   "sourceLayer": "path-19",
+   "sourceLayer": "苏淀沪连接线#2",
    "signature": {
     "first": [
      1858.48,

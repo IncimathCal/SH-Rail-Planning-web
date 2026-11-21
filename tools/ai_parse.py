@@ -15,13 +15,18 @@ sourceLayer 语义（原生权威化，讨论记录-04 用户裁定）：
 
 category 可选枚举：预控通道层 → "reserved"；他省层 → "interprovincial"。
 闭合（原生 h/s）→ d 尾追加 Z（环线识别 /z/i 测试用）；字节级相同的重复描边去重。
+**渐变网格线体**（可选字段 render="mesh"）：源图里「沿描边应用渐变」的线路（4 号线、
+南汇线主线、各渐变联络线等）在 PDF 兼容层是「带状轮廓 + 着色」，不是描边；其几何取
+原生侧该对象的完整原始路径（控制点到带状轮廓距离恒为线宽之半），颜色取 PDF 实际渲染
+采样的众数，cmyk 为网格主色；仅当 PDF 里存在吻合的着色填充（即确实被渲染）才导出。
 hintNames 为站圆组证据名（原生 Station 子层圆心 ≥60% 距线 <25pt 且 ≥3 圆），
 仅「建议」展示、人工点选采用，绝不自动写入正式名称（铁律）。
-可见性：隐藏层（Lb 位1=0）不进 PDF 兼容层，本工具天然不提取；原生侧如实报告。
+可见性：隐藏层（Lb 位1=0）与对象级隐藏（对象头 1 Xw）都不进 PDF 兼容层；原生侧如实报告。
 
 用法：
   python -X utf8 tools/ai_parse.py "源资产/远期.ai" --out "import/远期图-全量.json"
       [--native-cache "零散/ai_native_tail.bin"]               # 原生矢量尾部缓存
+      [--line-note "4=与 3 号线共线，仅画不重复段"]            # 追加到 note 的线路备注（可重复）
       [--verify "源资产/6、14、15、23号线.svg"]               # 与既有 SVG 导出对拍
       [--calib "6,14,15,23" --svg-out "源资产/远期图-标定4线.svg"]
                                                               # 生成 georf 用标定 SVG（新基准）
@@ -85,9 +90,10 @@ def layer_sections(doc, page):
 
 # ---------------------------------------------------------------- 路径采集
 
-def parse_paths(data):
+def parse_paths(data, keep_n=False):
     """带 q/Q/cm 变换栈的路径采集（变换在 flush 时快照，路径中途不会换 cm）。
-    返回 [dict(segs, ctm, stroke, dash, width, paint)]，segs 为 PDF 用户空间绝对坐标。"""
+    返回 [dict(segs, ctm, stroke, dash, width, paint)]，segs 为 PDF 用户空间绝对坐标。
+    keep_n=True 时保留以 n 结束的路径（裁剪轮廓，渐变网格线体在兼容层的渲染边界）。"""
     cl = re.sub(rb'\((?:[^()\\]|\\.)*\)', b'()', data)
     cl = re.sub(rb'<[0-9A-Fa-f\s]*>', b'<>', cl)
     toks = re.findall(rb'/[\w#.-]+|-?\d*\.?\d+|[A-Za-z]{1,2}\*?', cl)
@@ -103,7 +109,7 @@ def parse_paths(data):
 
     def flush(paint):
         nonlocal segs
-        if segs and paint != 'n':
+        if segs and (keep_n or paint != 'n'):
             paths.append(dict(segs=segs, ctm=ctm, stroke=stroke,
                               dash=dash, width=width, paint=paint))
         segs = None
@@ -188,10 +194,15 @@ def stroke_hex(comps):
     return '#%02X%02X%02X' % (r, g, b)
 
 
+_DRAWINGS = []
+
+
 def fitz_color_fix(page, paths):
     """朴素 CMYK→RGB 与 ICC 实际转换差距大：按 rect 就近从 get_drawings 借
-    MuPDF 色彩管理转换后的描边色（与 AI 的 SVG 导出一致）。"""
-    ds = [d for d in page.get_drawings() if d.get('color')]
+    MuPDF 色彩管理转换后的描边色（与 AI 的 SVG 导出一致）。get_drawings 很慢，结果缓存。"""
+    if not _DRAWINGS:
+        _DRAWINGS.extend(d for d in page.get_drawings() if d.get('color'))
+    ds = _DRAWINGS
     for p in paths:
         b = p['bbox']
         best, bd = None, 30.0
@@ -265,9 +276,11 @@ def grid_hit(grid, pt, tol=0.05):
 
 
 def match_native(paths, nat, log=print):
-    """PDF 侧 path（emit 后）↔ 原生描边（ai_native.Stroke，仅 Line 子树可见描边）
-    点集对拍。返回 matches {pdf_idx: (stroke, mode)}，mode ∈ exact / partial。
-    exact = 双向 ≥98% 点重合（同一对象）；partial = PDF 条 ⊆ 原生复合对象（拆分）。"""
+    """PDF 侧 path（emit 后）↔ 原生描边（ai_native.Stroke，Line 子树可见描边）点集对拍。
+    候选只按颜色筛（不做 bbox 预筛——bbox 会因复合子路径失真），判定靠全部控制点的
+    容差重合率。返回 matches {pdf_idx: (stroke, mode)}：
+      exact   双向 ≥98%（同一对象）；partial  PDF 条 ⊆ 原生复合对象（原生多出子路径）；
+      weak    PDF 条只有部分点落在原生对象上（归属存疑，报告里列出）。"""
     grids = {id(st): stroke_grid(st.ops) for st in nat}
     matches = {}
     used_cnt = collections.Counter()
@@ -275,25 +288,20 @@ def match_native(paths, nat, log=print):
         ppts = d_points(p['d'])
         if not ppts:
             continue
-        pb = p['bbox']
+        pg = collections.defaultdict(list)
+        for q in ppts:
+            pg[(round(q[0] * 10), round(q[1] * 10))].append(q)
         best, bkey = None, None
         for st in nat:
             if not (st.cmyk and p['cmyk'] and
                     all(abs(a - b) < 0.02 for a, b in zip(st.cmyk, p['cmyk']))):
                 continue
-            nb = st_bbox(st)
-            if nb[0] > pb[0] + 80 or nb[1] > pb[1] + 80 or nb[2] < pb[2] - 80 or nb[3] < pb[3] - 80:
-                continue                                   # 原生应 ⊇ PDF（复合可偏大）
             g = grids[id(st)]
             fwd = sum(1 for q in ppts if grid_hit(g, q)) / len(ppts)
             if fwd < 0.5:
                 continue
             npts = [q for pts in g.values() for q in pts]
-            # 反向：原生点距任一 PDF 点 <tol（PDF 点建 0.1 网格）
-            pg = collections.defaultdict(list)
-            for q in ppts:
-                pg[(round(q[0] * 10), round(q[1] * 10))].append(q)
-            back = sum(1 for q in npts if _hit_pts(pg, q)) / len(npts)
+            back = sum(1 for q in npts if _hit_pts(pg, q)) / len(npts)   # 反向
             # 平局（如 27 号线两份字节级相同的几何）优先未被占用的原生对象
             key = (round(fwd, 3), round(back, 3), -used_cnt[id(st)])
             if bkey is None or key > bkey:
@@ -301,11 +309,14 @@ def match_native(paths, nat, log=print):
         if best is not None:
             st, fwd, back = best
             used_cnt[id(st)] += 1
-            matches[i] = (st, 'exact' if (fwd >= 0.98 and back >= 0.98) else 'partial')
-    log('对拍：%d/%d 条 PDF path 匹配到原生描边（exact %d / partial %d）'
+            mode = ('exact' if (fwd >= 0.98 and back >= 0.98)
+                    else 'partial' if fwd >= 0.98 else 'weak')
+            matches[i] = (st, mode)
+    log('对拍：%d/%d 条 PDF path 匹配到原生描边（exact %d / partial %d / weak %d）'
         % (len(matches), len(paths),
            sum(1 for _, m in matches.values() if m == 'exact'),
-           sum(1 for _, m in matches.values() if m == 'partial')))
+           sum(1 for _, m in matches.values() if m == 'partial'),
+           sum(1 for _, m in matches.values() if m == 'weak')))
     return matches
 
 
@@ -330,6 +341,153 @@ def st_bbox(st):
                 xs.append(w[i]); ys.append(w[i + 1])
         _STROKE_BBOX[id(st)] = (min(xs), min(ys), max(xs), max(ys)) if xs else (0, 0, 0, 0)
     return _STROKE_BBOX[id(st)]
+
+
+# ---------------------------------------------------------------- 渐变网格线体
+
+def shading_fills(data, H, page_area=None):
+    """PDF 内容流里的着色填充：`<带状轮廓> W n  q … BX /ShN sh EX Q`——渐变网格线体在
+    兼容层的渲染形式（不是描边，故只取 S/s 会整条漏掉）。
+    → [dict(d, bbox, sh)]，轮廓取每个 sh 之前最近的 W n 路径（排除整页矩形）。"""
+    cl = re.sub(rb'\((?:[^()\\]|\\.)*\)', b'()', data)
+    out = []
+    for m in re.finditer(rb'/Sh(\d+)\s+sh', cl):
+        wn = cl.rfind(b'W n', 0, m.start())
+        if wn < 0:
+            continue
+        q = cl.rfind(b'\nq\n', 0, wn)
+        seg = cl[q + 1:wn + 3] if q >= 0 else cl[:wn + 3]
+        best = None
+        for p in parse_paths(seg, keep_n=True):
+            if p['paint'] != 'n' or not p['segs']:
+                continue
+            e = emit(p, H)
+            b = e['bbox']
+            area = (b[2] - b[0]) * (b[3] - b[1])
+            if page_area and area > page_area * 0.5:
+                continue                              # 整页裁剪，不是线体轮廓
+            if best is None or area > best[1]:
+                best = (e, area)
+        if best:
+            e = best[0]
+            out.append(dict(d=e['d'], bbox=e['bbox'], sh='Sh' + m.group(1).decode()))
+    return out
+
+
+def cmyk_rgb_table(page, secs, raw, H):
+    """从 PDF 兼容层建 CMYK→RGB 表：Line / Station 段全部描边的 SCN 分量 → fitz 色彩
+    管理后的 RGB。供渐变网格线体取色（它们在 PDF 里是着色填充，无描边可借）。"""
+    tab = {}
+    for name, s, e in secs:
+        if name.split('/')[-1] not in ('Line', 'Station'):
+            continue
+        ps = [emit(p, H) for p in parse_paths(raw[s:e]) if p['paint'] in ('S', 's')]
+        fitz_color_fix(page, ps)
+        for p in ps:
+            if p['cmyk'] and len(p['cmyk']) >= 4:
+                tab.setdefault(tuple(round(v, 4) for v in p['cmyk']), p['color'])
+    return tab
+
+
+def lookup_rgb(cmyk, tab, tol=0.021):
+    """按 CMYK 在表里找 ICC 转换后的 RGB（各分量 ≤tol）；找不到返回 None。"""
+    for k, v in tab.items():
+        if all(abs(a - b) <= tol for a, b in zip(k, cmyk)):
+            return v
+    return None
+
+
+def ops_to_d(ops):
+    """原生 ops → 绝对大写 d 串（与 emit 同格式）。"""
+    ds = []
+    for op, w in ops:
+        ds.append(op + ','.join('%.2f,%.2f' % (w[i], w[i + 1]) for i in range(0, len(w) - 1, 2)))
+    return ''.join(ds)
+
+
+def mesh_rendered(st, shfills, tol=7.5, need=0.98):
+    """渐变网格线体是否被 PDF 兼容层渲染：线体路径全部在曲线点落在某个着色填充的
+    带状轮廓 ±tol（线宽之半 + 余量）内，且 bbox 被其包含 → 返回该着色填充，否则 None。"""
+    from svg_parse import path_from_d
+    pts = ai_native_ops_points(st.ops)
+    if not pts:
+        return None
+    sb = st_bbox(st)
+    for f in shfills:
+        b = f['bbox']
+        if sb[0] < b[0] - 12 or sb[1] < b[1] - 12 or sb[2] > b[2] + 12 or sb[3] > b[3] + 12:
+            continue
+        try:
+            ap = path_from_d(f['d'])
+            k = max(8, int(ap.length // 1.5))
+            poly = [ap.point_at(t / k) for t in range(k + 1)]
+        except Exception:
+            poly = d_points(f['d'])
+        g = collections.defaultdict(list)
+        for q in poly:
+            g[(int(q[0] // tol), int(q[1] // tol))].append(q)
+        ok = 0
+        for x, y in pts:
+            gx, gy = int(x // tol), int(y // tol)
+            if any((x - q[0]) ** 2 + (y - q[1]) ** 2 <= tol * tol
+                   for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                   for q in g.get((gx + dx, gy + dy), ())):
+                ok += 1
+        if ok >= need * len(pts):
+            return f
+    return None
+
+
+def ai_native_ops_points(ops):
+    return [(w[4], w[5]) if op == 'C' else (w[0], w[1])
+            for op, w in ops if op in ('M', 'L', 'C')]
+
+
+def rendered_color(page, d, bbox, dpi=2):
+    """从 PDF 兼容层的实际渲染取色：沿路径每 4pt 采样一个像素，剔除近白/近黑（站圆、文字、
+    背景）后取众数。渐变网格线体在 PDF 里是着色填充、无描边色可借，朴素 CMYK→RGB 换算
+    与 ICC 实际渲染相差很大（实证 4 号线：朴素 #1C00FF / 实际 #461E84），故直接采样。"""
+    from svg_parse import path_from_d
+    try:
+        ap = path_from_d(d)
+        k = max(16, int(ap.length // 4))
+        pts = [ap.point_at(t / k) for t in range(k + 1)]
+    except Exception:
+        pts = d_points(d)
+    clip = fitz.Rect(bbox[0] - 4, bbox[1] - 4, bbox[2] + 4, bbox[3] + 4)
+    pix = page.get_pixmap(matrix=fitz.Matrix(dpi, dpi), clip=clip, alpha=False)
+    cnt = collections.Counter()
+    for x, y in pts:
+        px = int((x - clip.x0) * dpi)
+        py = int((y - clip.y0) * dpi)
+        if 0 <= px < pix.width and 0 <= py < pix.height:
+            r, g, b = pix.pixel(px, py)
+            if min(r, g, b) > 232 or max(r, g, b) < 48:
+                continue
+            cnt[(r, g, b)] += 1
+    if not cnt:
+        return None
+    (r, g, b), _n = cnt.most_common(1)[0]
+    return '#%02X%02X%02X' % (r, g, b)
+
+
+def mesh_path_entry(st, rgb_tab, page=None):
+    """渐变网格线体 → 与 emit 同构的 path dict。颜色优先取 PDF 实际渲染采样
+    （color_src='render'），其次 ICC 表命中（'icc'），最后朴素换算（'naive'）。"""
+    d = ops_to_d(st.ops)
+    bbox = d_bbox(d)
+    color, src = None, None
+    if page is not None:
+        color = rendered_color(page, d, bbox)
+        src = 'render' if color else None
+    if color is None and st.cmyk:
+        color = lookup_rgb(st.cmyk, rgb_tab)
+        src = 'icc' if color else None
+    if color is None:
+        color = stroke_hex(st.cmyk)
+        src = 'naive'
+    return dict(d=d, bbox=bbox, endpoints=None, color=color, cmyk=st.cmyk,
+                dash=None, width=st.width or 12.0, color_src=src)
 
 
 # 有支线的线（用户裁定）＝子图层：sourceLayer 用层链
@@ -369,15 +527,26 @@ def station_circle_hints(nat, paths):
         pts = d_points(p['d'])
         try:
             ap = path_from_d(p['d'])
-            k = max(8, int(ap.length // 25))
+            k = max(8, int(ap.length // 12))
             pts = pts + [ap.point_at(t / k) for t in range(k + 1)]
         except Exception:
             pass
+        # 采样点建 25pt 网格索引：圆心只查相邻 9 格（避免逐点遍历）
+        cell = 25.0
+        grid = collections.defaultdict(list)
+        for x, y in pts:
+            grid[(int(x // cell), int(y // cell))].append((x, y))
+        r2 = 25 ** 2
         for nm, centers in sorted(groups.items()):
             if len(centers) < 3:
                 continue
-            ok = sum(1 for (cx, cy) in centers
-                     if min((cx - x) ** 2 + (cy - y) ** 2 for x, y in pts) < 25 ** 2)
+            ok = 0
+            for cx, cy in centers:
+                gx, gy = int(cx // cell), int(cy // cell)
+                if any((cx - x) ** 2 + (cy - y) ** 2 < r2
+                       for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                       for x, y in grid.get((gx + dx, gy + dy), ())):
+                    ok += 1
             if ok >= max(3, int(len(centers) * 0.6)):
                 hints[i].append('%s(%d/%d)' % (nm, ok, len(centers)))
     return hints
@@ -529,6 +698,8 @@ def main():
     ap.add_argument('--svg-out')
     ap.add_argument('--native-cache', default='零散/ai_native_tail.bin',
                     help='原生矢量尾部缓存（缺失时自动从 .ai 重提取）')
+    ap.add_argument('--line-note', action='append', default=[], metavar='名=说明',
+                    help='追加到记录 note 的线路备注（可重复），如 "4=与 3 号线共线，仅画不重复段"')
     args = ap.parse_args()
 
     doc = fitz.open(args.ai)
@@ -545,17 +716,21 @@ def main():
     fitz_color_fix(page, paths)
     print('Line 图层：描边路径 %d 条（fill 装饰已剔除）' % len(paths))
 
-    # ---- 原生权威化：命名 / 可见性 / 闭合 / 去重 / 站圆组建议 ----
+    # ---- 原生权威化：命名 / 可见性 / 闭合 / 去重 / 渐变网格线体 / 站圆组建议 ----
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import ai_native
     buf = ai_native.ensure_tail(args.ai, args.native_cache)
     _layers, all_strokes = ai_native.parse_tail(buf)
-    line_st = [s for s in all_strokes if s.layer.split('/')[0] == 'Line' and s.paint in ('S', 's')]
-    nat = [s for s in line_st if s.layer_visible]
+    line_st = [s for s in all_strokes
+               if s.layer.split('/')[0] == 'Line' and (s.paint in ('S', 's') or s.kind == 'mesh')]
+    vis = [s for s in line_st if s.layer_visible]
     hid = [s for s in line_st if not s.layer_visible]
     hid_names = collections.Counter(s.layer for s in hid)
-    print('\n原生侧：Line 子树描边 %d 条（可见 %d / 隐藏 %d；隐藏层 %s）'
-          % (len(line_st), len(nat), len(hid),
+    nat = [s for s in vis if s.kind != 'mesh']            # 描边线体：与 PDF 的 S/s 描边对拍
+    meshes = [s for s in vis if s.kind == 'mesh']         # 渐变网格线体：与 PDF 的着色填充对拍
+    print('\n原生侧：Line 子树线体 %d 条 = 描边 %d + 渐变网格 %d；隐藏层 %d 条（%s）'
+          % (len(line_st), sum(1 for s in line_st if s.kind != 'mesh'),
+             sum(1 for s in line_st if s.kind == 'mesh'), len(hid),
              '、'.join('%s×%d条' % (k, v) for k, v in sorted(hid_names.items()))))
     matches = match_native(paths, nat)
 
@@ -573,7 +748,42 @@ def main():
         print('去重：%d 组字节级相同（%s）' % (len(dups), '；'.join(
             'path-%02d ≡ path-%02d' % (a + 1, b + 1) for a, b in dups)))
 
-    hints = station_circle_hints(all_strokes, paths)
+    # 渐变网格线体：PDF 兼容层渲染为「带状轮廓 W n + 着色 /ShN sh」，不是描边
+    shf = shading_fills(raw[s0:e0], H, page_area=W * H)
+    rgb_tab = {}                                  # 渲染采样取不到色时的后备（按需构建）
+    # 渲染采样取色前关掉 BackGround 图层（仅 fitz 内存状态，不落盘）：避免解码 1.5 GB 背景大图
+    try:
+        cat = doc.pdf_catalog()
+        bg = [int(x) for x in re.findall(r'(\d+) 0 R', doc.xref_get_key(cat, 'OCProperties/OCGs')[1] or '')
+              if doc.xref_get_key(int(x), 'Name')[1].strip('()') == 'BackGround']
+        if bg:
+            doc.set_layer(-1, off=bg)
+    except Exception as ex:                       # 取不到就照常渲染，只是慢一些
+        print('（提示：无法关闭 BackGround 图层：%s）' % ex)
+    mesh_new, mesh_unrendered = [], []
+    for st in meshes:
+        hit = mesh_rendered(st, shf)
+        if hit is None:
+            mesh_unrendered.append(st)
+            continue
+        p = mesh_path_entry(st, rgb_tab, page)
+        if p['color_src'] == 'naive':                # 渲染采样取不到 → ICC 表（按需构建一次）
+            if not rgb_tab:
+                rgb_tab.update(cmyk_rgb_table(page, secs, raw, H))
+            rgb = lookup_rgb(st.cmyk, rgb_tab) if st.cmyk else None
+            if rgb:
+                p['color'], p['color_src'] = rgb, 'icc'
+        mesh_new.append((st, p, hit))
+    print('渐变网格线体：可见 %d 条，PDF 着色填充确认渲染 %d 条（Line 段共 %d 处着色）；未渲染 %d 条'
+          % (len(meshes), len(mesh_new), len(shf), len(mesh_unrendered)))
+    for st, p, hit in mesh_new:
+        print('  + %-22s %-12s ops=%-3d 长%5.0fpt xw=%-4s cmyk=%s 色%s(%s) ← %s'
+              % (st.layer, st.name or '(无名)', len(st.ops), st.length, st.xw,
+                 tuple(st.cmyk) if st.cmyk else None, p['color'], p['color_src'], hit['sh']))
+    for st in mesh_unrendered:
+        print('  - 未渲染 %s %s（xw=%s）' % (st.layer, st.name or '(无名)', st.xw))
+
+    hints = station_circle_hints(all_strokes, paths + [p for _s, p, _h in mesh_new])
     print('站圆组建议：命中 %d 条 path（组证据名，仅为建议）' % len(hints))
 
     # 对拍：先精确锚定（宽高一致 → 位移），其余按「旧为子段」包含匹配
@@ -659,14 +869,18 @@ def main():
         print('已生成标定 SVG（旧 path 平移 %.1f,%.1f 到 .ai 基准）：%s' % (tx, ty, args.svg_out))
 
     # 导出 import 记录（sourceLayer：对象名/层链优先，无名保持 path-NN；去重后仅保留组）
+    line_notes = dict(kv.split('=', 1) for kv in args.line_note if '=' in kv)
     rec = dict(schema='fmt/import@1', source='远期.ai',
                imported=datetime.date.today().isoformat(),
-               note='ai_parse 原生权威化提取：坐标为 .ai 页面基准 %.0f×%.0f、SVG 朝向（几何自 PDF '
-                    '兼容层，命名/可见性/闭合自原生私有数据对拍）。sourceLayer 为用户在源图的命名'
+               note='ai_parse 原生权威化提取：坐标为 .ai 页面基准 %.0f×%.0f、SVG 朝向（描边几何自 PDF '
+                    '兼容层，命名/可见性/闭合自原生私有数据对拍；渐变网格线体 render="mesh" 取原生'
+                    '完整原始路径，颜色为网格主色）。sourceLayer 为用户在源图的命名'
                     '（无支线线＝路径对象名，有支线线＝层链，同名多条附 #k）；作者未命名者保持中性'
                     'path-NN。category: reserved=预控通道 / interprovincial=他省。dash/cmyk/width/'
                     'hintNames 为非破坏性扩展字段（hintNames 为站圆组证据建议，需人工点选采用）' % (W, H),
                paths=[])
+    if line_notes:
+        rec['note'] += '。线路备注：' + '；'.join('%s：%s' % (k, v) for k, v in line_notes.items())
     entries = []
     for i in keep_idx:
         p = paths[i]
@@ -675,7 +889,22 @@ def main():
         if st is not None and st.closed and not p['d'].rstrip().endswith('Z'):
             p['d'] += 'Z'
             print('闭合补 Z：path-%02d（原生 h/s 闭合，%s）' % (i + 1, st.layer))
-        entries.append(dict(i=i, src=src, nhint=nhint, cat=cat, st=st, mode=mode))
+        entries.append(dict(i=i, p=p, src=src, nhint=nhint, cat=cat, st=st, mode=mode,
+                            label='path-%02d' % (i + 1)))
+    for k, (st, p, hit) in enumerate(mesh_new):
+        src, nhint, cat = source_layer_of(st)
+        entries.append(dict(i=len(paths) + k, p=p, src=src, nhint=nhint, cat=cat,
+                            st=st, mode='mesh', label='[网格]'))
+    # 按原生流顺序排列（与 PDF 兼容层流顺序一致），把网格线体插到其所在位置
+    key = -1.0
+    for e in entries:
+        if e['mode'] == 'mesh':
+            e['key'] = e['st'].off
+        else:
+            if e['st'] is not None:
+                key = e['st'].off
+            e['key'] = key
+    entries.sort(key=lambda e: e['key'])            # 稳定排序
     # 同名多条 → #k 后缀（编辑器按 sourceLayer 寻址，须可区分；名字本身照抄用户命名）
     grp = collections.Counter(e['src'] for e in entries if e['src'])
     seq = collections.Counter()
@@ -686,31 +915,35 @@ def main():
         elif not e['src']:
             e['src'] = 'path-%02d' % (e['i'] + 1)
     for e in entries:
-        p = paths[e['i']]
+        p = e['p']
         hn = ([e['nhint']] if e['nhint'] and e['nhint'] not in e['src'] else []) \
             + hints.get(e['i'], [])
         row = dict(sourceLayer=e['src'], color=p['color'], path=p['d'],
                    dash=p['dash'], cmyk=p['cmyk'], width=p['width'])
+        if e['mode'] == 'mesh':
+            row['render'] = 'mesh'
         if e['cat']:
             row['category'] = e['cat']
         if hn:
             row['hintNames'] = hn
         rec['paths'].append(row)
-    with open(args.out, 'w', encoding='utf8' if False else 'utf-8', newline='\n') as f:
+    with open(args.out, 'w', encoding='utf-8', newline='\n') as f:
         json.dump(rec, f, ensure_ascii=False, separators=(',', ':'))
 
     # 报告
+    mesh_n = sum(1 for e in entries if e['mode'] == 'mesh')
     named_n = sum(1 for e in entries if e['src'] and not e['src'].startswith('path-'))
     branch_n = sum(1 for e in entries if e['st'] is not None and e['st'].layer in BRANCH_LAYERS)
     cat_res = sum(1 for e in entries if e['cat'] == 'reserved')
     cat_int = sum(1 for e in entries if e['cat'] == 'interprovincial')
-    dashed = sum(1 for e in entries if paths[e['i']]['dash'])
-    print('\n已导出 %s：%d 条 path（虚线 %d / 实线 %d）' % (args.out, len(entries), dashed, len(entries) - dashed))
-    print('sourceLayer：用户命名 %d 条（其中层链 %d 条、对象名 %d 条）；中性 path-NN %d 条'
-          % (named_n, branch_n, named_n - branch_n, len(entries) - named_n))
-    print('category：reserved %d 条 / interprovincial %d 条；站圆组建议 %d 条；带 hintNames %d 条'
-          % (cat_res, cat_int, len(hints), sum(1 for r in rec['paths'] if r.get('hintNames'))))
-    print('颜色 %d 种' % len(set(p['color'] for p in paths)))
+    dashed = sum(1 for e in entries if e['p']['dash'])
+    print('\n已导出 %s：%d 条 path（PDF 描边 %d + 渐变网格线体 %d；虚线 %d / 实线 %d）'
+          % (args.out, len(entries), len(entries) - mesh_n, mesh_n, dashed, len(entries) - dashed))
+    print('sourceLayer：用户命名 %d 条（对象名 %d、层链 %d）；中性 path-NN %d 条'
+          % (named_n, named_n - branch_n, branch_n, len(entries) - named_n))
+    print('category：reserved %d 条 / interprovincial %d 条；站圆组建议 %d 条；带 hintNames %d 条；颜色 %d 种'
+          % (cat_res, cat_int, len(hints), sum(1 for r in rec['paths'] if r.get('hintNames')),
+             len(set(p['color'] for p in (e['p'] for e in entries)))))
 
     # 交叉验证清单（用户自行裁定，不代裁）
     print('\n=== 交叉验证：命名/层归属 与 站圆组证据 不一致 ===')
@@ -729,26 +962,37 @@ def main():
         if (gnames and not base.startswith('path-')
                 and not any(g in segs or g == base for g in gnames)):
             prob.append('站圆组 %s ≠ %s' % ('|'.join(gnames), base))
-        # 分支层内对象名恰为另一分支层的名（如 南汇线层里的「机场联络线」）
+        # 分支层内对象名恰为另一分支层的名
         if e['st'].layer in BRANCH_LAYERS and obj_nm in branch_tails and obj_nm != tail:
             prob.append('对象名「%s」在层「%s」（另一分支层同名）' % (obj_nm, e['st'].layer))
+        if e['mode'] == 'weak':
+            prob.append('PDF 条仅部分落在该原生对象上（weak 对拍）')
         if prob:
             mism += 1
-            print('  path-%02d → %s：%s' % (e['i'] + 1, e['src'] or '(中性)', '；'.join(prob)))
+            print('  %s → %s：%s' % (e['label'],
+                                    e['src'] or '(中性)', '；'.join(prob)))
     if not mism:
         print('  （无）')
     print('共 %d 条，请用户裁定' % mism)
-    # 原生侧未被 PDF 覆盖的可见描边（含被去重者）
+    # 原生侧可见线体未入导出（含被去重者）
     used = {id(e['st']) for e in entries if e['st'] is not None}
+    dup_ids = {id(matches[i][0]) for i in range(len(paths)) if i not in keep_idx and i in matches}
     orphan = [st for st in nat if id(st) not in used]
-    if orphan:
-        print('\n=== 原生可见描边未入导出：%d 条 ===' % len(orphan))
+    if orphan or mesh_unrendered:
+        print('\n=== 原生可见线体未入导出：%d 条（另未渲染网格线体 %d 条）===' % (len(orphan), len(mesh_unrendered)))
         for st in orphan:
-            why = ('对象级隐藏（头标志 1 Xw，不进 PDF 兼容层）' if st.xw == '1'
-                   else 'PDF 兼容层无对应（原因未明，几何未入图）' if st.name != '27'
-                   else '与 path-50 字节级相同（去重保留一份）')
-            print('  %s %s nseg=%d bbox=%s — %s' % (st.layer, st.name or '(无名)',
+            if st.xw == '1':
+                why = '对象级隐藏（头标志 1 Xw，不进 PDF 兼容层）'
+            elif id(st) in dup_ids:
+                why = '与另一条 PDF path 字节级相同（去重保留一份）'
+            else:
+                why = 'PDF 兼容层无对应（原因未明，几何未入图）'
+            print('  %s %s ops=%d bbox=%s — %s' % (st.layer, st.name or '(无名)',
                   len(st.ops), tuple(round(v) for v in st_bbox(st)), why))
+        for st in mesh_unrendered:
+            print('  [网格] %s %s ops=%d — PDF 无对着色填充（%s）' % (
+                st.layer, st.name or '(无名)', len(st.ops),
+                '对象级隐藏（1 Xw）' if st.xw == '1' else '原因未明'))
 
 
 if __name__ == '__main__':
