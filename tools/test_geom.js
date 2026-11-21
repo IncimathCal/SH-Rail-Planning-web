@@ -8,7 +8,8 @@ const path = require('path');
 const { pathFromD } = require(path.join(__dirname, '..', 'src', 'geom.js'));
 
 const refPath = path.join(__dirname, 'fixtures', 'geom_ref.json');
-const impPath = path.join(__dirname, '..', 'import', '6、14、15、23号线.json');
+// 旧框选基准的 4 线导入记录已挪 零散/（防混基准），此处用其固定样张副本做几何对拍（与基准无关）
+const impPath = path.join(__dirname, 'fixtures', 'import4.json');
 
 const ref = JSON.parse(fs.readFileSync(refPath, 'utf8'));
 const imp = JSON.parse(fs.readFileSync(impPath, 'utf8'));

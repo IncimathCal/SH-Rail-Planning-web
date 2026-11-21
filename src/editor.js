@@ -702,6 +702,8 @@
           data-src="${esc(imp.source)}" data-layer="${esc(p.sourceLayer)}">
           <span class="chip" style="background:${esc(p.color)}"></span>
           <span class="nm" title="点击选中；再点「建线」创建线路">${esc(p.sourceLayer)}</span>
+          ${(p.hintNames && p.hintNames.length)
+            ? `<span class="imp-hint" title="自动就近匹配的源图文字，仅供参考，不保证正确">≈${esc(p.hintNames.join(' / '))}</span>` : ''}
           ${isBound ? '<span class="badge">已建线</span>'
             : `<button class="mini" data-mk="1">建线</button>`}
         </div>`;
@@ -722,6 +724,16 @@
       </div>`).join('');
   }
 
+  // 本线 path 对应的导入建议名（自动就近匹配的源图文字，仅供参考）
+  function importHintsFor(l) {
+    if (!l || !l.path) return [];
+    for (const imp of S.imports) {
+      const p = imp.paths.find((x) => x.path === l.path);
+      if (p && p.hintNames && p.hintNames.length) return p.hintNames;
+    }
+    return [];
+  }
+
   function renderLineForm() {
     const box = $('lineform');
     const l = S.lines.get(S.activeLine);
@@ -734,6 +746,12 @@
     box.innerHTML = `
       <div class="fld"><label>id</label><input type="text" value="${l.id}" disabled></div>
       <div class="fld"><label>名称</label><input type="text" id="lfName" value="${esc(l.name)}"></div>
+      ${importHintsFor(l).length ? `
+      <div class="fld"><label>建议名</label><span class="hintline" style="flex:1">
+        ${importHintsFor(l).map((n) => `<span class="namehint" data-namehint="${esc(n)}"
+          title="源图附近自动匹配的文字，仅供参考；点击采用">${esc(n)}</span>`).join('')}
+        <span style="color:var(--dim);font-size:10px">（自动匹配，不保证正确）</span>
+      </span></div>` : ''}
       <div class="fld"><label>颜色</label><input type="color" id="lfColor" value="${esc(l.color)}"></div>
       <div class="fld"><label>环线</label><input type="checkbox" id="lfLoop" ${l.loop ? 'checked' : ''}
         style="flex:1"><span style="color:var(--dim);font-size:11px">（path 闭合）</span></div>
@@ -855,7 +873,8 @@
     snapshot();
     const lid = allocLid();
     const line = {
-      schema: 'fmt/line@1', id: lid, name: sourceLayer,
+      // name 留空待人工录入（不擅自命名）；源图匹配文字只作属性面板里的建议名
+      schema: 'fmt/line@1', id: lid, name: '',
       groupId: null, role: 'standalone', color: p.color,
       loop: /z/i.test(p.path), path: p.path, connects: [],
       stops: [], segments: [], status: 'future',
@@ -866,7 +885,7 @@
     S.lines.set(lid, line);
     S.activeLine = lid; S.selStop = null;
     renderAll();
-    setStatus(`已建线 ${lid}（${line.name}）。切换到「加站」模式点击线路设站。`);
+    setStatus(`已建线 ${lid}。请在属性面板命名（导入匹配文字仅作建议），再到「加站」模式点击线路设站。`);
   }
 
   function updatePathFromImport() {
@@ -1325,6 +1344,16 @@
     if (touched) { l.meta.updated = today(); renderLineList(); renderWorld(); renderGroupsPanel(); autosave(); }
   });
   $('lineform').addEventListener('click', (e) => {
+    if (e.target.dataset.namehint !== undefined) {   // 建议名：点选采用（人工确认后才写入）
+      const l = S.lines.get(S.activeLine);
+      if (!l) return;
+      snapshot();
+      l.name = e.target.dataset.namehint;
+      l.meta.updated = today();
+      renderLineForm(); renderLineList(); renderWorld(); autosave();
+      setStatus(`已采用建议名「${l.name}」为 ${l.id} 命名（可继续在名称框修改）。`);
+      return;
+    }
     if (e.target.id === 'lfUpdatePath') updatePathFromImport();
     if (e.target.id === 'lfArchive') {
       const l = S.lines.get(S.activeLine);

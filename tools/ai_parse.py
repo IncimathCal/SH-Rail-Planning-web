@@ -249,11 +249,6 @@ def label_hints(page, eps, radius=600.0):
     return hits, len(words)
 
 
-def line_key(name):
-    m = re.search(r'\d+', name)
-    return m.group(0) if m else None
-
-
 # ---------------------------------------------------------------- 旧 SVG 对拍
 
 def d_bbox(d):
@@ -503,15 +498,16 @@ def main():
     # 导出 import 记录
     rec = dict(schema='fmt/import@1', source='远期.ai',
                imported=datetime.date.today().isoformat(),
-               note='ai_parse 提取：坐标为 .ai 页面基准 %.0f×%.0f、SVG 朝向；dash/cmyk/width/'
-                    'hintNames 为非破坏性扩展字段（hintNames 仅建议值）' % (W, H),
+               note='ai_parse 提取：坐标为 .ai 页面基准 %.0f×%.0f、SVG 朝向；sourceLayer 为提取'
+                    '序号（path-NN，不带语义）；dash/cmyk/width/hintNames 为非破坏性扩展字段'
+                    '（hintNames 仅就近匹配的建议值，需人工确认）' % (W, H),
                paths=[])
     for i, p in enumerate(paths):
-        names = hints.get(i, [])
-        src = ('%s号线' % line_key(names[0])) if (names and line_key(names[0])) else ('Line#%03d' % (i + 1))
-        rec['paths'].append(dict(sourceLayer=src, color=p['color'], path=p['d'],
+        # sourceLayer 一律中性提取序号（用户明令 2026-11-21：不得擅自起名）；
+        # 自动绑定的线路名只进 hintNames，由编辑器以「建议」形式展示、人工点选采用
+        rec['paths'].append(dict(sourceLayer='path-%02d' % (i + 1), color=p['color'], path=p['d'],
                                  dash=p['dash'], cmyk=p['cmyk'], width=p['width'],
-                                 hintNames=names))
+                                 hintNames=hints.get(i, [])))
     with open(args.out, 'w', encoding='utf-8', newline='\n') as f:
         json.dump(rec, f, ensure_ascii=False, separators=(',', ':'))
     dashed = sum(1 for p in paths if p['dash'])

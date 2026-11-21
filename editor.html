@@ -72,6 +72,8 @@
   .imp-row.bound .nm { color: var(--dim); }
   .imp-row.sel { outline: 1px solid var(--acc); border-radius: 3px; }
   .imp-src { color: var(--dim); font-size: 11px; margin: 4px 0 2px; }
+  .imp-row .imp-hint { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-size: 10px; color: var(--dim); font-style: italic; }
 
   .line-row { display: flex; align-items: center; gap: 6px; padding: 3px 4px;
     border-radius: 4px; cursor: pointer; }
@@ -87,6 +89,9 @@
   #lineform .fld { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
   #lineform .fld > label { width: 64px; flex: none; text-align: right; }
   #lineform .fld > :nth-child(2) { flex: 1; min-width: 0; }
+  .namehint { display: inline-block; font-size: 11px; padding: 0 5px; margin: 1px 3px 1px 0;
+    border: 1px solid var(--acc); border-radius: 3px; color: var(--acc); cursor: pointer; }
+  .namehint:hover { background: var(--acc); color: #fff; }
 
   .stop-row { display: flex; align-items: center; gap: 4px; padding: 1px 2px; }
   .stop-row .idx { color: var(--dim); width: 22px; text-align: right; flex: none; font-size: 11px; }
