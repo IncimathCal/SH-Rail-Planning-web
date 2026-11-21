@@ -289,44 +289,6 @@
     return stopDisplayName(a) + ' — ' + stopDisplayName(b);
   }
 
-  // ---------- GCJ02 偏移（高德底图对齐） ----------
-  // 国家标准加密偏移的通用近似算法（纯数学公式，不引用任何外部数据）：WGS84 → GCJ02。
-  // 只用于渲染侧（线路/站点喂 MapLibre 前的渲染拷贝，与高德瓦片同平面）；
-  // GeoJSON / KML 导出一律保持 WGS84 原坐标——变换绝不写回权威数据结构。
-  const GCJ_A = 6378245.0;                // 克拉索夫斯基椭球长半轴
-  const GCJ_EE = 0.00669342162296594323;  // 第一偏心率平方
-  function gcjTransformLat(x, y) {
-    let ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
-    ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
-    ret += (20.0 * Math.sin(y * Math.PI) + 40.0 * Math.sin(y / 3.0 * Math.PI)) * 2.0 / 3.0;
-    ret += (160.0 * Math.sin(y / 12.0 * Math.PI) + 320 * Math.sin(y * Math.PI / 30.0)) * 2.0 / 3.0;
-    return ret;
-  }
-  function gcjTransformLon(x, y) {
-    let ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
-    ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
-    ret += (20.0 * Math.sin(x * Math.PI) + 40.0 * Math.sin(x / 3.0 * Math.PI)) * 2.0 / 3.0;
-    ret += (150.0 * Math.sin(x / 12.0 * Math.PI) + 300.0 * Math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0;
-    return ret;
-  }
-  // 中国境外无偏移（粗略界；本项目数据均在境内，此为算法自带的守卫）
-  function outOfChina(lon, lat) {
-    return !(lon > 72.004 && lon < 137.8347 && lat > 0.8293 && lat < 55.8271);
-  }
-  function wgs84ToGcj02(lon, lat) {
-    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return [lon, lat];
-    if (outOfChina(lon, lat)) return [lon, lat];
-    let dLat = gcjTransformLat(lon - 105.0, lat - 35.0);
-    let dLon = gcjTransformLon(lon - 105.0, lat - 35.0);
-    const radLat = (lat / 180.0) * Math.PI;
-    let magic = Math.sin(radLat);
-    magic = 1 - GCJ_EE * magic * magic;
-    const sqrtMagic = Math.sqrt(magic);
-    dLat = (dLat * 180.0) / ((GCJ_A * (1 - GCJ_EE)) / (magic * sqrtMagic) * Math.PI);
-    dLon = (dLon * 180.0) / (GCJ_A / sqrtMagic * Math.cos(radLat) * Math.PI);
-    return [lon + dLon, lat + dLat];
-  }
-
   // ---------- 单线导出 ----------
   // GeoJSON：线一条 Feature（MultiLineString，段序＝segIndex）＋每站一个 Point（站序＝t 升序）。
   function buildLineGeoJSON(lineId, linesMap, stops) {
@@ -395,7 +357,6 @@
     SEG_STATUS_OPACITY, DEFAULT_LINE_COLOR, GROUP_TYPE_ZH, ROLE_ZH, SEG_STATUS_ZH,
     LABEL_CAP, LABEL_ZOOM_GROUP, LABEL_ZOOM_STOP,
     UNNAMED_STOP_ZH, stopDisplayName, formatTerminals,
-    outOfChina, wgs84ToGcj02,
     xmlEscape, normalizeHex, hexToKmlColor,
     normalizeLines, lineBboxOf, stopList, buildStopView, lineSummaries, layerGroups,
     matchEntries, filterLabels, buildLineOpacity, statusOpacity, buildSegLayerOpacity,

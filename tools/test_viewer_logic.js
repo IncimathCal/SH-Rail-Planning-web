@@ -227,41 +227,6 @@ eq(V.formatTerminals({ loop: false, terminals: ['甲'] }), '甲 — ' + V.UNNAME
 eq(V.formatTerminals(null), '—', 'null 摘要不崩');
 eq(V.formatTerminals({ loop: false }), '—', '无 terminals 字段不崩');
 
-// ---------- wgs84ToGcj02（GCJ02 偏移，渲染侧专用） ----------
-console.log('wgs84ToGcj02:');
-eq(V.wgs84ToGcj02(0, 0), [0, 0], '境外点原样返回');
-eq(V.wgs84ToGcj02(139.7, 35.7), [139.7, 35.7], '境外（东京）原样返回');
-ok(Array.isArray(V.wgs84ToGcj02(NaN, 31.2)), '非有限输入不崩');
-ok(V.wgs84ToGcj02(NaN, 31.2)[1] === 31.2, '非有限输入坐标透传');
-// 上海范围内：偏移量数百米量级、方向东偏南（GCJ02 在沪的已知特征：
-// dLon ≈ +0.0045、dLat ≈ −0.0020，合位移约 480 m）
-for (const [lo, la] of [[121.48, 31.22], [121.90, 30.95], [121.20, 31.45], [121.75, 31.05]]) {
-  const g = V.wgs84ToGcj02(lo, la);
-  const dx = (g[0] - lo) * 111320 * Math.cos((la * Math.PI) / 180);
-  const dy = (g[1] - la) * 110540;
-  const m = Math.hypot(dx, dy);
-  ok(m > 150 && m < 900, `(${lo},${la}) 偏移数百米量级（实际 ${m.toFixed(0)} m）`);
-  ok(g[0] > lo && g[1] < la, `(${lo},${la}) 偏移方向东偏南`);
-}
-// 往返近似闭合：逆变换用偏移场缓变的两次迭代近似（测试侧实现，不入 core）
-function gcjToWgsApprox(lon, lat) {
-  let wl = lon, wt = lat;
-  for (let i = 0; i < 2; i++) {
-    const g = V.wgs84ToGcj02(wl, wt);
-    wl += lon - g[0];
-    wt += lat - g[1];
-  }
-  return [wl, wt];
-}
-const shPt = [121.48, 31.22];
-const shBack = gcjToWgsApprox(...V.wgs84ToGcj02(...shPt));
-ok(Math.abs(shBack[0] - shPt[0]) < 1e-5 && Math.abs(shBack[1] - shPt[1]) < 1e-5,
-  '上海往返闭合残差 <1e-5°（实际 ' + Math.hypot(shBack[0] - shPt[0], shBack[1] - shPt[1]).toExponential(2) + '°）');
-// 平滑性：邻近点变换后仍邻近（偏移场无撕裂，渲染整链变换安全）
-const n1 = V.wgs84ToGcj02(121.48, 31.22);
-const n2 = V.wgs84ToGcj02(121.48001, 31.22001);
-ok(Math.hypot(n2[0] - n1[0], n2[1] - n1[1]) < 2e-5, '邻近点偏移平滑');
-
 // ---------- buildLineGeoJSON ----------
 console.log('buildLineGeoJSON:');
 const gj = V.buildLineGeoJSON('la', lm, st);

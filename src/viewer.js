@@ -1,13 +1,11 @@
 // viewer.js —— 阶段 3 查看器·DOM/MapLibre 胶水层（2026-11-21）
 // 职责：fetch net/{lines,stops}.geojson（相对路径 net → build/net 依次回退；加载/空/错三态
 // 中文覆盖）→ 纯逻辑归一（VIEWER_CORE）→ 内联 style 渲染（无 glyphs、无 symbol 图层——
-// 纯深色画布）→ 搜索 / 多选高亮 / 线·站信息面板 / 状态图例＋「突出既有」「底图（高德）」
-// 开关 / 站点 hover 提示 / 单线导出 / 中文 HTML 标签叠加。
-// 渲染坐标系＝GCJ02：线路/站点/标签/视野定位在渲染拷贝上经 wgs84ToGcj02 逐点正变换
-//（与高德底图同平面）；S.linesMap/S.stops 保持 WGS84，GeoJSON/KML 导出不受污染。
+// 纯深色画布）→ 搜索 / 多选高亮 / 线·站信息面板 / 状态图例＋「突出既有」开关 / 站点 hover
+// 提示 / 单线导出 / 中文 HTML 标签叠加。
+// 渲染坐标系＝WGS84（无底图设计，零外部资源）；S.linesMap/S.stops 即权威结构，
+// GeoJSON/KML 导出与其同坐标。
 // 线层按 segStatus 拆三层（远期虚线只能整层设——line-dasharray 不支持数据驱动）。
-// 高德底图默认关（产品默认观感＝无底图深色画布）；开启后垫 raster 瓦片并压暗调灰，
-// 断网/瓦片失败静默留空不弹窗。除高德瓦片外不引用任何外部资源。
 // 与编辑器完全独立：不加载 editor.js 的任何代码。中文标签走 HTML 叠加（架构方案 §6 备案路线）。
 
 (function (G) {
@@ -20,15 +18,14 @@
     map: null,
     linesMap: new Map(),          // lineId → line（归一后，WGS84 权威——导出用）
     stops: [],                    // 站点平表（WGS84 权威——导出用）
-    view: { pins: [], labels: [] }, // 渲染/标签视图（组已归并；坐标仍 WGS84）
-    dispBbox: new Map(),          // lineId → GCJ02 渲染 bbox（fitBounds 用，与渲染特征同帧）
-    dispStopsBbox: null,          // 站点 GCJ02 渲染 bbox（无线时的兜底视野）
-    dispLabels: [],               // 标签的 GCJ02 拷贝（map.project 定位用）
+    view: { pins: [], labels: [] }, // 渲染/标签视图（组已归并；坐标 WGS84）
+    dispBbox: new Map(),          // lineId → 渲染 bbox（fitBounds 用，与渲染特征同帧）
+    dispStopsBbox: null,          // 站点渲染 bbox（无线时的兜底视野）
+    dispLabels: [],               // 标签列表（map.project 定位用，WGS84）
     summaries: new Map(),         // lineId → 摘要
     pinByKey: new Map(),
     selected: new Set(),          // 高亮线路（空＝不高亮、全部正常显示）
     emphasize: true,              // 「突出既有」开关（默认开）
-    basemap: false,               // 「底图（高德）」开关（默认关）
     labelPool: new Map(),         // 标签元素复用池 key → div
     labelFrame: 0,                // rAF 合帧令牌
     searchIdx: [],                // 搜索条目
@@ -89,9 +86,7 @@
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
 
-  // ---------- 渲染数据（由归一结果重建，保证 paint 属性干净齐全） ----------
-  // 渲染坐标系＝GCJ02：逐点正变换只发生在这里的渲染拷贝上（含标签/视野定位，
-  // 见 boot 的 dispLabels 与 totalBbox）；权威结构与导出保持 WGS84。
+  // ---------- 渲染数据（由归一结果重建，保证 paint 属性干净齐全；WGS84 直通） ----------
   function renderLinesFC() {
     S.dispBbox = new Map();
     const features = [];
@@ -101,9 +96,8 @@
         const coords = [];
         for (const pt of seg.coords) {
           if (!pt || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
-          const g = V.wgs84ToGcj02(pt[0], pt[1]);
-          coords.push(g);
-          bb = mergeBbox(bb, [g[0], g[1], g[0], g[1]]);
+          coords.push([pt[0], pt[1]]);
+          bb = mergeBbox(bb, [pt[0], pt[1], pt[0], pt[1]]);
         }
         if (coords.length < 2) continue;
         features.push({
@@ -132,7 +126,7 @@
   function renderStopsFC() {
     // pin → circle：白填充；描边＝无组站取线色、同站组/出闸成员黑边（换乘语义）、
     // junction 组取成员线角色优先级色；big（同站大圈）与 dark（黑边加粗）为渲染开关位。
-    // 坐标同步变换到 GCJ02 渲染帧（同 renderLinesFC）。
+    // 坐标 WGS84 直通（同 renderLinesFC）。
     S.dispStopsBbox = null;
     const features = [];
     for (const pin of S.view.pins) {
@@ -143,11 +137,10 @@
         const line = S.linesMap.get(pin.lineId);
         stroke = line ? line.color : '#999999';
       }
-      const g = V.wgs84ToGcj02(pin.lon, pin.lat);
-      S.dispStopsBbox = mergeBbox(S.dispStopsBbox, [g[0], g[1], g[0], g[1]]);
+      S.dispStopsBbox = mergeBbox(S.dispStopsBbox, [pin.lon, pin.lat, pin.lon, pin.lat]);
       features.push({
         type: 'Feature',
-        geometry: { type: 'Point', coordinates: g },
+        geometry: { type: 'Point', coordinates: [pin.lon, pin.lat] },
         properties: { key: pin.key, name: pin.name, lineId: pin.lineId || '', big: pin.big ? 1 : 0, dark, stroke },
       });
     }
@@ -225,31 +218,6 @@
   function fitAll() {
     const bb = totalBbox();
     if (bb) S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 60, duration: 0, maxZoom: 12 });
-  }
-
-  // ---------- 高德底图（默认关；GCJ02 瓦片，渲染坐标已逐点对齐） ----------
-  // tiles 数组 MapLibre 自动轮询四子域；断网/瓦片失败由引擎静默留空（仅 console），不弹窗。
-  const AMAP_TILES = [1, 2, 3, 4].map((n) =>
-    'https://webrd0' + n + '.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}');
-  // 浅色道路瓦片压暗调灰（深色主题下线网仍突出）；观感参数，目验后可微调
-  const AMAP_PAINT = { 'raster-opacity': 0.9, 'raster-brightness-max': 0.8, 'raster-saturation': -0.45 };
-  function setBasemap(on) {
-    const apply = () => {
-      const map = S.map;
-      if (!map) return;
-      if (on) {
-        if (!map.getSource('basemap')) {
-          map.addSource('basemap', { type: 'raster', tiles: AMAP_TILES, tileSize: 256, minzoom: 3, maxzoom: 18 });
-          map.addLayer({ id: 'basemap', type: 'raster', source: 'basemap', paint: AMAP_PAINT }, LINE_LAYER_IDS[0]);
-        }
-      } else {
-        if (map.getLayer('basemap')) map.removeLayer('basemap');
-        if (map.getSource('basemap')) map.removeSource('basemap');
-      }
-      $('basemapAttrib').hidden = !on;
-    };
-    if (S.map && S.map.isStyleLoaded()) apply();
-    else if (S.map) S.map.once('load', apply);   // style 尚未就绪则等 load 后再垫
   }
 
   // ---------- 高亮 / 突出既有 ----------
@@ -410,7 +378,7 @@
     for (const sum of S.summaries.values()) {
       ents.push({ type: 'line', id: sum.lineId, text: sum.name || sum.lineId, aliases: sum.aliases, ref: sum });
     }
-    for (const lb of S.dispLabels) {   // GCJ02 拷贝：flyTo 定位与渲染同帧
+    for (const lb of S.dispLabels) {
       ents.push({ type: 'stop', id: lb.key, text: lb.name, aliases: [], ref: lb });
     }
     S.searchIdx = ents;
@@ -448,7 +416,7 @@
     input.blur();
     if (ent.type === 'line') {
       setSelected([ent.id]);
-      const bb = S.dispBbox.get(ent.id) || (ent.ref && ent.ref.bbox);   // 优先 GCJ02 渲染帧
+      const bb = S.dispBbox.get(ent.id) || (ent.ref && ent.ref.bbox);
       if (bb) {
         S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 80, duration: 600, maxZoom: 13 });
       }
@@ -553,10 +521,6 @@
       applyLinePaint();
       updateLegend();
     });
-    $('basemapToggle').addEventListener('change', (ev) => {
-      S.basemap = ev.target.checked;
-      setBasemap(S.basemap);
-    });
     $('infoClose').addEventListener('click', () => { $('infoPanel').hidden = true; });
     document.addEventListener('keydown', (ev) => {
       if (ev.key !== 'Escape') return;
@@ -597,11 +561,7 @@
     }
     S.summaries = V.lineSummaries(S.linesMap, S.stops);
     S.view = V.buildStopView(S.stops);
-    // 标签的 GCJ02 渲染拷贝（坐标只进 map.project，名称等字段浅拷贝共用）
-    S.dispLabels = S.view.labels.map((l) => {
-      const g = V.wgs84ToGcj02(l.lon, l.lat);
-      return { ...l, lon: g[0], lat: g[1] };
-    });
+    S.dispLabels = S.view.labels;   // WGS84 直通（仅进 map.project 定位）
     S.pinByKey = new Map(S.view.pins.map((p) => [p.key, p]));
     buildSearchIndex();
 
