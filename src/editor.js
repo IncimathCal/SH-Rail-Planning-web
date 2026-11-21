@@ -768,18 +768,16 @@
       if (g.type === 'same-station' || g.type === 'junction') for (const sid of g.stops) mergedHidden.add(sid);
     }
 
-    // 未建线的导入 path：白色 halo 垫底（OSM 底图上抬可见度）＋加浓虚线本体＋透明加宽命中线；
-    // 选中态（S.selImport 命中）虚线改强调色加粗。halo pointer-events:none 不截点击
+    // 未建线的导入 path（灰色虚线；2026-11-21 halo 方案用户否决回退，灰 #666→#999 提亮）
+    // ＋透明加宽命中线；选中态（S.selImport 命中）虚线改强调色加粗
     const boundPaths = new Set([...S.lines.values()].map((l) => l.path));
     for (const imp of S.imports) {
       for (const p of imp.paths) {
         if (boundPaths.has(p.path)) continue;
         const sel = S.selImport && S.selImport.source === imp.source
           && S.selImport.sourceLayer === p.sourceLayer;
-        el('path', { d: p.path, class: 'svg-line line-raw-halo',
-          'vector-effect': 'non-scaling-stroke' }, world);
         const path = el('path', { d: p.path, class: 'svg-line line-raw' + (sel ? ' sel' : ''),
-          'vector-effect': 'non-scaling-stroke' }, world);
+          stroke: '#999', 'vector-effect': 'non-scaling-stroke' }, world);
         path.dataset.impSource = imp.source;
         path.dataset.impLayer = p.sourceLayer;
         const hit = el('path', { d: p.path, class: 'svg-line line-raw-hit',
