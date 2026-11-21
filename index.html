@@ -6,14 +6,15 @@
   <title>上海轨道交通远期规划图</title>
   <meta name="description" content="上海轨道交通远期线网规划交互图：线路走向、设站与换乘节点、分段建设状态（既有 / 已批复 / 远期），数据纯手工录入。">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#101216">
+  <meta name="theme-color" content="#ffffff">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23101216'/%3E%3Cpath d='M16 2v8M16 22v8M2 16h8M22 16h8' stroke='%234c8dff' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='5.5' fill='%23fff'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="assets/vendor/maplibre-gl.css">
   <style>
-    /* 阶段 3 查看器：纯深色画布（默认无底图、不引用任何外部数据源；
-       2026-11-22 测试阶段豁免：可选 OSM/高德底图，默认关闭时行为与零外部资源现状完全一致） */
+    /* 阶段 3 查看器：白板画布（2026-11-22 三批改版，黑板→白；面板等 UI 镀层保持深色），
+       默认无底图、不引用任何外部数据源；2026-11-22 测试阶段豁免：可选 OSM/高德底图，
+       默认关闭时行为与零外部资源现状完全一致 */
     :root {
-      --bg: #101216;
+      --bg: #ffffff;
       --panel: rgba(23, 26, 32, 0.92);
       --panel-border: #2a2f3a;
       --text: #e8eaf0;
@@ -31,13 +32,22 @@
       position: absolute; inset: 0; overflow: hidden;
       pointer-events: none; z-index: 1;
     }
+    /* 2026-11-22 三批改版：白板底→黑字＋白色外描边（paint-order:stroke fill 先描后填＝
+       描边只露外侧；宽度＝字号 1/4（居中描边被填充盖掉一半）→ 可见外扩＝字号 1/8，
+       用户例：24pt 字加 3pt 白边）；transform-origin 与 translate(-50%,-140%) 同参考点
+       （＝站点）——z<11 等比缩放时文字朝站点收拢，不再以自身中点缩放导致上浮漂移 */
     .map-label {
       position: absolute; left: 0; top: 0;
-      font-size: 12px; line-height: 1.2; color: var(--text);
+      font-size: 12px; line-height: 1.2; color: #000;
       white-space: nowrap; pointer-events: none; will-change: transform;
-      text-shadow: 0 0 3px #000, 0 1px 2px #000;
+      paint-order: stroke fill;
+      -webkit-text-stroke: 3px #fff;
+      transform-origin: 50% 140%;
     }
-    .map-label.is-group { font-size: 13px; font-weight: 600; color: #ffffff; }
+    .map-label.is-group {
+      font-size: 13px; font-weight: 600; color: #000;
+      -webkit-text-stroke: 3.25px #fff;
+    }
 
     /* 顶栏：标题 + 搜索 + 「突出既有」开关 */
     #topbar {
@@ -63,6 +73,13 @@
       border: 1px solid var(--panel-border); border-radius: 6px;
     }
     #btnPhase:hover, #btnNames:hover, #btnBasemap:hover { border-color: var(--accent); color: #fff; }
+    /* 白色遮罩档位（⚠ 临时测试控件，2026-11-22：效果定值后连同 viewer.js 的 S.veil/#selVeil 段一起删） */
+    #selVeil {
+      flex: none; padding: 6px 8px; cursor: pointer; white-space: nowrap; outline: none;
+      background: #0d0f13; color: var(--text);
+      border: 1px solid var(--panel-border); border-radius: 6px;
+    }
+    #selVeil:hover { border-color: var(--accent); }
     #searchDrop {
       position: absolute; top: calc(100% + 4px); left: 0; right: 0;
       margin: 0; padding: 4px 0; list-style: none;
@@ -225,6 +242,17 @@
          高德为 GCJ02，仅显示坐标做偏移对齐，数据与导出仍为 WGS84。状态不持久化。 -->
     <button id="btnBasemap" type="button"
       title="测试阶段功能（正式上线可能移除）：底图三态 无→OSM→高德 循环，仅显示对位参考；默认无底图＝零外部资源、零网络请求；高德（GCJ02）仅显示坐标做偏移对齐，数据与导出仍为 WGS84。">底图：无</button>
+    <!-- ⚠ 临时测试控件（2026-11-22，效果定值后删）：底图白色遮罩档位——瓦片已改 100%
+         不透明，提亮由遮罩承担；仅在底图（OSM/高德）开启时生效，「关」＝不加遮罩。 -->
+    <select id="selVeil"
+      title="底图白色遮罩不透明度（临时测试控件，效果定值后删除）：瓦片为 100% 不透明，提亮由本遮罩承担；仅在底图（OSM/高德）开启时生效。">
+      <option value="0">遮罩：关</option>
+      <option value="0.3">遮罩：30%</option>
+      <option value="0.4">遮罩：40%</option>
+      <option value="0.5" selected>遮罩：50%</option>
+      <option value="0.6">遮罩：60%</option>
+      <option value="0.7">遮罩：70%</option>
+    </select>
   </header>
 
   <aside id="linePanel">

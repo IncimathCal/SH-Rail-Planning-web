@@ -21,6 +21,14 @@
 // styleimagemissing 按需注册，零外部资源零网络请求；不进搜索/hover/点选面板）；
 // ②≥3 线同站组药丸——沿贪心最近邻链序画双层折线（外黑内白＋圆头端帽＝白底黑边胶囊，
 // 厚度＝双线换乘大圈直径视觉等宽）；恰 2 线组维持合并大圈不动。
+// 2026-11-22 三批（用户指示，仅查看器）：背景黑板改白（#fff）；站名黑字＋白色外描边
+//（paint-order:stroke fill 先描后填＝描边只露外侧，外扩＝字号 1/8——12px 字 3px 描边可见
+// 1.5px；CSS 见 index.html）＋站名缩放锚定站点（transform-origin 与 translate(-50%,-140%)
+// 同参考点，拉远文字朝站点收拢、不再上浮漂移）；底图瓦片 100% 不透明＋其上白色遮罩 fill 层
+//（全世界矩形、插在瓦片之上线路之下，只洗底图不碰线网站名；临时档位 30~70% 顶栏下拉、
+// 测试定值后删）；站圈等比缩放改按 big/dark 拆三常量档位层——数据驱动 case 值作 zoom 插值
+// stops（复合表达式）在真机不随缩放连续求值（线层同助手常量 stops 正常，「线缩圆不缩」
+// 两轮目验未愈即此因），拆层后与线宽层同一机制。
 // 与编辑器完全独立：不加载 editor.js 的任何代码。中文标签走 HTML 叠加（架构方案 §6 备案路线）。
 
 (function (G) {
@@ -49,6 +57,7 @@
     searchIdx: [],                // 搜索条目
     dropIndex: 0,                 // 搜索下拉键盘焦点序
     basemap: 'off',               // 测试阶段底图三态：'off'|'osm'|'gaode'（默认无＝与现状零差别；不持久化）
+    veil: 0.5,                     // 底图白色遮罩不透明度（2026-11-22 三批临时测试档：0/0.3~0.7，定值后随下拉一起删）
     dispCoord: V.makeDispCoord('none'), // 显示坐标变换（gaode＝WGS84→GCJ02；仅显示侧，见下方底图段）
     basemapPending: false,        // 样式未就绪时点击的补应用标记（目标态恒存 S.basemap）
     styleReady: false,            // map 'load' 已触发（样式只建一次，就绪后 addSource/addLayer 恒可用）
@@ -300,6 +309,33 @@
     },
     paint: { 'icon-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1] },
   };
+  // 站圈层：按 big/dark 拆三层、各层尺寸全常量（编辑器同值：普通站圈 r5.5/描边2、出闸组成员
+  // r5.5/黑边2.2、换乘大圈 r7.5/黑边2.2——.stop-c/.stop-merge）。2026-11-22 修复：此前用
+  // ['case'] 档位值作 zoom 插值 stops（数据驱动×zoom 复合表达式），真机目验两轮「线缩圆不缩」
+  //（线层同助手常量 stops 正常）——拆层后每层 stops 全常量、与已验证的线宽层同一机制。
+  // filter 三层互斥全覆盖：big⇒黑边大圈（same-station ≤2 线合并，dark 恒 1）、
+  // dark&&!big⇒出闸组成员（各自成圈不并点）、其余＝普通站＋junction 组（描边色仍逐站
+  // ['get','stroke'] 取线色/角色优先级色——颜色数据驱动不带 zoom，不受此坑影响）。
+  const STOP_LAYER_DEFS = [
+    { id: 'stops', filter: ['all', ['!', ['get', 'big']], ['!', ['get', 'dark']]], radius: 5.5, strokeW: 2 },
+    { id: 'stops-dark', filter: ['all', ['!', ['get', 'big']], ['get', 'dark']], radius: 5.5, strokeW: 2.2 },
+    { id: 'stops-big', filter: ['==', ['get', 'big'], 1], radius: 7.5, strokeW: 2.2 },
+  ];
+  function stopLayerDef(d) {
+    return {
+      id: d.id, type: 'circle', source: 'stops', filter: d.filter,
+      paint: {
+        // 尺寸与线层同一套等比缩放（V.zoomInterp——z≥11 封顶、z<11 按 2^(z−11)）；
+        // 被调光线的站圈半透明（同系数，填充与描边一起）
+        'circle-color': '#ffffff',
+        'circle-radius': V.zoomInterp(V.scaledSize(d.radius), d.radius),
+        'circle-stroke-color': ['get', 'stroke'],
+        'circle-stroke-width': V.zoomInterp(V.scaledSize(d.strokeW), d.strokeW),
+        'circle-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
+        'circle-stroke-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
+      },
+    };
+  }
   // 箭头 glyph 本地绘制（24×24 逻辑尺寸，2 倍像素密度抗锯齿；canvas → ImageData）：
   // 'arrow'＝指北实心三角（风筝形箭头，旋转交给 icon-rotate），'dot'＝无邻站可定向的退化小圆点。
   function drawArrowImageData(shape, color) {
@@ -340,29 +376,10 @@
           arrows: { type: 'geojson', data: renderArrowsFC() },
         },
         layers: [
-          { id: 'bg', type: 'background', paint: { 'background-color': '#101216' } },
+          { id: 'bg', type: 'background', paint: { 'background-color': '#ffffff' } },   // 2026-11-22 三批：黑板→白板
           ...LINE_LAYER_IDS.map(lineLayerDef),
           ...PILL_LAYER_DEFS,          // 药丸垫在站圈之下
-          {
-            id: 'stops', type: 'circle', source: 'stops',
-            paint: {
-              // 编辑器同值常量：普通站圈 r 5.5/描边 2，换乘大圈 r 7.5/黑边 2.2（.stop-c/.stop-merge）
-              // 尺寸与线层同一套等比缩放（V.zoomInterp——z≥11 封顶、z<11 按 2^(z−11)；case 做
-              // 档位值传入低端/高端 stop。⚠ 必须走助手不得内联手写：6d1552e 改等比时此处两条
-              // 内联 ['linear'] 漏改，线缩圆不缩，被用户目验抓包「细线上挂一串葡萄」）；
-              // 被调光线的站圈半透明（同系数，填充与描边一起）
-              'circle-color': '#ffffff',
-              'circle-radius': V.zoomInterp(
-                ['case', ['get', 'big'], V.scaledSize(7.5), V.scaledSize(5.5)],
-                ['case', ['get', 'big'], 7.5, 5.5]),
-              'circle-stroke-color': ['get', 'stroke'],
-              'circle-stroke-width': V.zoomInterp(
-                ['case', ['get', 'dark'], V.scaledSize(2.2), V.scaledSize(2)],
-                ['case', ['get', 'dark'], 2.2, 2]),
-              'circle-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
-              'circle-stroke-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
-            },
-          },
+          ...STOP_LAYER_DEFS.map(stopLayerDef),   // 站圈按 big/dark 拆三层（常量档位，见 stopLayerDef 注）
           ARROWS_LAYER_DEF,            // 箭头压顶（线端标志，盖过站圈不被遮挡）
         ],
       },
@@ -394,13 +411,16 @@
       map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; });
     }
-    map.on('click', 'stops', (e) => {
-      const p = e.features && e.features[0] && e.features[0].properties;
-      if (p && p.key) openStopPanel(String(p.key));
-    });
-    map.on('mouseenter', 'stops', () => { map.getCanvas().style.cursor = 'pointer'; });
-    map.on('mouseleave', 'stops', () => { map.getCanvas().style.cursor = ''; hideStopTip(); });
-    map.on('mousemove', 'stops', showStopTip);
+    // 站圈三层（big/dark 拆层，filter 互斥）共绑同一组交互——行为与单层时代完全一致
+    for (const id of STOP_LAYER_DEFS.map((d) => d.id)) {
+      map.on('click', id, (e) => {
+        const p = e.features && e.features[0] && e.features[0].properties;
+        if (p && p.key) openStopPanel(String(p.key));
+      });
+      map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
+      map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; hideStopTip(); });
+      map.on('mousemove', id, showStopTip);
+    }
     // 药丸层交互（成员圈已隐去，药丸本体承接点选/hover；两层同源，绑内层＋外层黑边均可命中）
     for (const id of ['pills-inner', 'pills-outer']) {
       map.on('click', id, (e) => {
@@ -457,11 +477,14 @@
     const panel = $('legendPanel');
     if (panel) panel.hidden = !text;
   }
-  // 惰性建层：首次开底图才 addSource/addLayer（默认路径零请求）；raster 插到首条线路图层
-  // 之下——数据压瓦片、bg 背景层被瓦片盖住（无妨，瓦片即底色）。切回「无」只藏不删
+  // 惰性建层：首次开底图才 addSource/addLayer（默认路径零请求）；raster＋白色遮罩插到首条
+  // 线路图层之下——数据压瓦片、bg 背景层被瓦片盖住（无妨，瓦片即底色）。切回「无」只藏不删
   //（setLayoutProperty visibility none，source 保留——再开免重建）。
   // 瓦片 URL 与编辑器 src/editor.js 同源：OSM 同址；高德四子域 webrd01~04＋style=8——编辑器
   // 按 (tx+ty)%4 取子域，MapLibre 无子域模板语法，tiles 列 4 个完整 URL 由其内部轮询，等价。
+  // 2026-11-22 三批：瓦片 100% 不透明（旧 0.45 透明作废），提亮改走白色遮罩 fill 层——
+  // 全世界矩形（Mercator ±85.0511，任何平移不出界），插在瓦片之上、线路之下，只洗底图
+  // 不碰线网站名；不透明度＝S.veil（临时测试档 30~70% 顶栏下拉，定值后连下拉一起删）。
   function ensureBasemapLayers() {
     const map = S.map;
     if (!map || map.getSource('basemap-osm')) return;
@@ -474,11 +497,21 @@
       tiles: [1, 2, 3, 4].map((n) =>
         'https://webrd0' + n + '.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}'),
     });
+    map.addSource('basemap-veil', {
+      type: 'geojson',
+      data: {
+        type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[
+          [-180, -85.0511], [-180, 85.0511], [180, 85.0511], [180, -85.0511], [-180, -85.0511],
+        ]] },
+      },
+    });
     const before = map.getLayer(LINE_LAYER_IDS[0]) ? LINE_LAYER_IDS[0] : undefined;
     map.addLayer({ id: 'basemap-osm', type: 'raster', source: 'basemap-osm',
-      layout: { visibility: 'none' }, paint: { 'raster-opacity': 0.45 } }, before);
+      layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-gaode', type: 'raster', source: 'basemap-gaode',
-      layout: { visibility: 'none' }, paint: { 'raster-opacity': 0.45 } }, before);
+      layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
+    map.addLayer({ id: 'basemap-veil', type: 'fill', source: 'basemap-veil',
+      layout: { visibility: 'none' }, paint: { 'fill-color': '#ffffff', 'fill-opacity': S.veil } }, before);
   }
   // 应用到地图：层可见性＋显示坐标变换＋四个 source 全量 setData 重渲染＋标签重排
   //（复用既有 render 函数，mode 变了自然产出变换后坐标）。箭头 icon-rotate 角度是 WGS84
@@ -491,6 +524,8 @@
     };
     vis('basemap-osm', S.basemap === 'osm');
     vis('basemap-gaode', S.basemap === 'gaode');
+    // 遮罩只在底图开启且档位非零时现身（fill-opacity 建层时取 S.veil，档位变化走 setPaintProperty）
+    vis('basemap-veil', S.basemap !== 'off' && S.veil > 0);
     S.dispCoord = V.makeDispCoord(S.basemap === 'gaode' ? 'gaode' : 'none');
     if (S.map.getSource('lines')) S.map.getSource('lines').setData(renderLinesFC());
     if (S.map.getSource('stops')) S.map.getSource('stops').setData(renderStopsFC());
@@ -880,6 +915,16 @@
     // 测试阶段底图三态循环：无 → OSM → 高德 → 无（不持久化，刷新回默认「无」）
     $('btnBasemap').addEventListener('click', () => {
       setBasemap(S.basemap === 'off' ? 'osm' : (S.basemap === 'osm' ? 'gaode' : 'off'));
+    });
+    // 白色遮罩档位（⚠ 临时测试控件，2026-11-22 用户指示做档测试效果、定值后删——
+    // HTML 里的 #selVeil 与 S.veil 一并移除）：底图未开时只存值，开底图时按存值建层生效
+    $('selVeil').addEventListener('change', () => {
+      S.veil = parseFloat($('selVeil').value) || 0;
+      if (S.map && S.map.getLayer('basemap-veil')) {
+        S.map.setPaintProperty('basemap-veil', 'fill-opacity', S.veil);
+        S.map.setLayoutProperty('basemap-veil', 'visibility',
+          S.basemap !== 'off' && S.veil > 0 ? 'visible' : 'none');
+      }
     });
     syncPhaseUI();     // 与 S.phase 初始态（'none'）对齐：按钮文案「分期：无」
     syncNamesUI();     // 与 S.namesOn 初始态（true）对齐：按钮文案「站名：显示」
