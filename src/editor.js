@@ -1927,6 +1927,16 @@
   function nearestLineAt(wx, wy) {
     const wpp = worldPerPixel();
     const maxD = 40 * wpp;
+    // 加站优先落在当前选中线（2026-11-22 用户指示）：共线/密线场景点击常被略近的
+    // 邻线抢走——选中线在吸附半径内即直接命中；半径外照旧回落全局最近线
+    if (S.activeLine) {
+      const line0 = S.lines.get(S.activeLine);
+      const ap0 = line0 && !(line0.meta && line0.meta.archived) && arcOf(S.activeLine);
+      if (ap0) {
+        const pr0 = ap0.project(wx, wy);
+        if (pr0.d <= maxD) return { lid: S.activeLine, pr: pr0 };
+      }
+    }
     let best = null;
     for (const [lid, line] of S.lines) {
       if (line.meta && line.meta.archived) continue;
