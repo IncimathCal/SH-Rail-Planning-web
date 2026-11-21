@@ -496,12 +496,22 @@ BRANCH_LAYERS = {
     'Line/市区线/11', 'Line/市区线/10',
 }
 
+# 用户裁定改名（2026-11-21，讨论记录-04 第七轮）：作者把两条线都命名为「苏淀沪连接线」——
+# (Line/市域线, 苏淀沪连接线) 的长线（约 (1859,5149)→(3907,5457)）实为苏淀沪线，线体作为
+#   示范区线支线（Station/苏淀沪线 3 圆 千灯/石浦/赵屯 全部 <2.5pt 落线）；
+# (Line/联络线, 苏淀沪连接线) 的短线（石浦 → 示范区线#5 淀山湖段西端）才是真正的苏淀沪连接线。
+USER_RENAMES = {
+    ('Line/市域线', '苏淀沪连接线'): '苏淀沪线',
+}
+
 
 def source_layer_of(st):
     """原生 stroke → (sourceLayer 或 None（中性）, hint 对象名或 None, category 或 None)。"""
     layer = st.layer
     cat = 'reserved' if layer == 'Line/预控通道' else (
           'interprovincial' if layer == 'Line/他省' else None)
+    if (layer, st.name) in USER_RENAMES:
+        return USER_RENAMES[(layer, st.name)], None, cat
     if layer in BRANCH_LAYERS:
         return layer[len('Line/'):], (st.name if st.name else None), cat
     if st.name:
