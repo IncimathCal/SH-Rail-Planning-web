@@ -439,57 +439,14 @@
 
     map.on('move', scheduleLabels);
     map.on('resize', scheduleLabels);
-    // 2026-11-22 用户需求 2＋当晚交互改版：地图画布上「单击线路＝进入聚焦」（幂等——已聚焦
-    // 同线再点不动，退出走 Esc/聚焦框 ×/点其他线；归一到主线，点支线线身等效点主线）；
-    // 双击线路＝两次 click 已完成聚焦，dblclick 只做精确命中判定——命中则 preventDefault
-    // 吃掉 MapLibre 原生双击缩放（防相机抖动），未命中放行原生缩放。
-    // 精确命中（2026-11-22 用户反馈）：queryRenderedFeatures 对线层带 tile 几何 buffer，
-    // 离线体较远的空白双击也命中——粗筛只拿候选，逐候选把 feature 坐标（即 source 渲染
-    // 坐标）经 map.project 转屏幕像素，取「双击点到折线最小距离」；命中阈值＝当前 zoom
-    // 实际线宽/2＋容差（V.lineWidthAt/V.DBLCLICK_TOL_PX，与 lineLayerDef 线宽同源）。
-    // ⚠ map.project 返回 Point 对象 {x,y}，pointToScreenPolylineDist 约定吃数组 [x,y]——
-    // 必须转 [pt.x, pt.y] 再入参（首版直接 push Point 对象被 Array.isArray 全跳过、距离
-    // 恒 Infinity，双击线路永不命中全变原生缩放，即当晚用户报的回归）。
-    // displayOnly 候选直接出局；全部候选超阈值＝未命中：不 preventDefault（放行缩放）。
-    map.on('dblclick', (e) => {
-      let hits = [];
-      try { hits = map.queryRenderedFeatures({ point: e.point, layers: ['lines'] }); } catch (err) { return; }
-      const tol = V.lineWidthAt(map.getZoom()) / 2 + V.DBLCLICK_TOL_PX;
-      let bestD = Infinity;
-      for (const f of hits || []) {
-        const p = f && f.properties;
-        if (!p || p.lineId == null || p.lineId === '') continue;
-        const line = S.linesMap.get(String(p.lineId));
-        if (line && V.lineLayerRank(line) === 'displayOnly') continue;
-        let coords = [];
-        try { coords = (f.geometry && f.geometry.coordinates) || []; } catch (err) { continue; }
-        const screen = [];
-        for (const c of coords) {
-          if (!Array.isArray(c) || !Number.isFinite(c[0]) || !Number.isFinite(c[1])) continue;
-          try { const pt = map.project(c); screen.push([pt.x, pt.y]); } catch (err) { /* 个别点投影失败跳过，不影响整段 */ }
-        }
-        const d = V.pointToScreenPolylineDist(e.point, screen);
-        if (d < bestD) bestD = d;
-      }
-      if (bestD > tol) return;   // 全部超阈值＝未命中线路线体：放行原生双击缩放
-      e.preventDefault();        // 点在线体上：吃掉双击缩放防抖动（聚焦已由两次 click 完成）
-    });
-    for (const id of LINE_LAYER_IDS) {
-      map.on('click', id, (e) => {
-        const p = e.features && e.features[0] && e.features[0].properties;
-        if (p && p.lineId != null && p.lineId !== '') {
-          // 「仅显示」级（他省线）点选不聚焦（2026-11-22 用户裁定：仅显示，无交互）；
-          // hover 光标为层粒度技术所限保留 pointer（见文件头说明），点选无动作即无交互。
-          // 其余线路点选＝进入聚焦（2026-11-22 晚改版：原开右上线路信息面板已删——线路
-          // 信息与导出入口收敛到下方聚焦框，见 syncFocusBox）
-          const line = S.linesMap.get(String(p.lineId));
-          if (line && V.lineLayerRank(line) === 'displayOnly') return;
-          setFocus(String(p.lineId));
-        }
-      });
-      map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
-      map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; });
-    }
+    // 2026-11-22 晚终裁（用户）：地图线路上的一切点击聚焦交互撤除——单击聚焦与双击原生
+    // 缩放抢相机（click 有动作则双击必叠加抖动），preventDefault 亦拦不住 MapLibre 双击
+    // 缩放（当轮真机实证：MapLibre 不检查 defaultPrevented，此前「验证过有效」系仅查了
+    // API 类型未实测，教训记档）。聚焦入口只留左栏列表行双击（toggleFocus）；线路线身
+    // 单/双击＝无动作，双击线路与双击空白一律原生缩放。精确命中工具链（lineWidthAt /
+    // pointToScreenPolylineDist / DBLCLICK_TOL_PX）保留在 VIEWER_CORE 供日后回启，此处
+    // 不再引用；hover 也不设 pointer 光标（不可点即不暗示可点）。
+    //（站圈/药丸交互照旧——点选开站点面板，见下。）
     // 站圈三层（big/dark 拆层，filter 互斥）共绑同一组交互——行为与单层时代完全一致
     for (const id of STOP_LAYER_DEFS.map((d) => d.id)) {
       map.on('click', id, (e) => {
