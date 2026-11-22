@@ -63,6 +63,15 @@
 // 调光——短期对比开关，定案后删）＋白罩不透明度五档循环（30%~70%，定值后删档位）；
 // 分期调光与他省线恒调光是既有独立裁定、两种模式下维持不变；④健壮性（connectorBlendPlan
 // 逐项防御、computeDimmedSet veil 模式，单测覆盖 tools/test_viewer_logic.js）。
+// 2026-11-22 真机反馈轮（用户「白罩没罩住其他线路的设站、站名也没隐去」）：①站圈三层与
+// 药丸两层移到白罩之下（聚焦时五层 filter 追加「非聚焦参与」、退出还原不残留）；②聚焦
+// 成员的站圈/药丸由罩上复制层（stops-*-focus / pills-*-focus，opacity 恒 1 去 dim case
+//——对齐 focus-copy「聚焦豁免一切」裁定）重画，全删全建并入 rebuildConnLayers；③站名标签
+// 聚焦时非聚焦线一律隐藏（visibleLabels 恢复聚焦隐藏维度，聚焦组成员标签常显、胶水层传
+// focusMembers＝主支线合并组全体成员）。聚焦参与判定＝feature 的 members 数组属性
+//（renderStopsFC/renderPillsFC 补）与聚焦组成员集的交集，组符号（junction 合并圈/换乘
+// 大圈/药丸）任一成员命中即豁免——对齐 pinDimmed 的组规则；filter 表达式 '!'/'any' 包
+// 'in' 的布尔结果合法（与「'!' 吃 0/1 数字」弃层坑不同，见 memberMatchExpr 注）。
 // 与编辑器完全独立：不加载 editor.js 的任何代码。中文标签走 HTML 叠加（架构方案 §6 备案路线）。
 
 (function (G) {
@@ -254,6 +263,15 @@
     if (!ids.length) return 0;
     return ids.every((id) => S.dimmed.has(id)) ? 1 : 0;
   }
+  // 站圈聚焦成员集（2026-11-22 真机反馈轮）：单站＝[本线]、组符号（junction 合并圈/
+  // 换乘大圈）＝成员线 lineIds——与 pinDimmed 同源规则（任一成员在聚焦组即「聚焦参与」，
+  // 罩上完整显示；出闸组成员各自独立成圈，按本线各自判定）。写入 feature 的 members
+  // 属性供 filter 表达式判定（见 memberMatchExpr）。
+  function pinMembers(pin) {
+    const ids = (pin.kind === 'group' && Array.isArray(pin.lineIds) && pin.lineIds.length)
+      ? pin.lineIds : (pin.lineId ? [pin.lineId] : []);
+    return ids.map(String);
+  }
   function renderStopsFC() {
     // pin → circle：白填充；描边＝无组站取线色（联络线站优先 pin.stroke＝最近端
     // 目标线色——2026-11-22 用户需求 2，flatten 产出经 stopList/pinOfStop 透传）、
@@ -275,7 +293,7 @@
       features.push({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [p[0], p[1]] },
-        properties: { key: pin.key, name: pin.name, lineId: pin.lineId || '', big: pin.big ? 1 : 0, dark, stroke, dim: pinDimmed(pin) },
+        properties: { key: pin.key, name: pin.name, lineId: pin.lineId || '', big: pin.big ? 1 : 0, dark, stroke, dim: pinDimmed(pin), members: pinMembers(pin) },
       });
     }
     return { type: 'FeatureCollection', features };
@@ -298,6 +316,9 @@
         geometry: { type: 'LineString', coordinates: coords },
         properties: {
           key: pill.key, name: (pill.pin && pill.pin.name) || '',
+          // 药丸成员线集（2026-11-22 真机反馈轮）：聚焦参与判定用（罩下 filter 追加/罩上
+          // 复制层，见 memberMatchExpr）——与 dim 位同源的成员信息，任一成员在聚焦组即豁免
+          members: (pill.lineIds || []).map(String),
           // 药丸调光规则：全成员线被调光才半透明（任一成员未调光则正常——2026-11-22 用户裁定）
           dim: (pill.lineIds || []).length && pill.lineIds.every((id) => S.dimmed.has(id)) ? 1 : 0,
         },
@@ -388,6 +409,19 @@
       },
     };
   }
+  // 站圈/药丸层交互绑定（点选开站点面板＋hover 提示＋pointer 光标）：基础静态五层与
+  // 罩上复制层（*-focus，2026-11-22 真机反馈轮）共用一套——聚焦时聚焦成员 feature 只在
+  // 罩上层渲染，事件绑定必须随层走；removeLayer 自动解绑旧层，全删全建后随建随绑。
+  function bindPinLayerInteraction(id) {
+    const map = S.map;
+    map.on('click', id, (e) => {
+      const p = e.features && e.features[0] && e.features[0].properties;
+      if (p && p.key) openStopPanel(String(p.key));
+    });
+    map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; hideStopTip(); });
+    map.on('mousemove', id, showStopTip);
+  }
   function buildMap() {
     const map = new G.maplibregl.Map({
       container: 'map',
@@ -422,8 +456,8 @@
         layers: [
           { id: 'bg', type: 'background', paint: { 'background-color': '#ffffff' } },   // 2026-11-22 三批：黑板→白板
           ...LINE_LAYER_IDS.map(lineLayerDef),
-          ...PILL_LAYER_DEFS,          // 药丸垫在站圈之下
-          ...STOP_LAYER_DEFS.map(stopLayerDef),   // 站圈按 big/dark 拆三层（常量档位，见 stopLayerDef 注）
+          ...PILL_LAYER_DEFS,          // 药丸垫在站圈之下（罩下区：聚焦时与站圈一起被白罩罩淡）
+          ...STOP_LAYER_DEFS.map(stopLayerDef),   // 站圈按 big/dark 拆三层（常量档位；罩下区，层序见 rebuildConnLayers 注）
         ],
       },
       center: [121.48, 31.22], zoom: 9.5,
@@ -442,25 +476,11 @@
     // pointToScreenPolylineDist / DBLCLICK_TOL_PX）保留在 VIEWER_CORE 供日后回启，此处
     // 不再引用；hover 也不设 pointer 光标（不可点即不暗示可点）。
     //（站圈/药丸交互照旧——点选开站点面板，见下。）
-    // 站圈三层（big/dark 拆层，filter 互斥）共绑同一组交互——行为与单层时代完全一致
-    for (const id of STOP_LAYER_DEFS.map((d) => d.id)) {
-      map.on('click', id, (e) => {
-        const p = e.features && e.features[0] && e.features[0].properties;
-        if (p && p.key) openStopPanel(String(p.key));
-      });
-      map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
-      map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; hideStopTip(); });
-      map.on('mousemove', id, showStopTip);
-    }
-    // 药丸层交互（成员圈已隐去，药丸本体承接点选/hover；两层同源，绑内层＋外层黑边均可命中）
-    for (const id of ['pills-inner', 'pills-outer']) {
-      map.on('click', id, (e) => {
-        const p = e.features && e.features[0] && e.features[0].properties;
-        if (p && p.key) openStopPanel(String(p.key));
-      });
-      map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
-      map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; hideStopTip(); });
-      map.on('mousemove', id, showStopTip);
+    // 站圈三层（big/dark 拆层，filter 互斥）＋药丸两层（成员圈已隐去，药丸本体承接点选/
+    // hover，两层同源内外均可命中）共绑同一组交互——行为与单层时代完全一致；聚焦时的
+    // 罩上复制层（*-focus）在 rebuildConnLayers 建层处同绑（聚焦成员 feature 只在其上渲染）
+    for (const id of STOP_LAYER_DEFS.map((d) => d.id).concat(['pills-inner', 'pills-outer'])) {
+      bindPinLayerInteraction(id);
     }
     map.on('error', (e) => {
       // MapLibre 运行时错误默认不上控制台（2026-11-22 黑屏排查教训：吞错害人）——显式转发
@@ -740,15 +760,91 @@
     }
     return { type: 'FeatureCollection', features };
   }
+  // ---------- 罩下基础层 filter 切换＋罩上符号复制层（2026-11-22 真机反馈轮） ----------
+  // 需求（用户真机反馈）：白罩没罩住其他线路的设站（站圈/药丸）。解法＝静态站圈三层＋
+  // 药丸两层的层序本身就在白罩之下（见 rebuildConnLayers 层序注），聚焦时五层 filter
+  // 追加「非聚焦参与」（把聚焦成员 feature 排除出罩下层——防罩上复制层双层叠画），退出
+  // 聚焦还原原 filter（不残留 in 条件）；聚焦成员的 feature 由罩上复制层
+  //（stops-*-focus / pills-*-focus）重画——同 source 同尺寸、唯 opacity 恒 1（去 dim
+  // case，对齐 focus-copy「聚焦豁免一切」裁定）。
+  // 「聚焦参与」判定：feature 的 members 属性（renderStopsFC/renderPillsFC 补的成员线
+  // id 数组）与聚焦组成员集（veilFocusSkipSet——主支线合并组全体）有交集；组符号
+  //（junction 合并圈/换乘大圈/药丸）与药丸同「任一成员命中即豁免」规则（对齐 pinDimmed），
+  // 单站＝本线。
+  // 聚焦成员判定表达式：['any', ['in', '<成员线 id>', ['get','members']], …]（转置形态：
+  // needle＝聚焦成员字面量、haystack＝feature 的数组属性——不用 lineId-in-literal 形态的
+  // 原因：组 pin 的 lineId 属性是空串，判不了组符号，成员线集合必须整体存进数组属性）。
+  // ⚠ 表达式 filter 中 '!'/'any' 包 'in' 的布尔结果是合法用法——与「'!' 吃 0/1 数字判
+  // 类型错致弃层」的坑不同：in/any 产出的就是布尔，恰是 '!' 要求的输入；数字坑的规避
+  // 仍是恒用显式 ['==', ['get', 'x'], 0/1]。空成员集返回 null（调用方跳过建层、不追加
+  // filter——理论不可达，S.focus 非空则聚焦组至少含其自身）。
+  function memberMatchExpr(members) {
+    const arr = (Array.isArray(members) ? members : [])
+      .map((m) => (m != null ? String(m) : '')).filter(Boolean);
+    if (!arr.length) return null;
+    return ['any'].concat(arr.map((m) => ['in', m, ['get', 'members']]));
+  }
+  // 罩下五层（站圈三层＋药丸两层）filter 同帧切换：聚焦＝原条件 ∧ 非(聚焦参与)；非聚焦
+  // ＝原样还原（药丸两层原本无 filter → setFilter(null) 清除）。样式未就绪时不可达
+  //（调用链 pending 机制兜底），层缺失防御跳过。
+  function applyFocusFilters(memberExpr) {
+    const map = S.map;
+    for (const d of STOP_LAYER_DEFS) {
+      if (!map.getLayer(d.id)) continue;
+      map.setFilter(d.id, memberExpr ? ['all', d.filter, ['!', memberExpr]] : d.filter);
+    }
+    for (const id of ['pills-outer', 'pills-inner']) {
+      if (!map.getLayer(id)) continue;
+      map.setFilter(id, memberExpr ? ['!', memberExpr] : null);
+    }
+  }
+  // 罩上站圈复制层定义：与 stopLayerDef 同 source 同 paint，唯 circle-opacity/
+  // circle-stroke-opacity 恒 1（不挂 dim case——聚焦成员的站圈罩上完整显示）
+  function stopFocusLayerDef(d, memberExpr) {
+    return {
+      id: d.id + '-focus', type: 'circle', source: 'stops',
+      filter: ['all', d.filter, memberExpr],
+      paint: {
+        'circle-color': '#ffffff',
+        'circle-radius': V.zoomInterp(V.scaledSize(d.radius), d.radius),
+        'circle-stroke-color': ['get', 'stroke'],
+        'circle-stroke-width': V.zoomInterp(V.scaledSize(d.strokeW), d.strokeW),
+        'circle-opacity': 1,
+        'circle-stroke-opacity': 1,
+      },
+    };
+  }
+  // 罩上药丸复制层定义：与 PILL_LAYER_DEFS 同 source 同尺寸，唯 line-opacity 恒 1；
+  // ⚠ line-cap/line-join 是 layout 属性（放 paint 会拒载整个 style 全黑——本项目踩过的
+  // 坑）；layout/paint 逐键新造对象，不复用常量层定义里的引用（防 addLayer 内部处理
+  // 污染初始 style 定义）
+  function pillFocusLayerDef(base, memberExpr) {
+    return {
+      id: base.id + '-focus', type: 'line', source: 'pills', filter: memberExpr,
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': base.paint['line-color'],
+        'line-opacity': 1,
+        'line-width': base.paint['line-width'],
+      },
+    };
+  }
   // ---------- 动态层统一重建（全删全建） ----------
   // 挂接点：applyDimState 与 applyBasemapToMap 末尾（调光/聚焦与底图切换都重设 source
   // 坐标）；样式未就绪的 pending 路径由既有 dimPending/basemapPending 补应用机制自然覆盖。
-  // 层序总排布（自下而上，全部动态层统一插在 'pills-outer' 之前、按添加顺序自然
-  // 叠放——addLayer(before) 紧贴其下，后加者在上）：
-  //   lines 基础层 → 联络线渐变层（非高亮的 blend 形态）→ focus-veil 白罩 →
-  //   focus-copy 聚焦重画 → 高亮联络线渐变层（fade 形态）→ arrow 渐隐层（出省端末段
-  //   1km，常驻）→ pills/stops/站名（全部不动、天然在罩上）。非聚焦：无白罩无重画层，
-  //   blend/arrow 层位置与现状（紧挨线层之上、药丸之下）完全一致。
+  // 层序总排布（自下而上；2026-11-22 真机反馈轮——站圈/药丸移罩下＋罩上符号复制层）：
+  //   bg/basemap → lines 基础层 → conn-blend（未被聚焦绑定的联络线渐变）→（静态五层）
+  //   pills-outer/inner → stops/stops-dark/stops-big（以上全部罩下；聚焦时这五层 filter
+  //   追加「非聚焦参与」——聚焦成员 feature 只上罩上层，不双层叠画，见 applyFocusFilters）
+  //   → focus-veil 白罩 → focus-copy 聚焦重画 → conn-fade 渐变高亮 → arrow 渐隐层 →
+  //   pills-outer-focus/pills-inner-focus → stops-focus/stops-dark-focus/stops-big-focus
+  //（罩上符号复制：聚焦成员的药丸/站圈恒原色完整显示）→ HTML 站名标签（聚焦时仅聚焦
+  //   组成员的标签显示，见 visibleLabels）。
+  //   非聚焦：无罩上层族、五层 filter 还原（不残留 in 条件），blend/arrow 层位置与旧
+  //   层序完全一致（紧挨线层之上、药丸之下）。
+  // 两个插入位点：addLow＝插在 'pills-outer' 之前（罩下线区顶——blend/非聚焦 arrow）；
+  // addTop＝加到最顶（罩上层族按添加序自下而上叠放）。全删全建模式下按序添加即层序，
+  // 无 before 锚漂移；静态 pills/stops 五层永在此函数外（初始 style），只切 filter 不重建。
   function rebuildConnLayers() {
     const map = S.map;
     if (!map) return;
@@ -758,10 +854,19 @@
     S.connLayerIds = [];
     const src = map.getSource('conn-fade');
     const feats = [];
-    const addDyn = (def) => {
+    const addLow = (def) => {
       map.addLayer(def, map.getLayer('pills-outer') ? 'pills-outer' : undefined);
       S.connLayerIds.push(def.id);
     };
+    const addTop = (def) => {
+      map.addLayer(def);
+      S.connLayerIds.push(def.id);
+    };
+    // 聚焦参与判定表达式（聚焦时才非 null）：罩下五层追加 ['!', expr]、罩上复制层用
+    // expr 本体（构造与合法性注释见 memberMatchExpr）
+    const memberExpr = S.focus != null ? memberMatchExpr([...veilFocusSkipSet()]) : null;
+    // 罩下基础站圈/药丸五层 filter 同帧切换（与罩上层全删全建同一周期，退出聚焦还原）
+    applyFocusFilters(memberExpr);
     // ① blend 形态联络线层（有效联络线中未被当前聚焦绑定的；聚焦绑定的走 fade
     //    形态插到白罩之上，故先跳过）
     const fadeIds = new Set((S.fadeConnPlan || []).map((it) => it.lineId));
@@ -776,17 +881,16 @@
         geometry: { type: 'LineString', coordinates: coords },
         properties: { lineId: line.lineId, dim: S.dimmed.has(line.lineId) ? 1 : 0 },
       });
-      addDyn(connBlendLayerDef('conn-blend-' + line.lineId, line.lineId, it.headColor, it.tailColor));
+      addLow(connBlendLayerDef('conn-blend-' + line.lineId, line.lineId, it.headColor, it.tailColor));
     }
     // ② 白罩＋聚焦重画层（仅聚焦——白罩定案后唯一高亮形态）
     if (S.focus != null) {
-      addDyn(focusVeilLayerDef());
+      addTop(focusVeilLayerDef());
       const copySrc = map.getSource('focus-copy');
       if (copySrc) copySrc.setData(renderFocusCopyFC());
-      addDyn(focusCopyLayerDef());
+      addTop(focusCopyLayerDef());
     }
-    // ③ fade 形态联络线层（聚焦绑定：聚焦线色→透明；插在白罩/重画层之上＝
-    //    渐变高亮不被罩压白；非聚焦无此层）
+    // ③ fade 形态联络线层（聚焦绑定：聚焦线色→透明；罩上＝渐变高亮不被罩压白；非聚焦无此层）
     const focusColor = (S.linesMap.get(S.focus) || {}).color;
     for (const it of S.fadeConnPlan || []) {
       const line = S.linesMap.get(it.lineId);
@@ -798,12 +902,13 @@
         geometry: { type: 'LineString', coordinates: coords },
         properties: { lineId: line.lineId, dim: 0 },   // 高亮态不挂 dim
       });
-      addDyn(connFadeLayerDef('conn-fade-' + line.lineId, line.lineId, focusColor));
+      addTop(connFadeLayerDef('conn-fade-' + line.lineId, line.lineId, focusColor));
     }
-    // ④ arrow 渐隐层（出省端末段 1km；常驻不依赖聚焦——本队列在②③之后添加＝聚焦时
-    //    天然位于白罩与 focus-copy 之上（渐隐段是聚焦线一部分，不被罩压白），非聚焦时
-    //    位于 blend 层之上、药丸之下）。联络线不出省（无 arrow 站），fade/blend/arrow
-    //    三个跳过集合在 renderLinesFC 取并集，天然容错互斥之外的脏数据。
+    // ④ arrow 渐隐层（出省端末段 1km；常驻不依赖聚焦）：聚焦时加罩上（渐隐段是聚焦线
+    //    一部分，不被罩压白），且在罩上符号复制层之下（线在下、符号在上——与静态区
+    //    相对序一致）；非聚焦时加罩下（blend 之上、药丸之下——与旧层序完全一致）。
+    //    联络线不出省（无 arrow 站），fade/blend/arrow 三个跳过集合在 renderLinesFC
+    //    取并集，天然容错互斥之外的脏数据。
     for (const it of S.arrowPlan || []) {
       const line = S.linesMap.get(it.lineId);
       if (!line) continue;
@@ -816,7 +921,24 @@
         geometry: { type: 'LineString', coordinates: coords },
         properties: { lineId: line.lineId, dim: S.dimmed.has(line.lineId) ? 1 : 0 },   // 照常受分期调光与他省规则
       });
-      addDyn(def);
+      if (S.focus != null) addTop(def); else addLow(def);
+    }
+    // ⑤ 罩上符号复制层（2026-11-22 真机反馈轮：聚焦成员的站圈/药丸在罩上完整显示）——
+    //    同 source 同尺寸、opacity 恒 1（去 dim case，对齐 focus-copy「聚焦豁免一切」
+    //    裁定）；filter＝原条件 ∧ 聚焦参与。添加序 pills 先 stops 后（药丸垫底站圈
+    //    盖上——与静态区相对序一致）；点选/hover 与基础层同绑（罩上 feature 只在这层
+    //    渲染，事件绑定随层走）。退出聚焦＝层随全删全建消失、filter 还原。
+    if (S.focus != null && memberExpr) {
+      for (const base of PILL_LAYER_DEFS) {
+        const def = pillFocusLayerDef(base, memberExpr);
+        addTop(def);
+        bindPinLayerInteraction(def.id);
+      }
+      for (const d of STOP_LAYER_DEFS) {
+        const def = stopFocusLayerDef(d, memberExpr);
+        addTop(def);
+        bindPinLayerInteraction(def.id);
+      }
     }
     if (src) src.setData(feats.length ? { type: 'FeatureCollection', features: feats } : EMPTY_CONN_FC);
   }
@@ -1155,9 +1277,16 @@
     const wrap = $('labelLayer');
     const map = S.map;
     if (!wrap || !map) return;
-    // 站名可见性（优先级：全局站名开关 ＞ 聚焦线常显 ＞ 被调光线隐藏 ＞ zoom 门槛）
+    // 站名可见性（优先级：全局站名开关 ＞ 聚焦常显·其余隐藏 ＞ 被调光线隐藏 ＞ zoom 门槛；
+    // 2026-11-22 真机反馈轮——聚焦时非聚焦线站名一律隐藏）。focusMembers＝聚焦组成员
+    // 集（主支线合并：支线站的站名也是聚焦线站名，须常显；无组退 [S.focus]）
+    let focusMembers = null;
+    if (S.focus != null) {
+      const grp = S.lineGroups.ofLine.get(S.focus);
+      focusMembers = grp && Array.isArray(grp.members) && grp.members.length ? grp.members : [S.focus];
+    }
     const items = V.visibleLabels(S.dispLabels, map.getZoom(), V.LABEL_CAP,
-      { hideAll: !S.namesOn, dimmedSet: S.dimmed, focus: S.focus });
+      { hideAll: !S.namesOn, dimmedSet: S.dimmed, focus: S.focus, focusMembers });
     const w = wrap.clientWidth, h = wrap.clientHeight, M = 60;   // 视口外裁剪边距
     // 站名文字随画布等比缩放（2026-11-22 用户指示「站名和站点也一样，以 z11 为界」）：
     // z≥11 恒 1、z<11 按 2^(z−11)——与线宽/站圈同一规则（V.labelScale），挂 transform 末尾

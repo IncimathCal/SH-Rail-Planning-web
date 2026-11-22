@@ -2,7 +2,8 @@
 // viewer_core.js 纯逻辑单测：数据归一（normalizeLines/stopList）、组归并（buildStopView）、
 // 线路摘要与分组（lineSummaries/layerGroups/visibleListGroups 类别过滤）、搜索匹配
 //（matchEntries）、标签分级与可见性（filterLabels zoom 门槛 11＋visibleLabels 优先级：
-// 全局开关＞聚焦常显＞调光隐藏＞zoom 门槛）、调光纯逻辑（linePhaseOf 线路期次归类/
+// 全局开关＞聚焦常显·其余隐藏＞调光隐藏＞zoom 门槛——2026-11-22 真机反馈轮：聚焦时
+// 非聚焦线站名一律隐藏、focusMembers 组成员集常显）、调光纯逻辑（linePhaseOf 线路期次归类/
 // lineLayerRank 仅显示级/computeDimmedSet 分期＋displayOnly/nextPhase 四档循环）、尺寸缩放
 //冻结改等比（zoomInterp/scaledSize：z≥11 封顶、z<11 按 2^(z−11) 与画布同比例）、单线导出（buildLineGeoJSON/buildLineKML——2026-11-22
 // 改版后纯色实线统一不透明）、颜色与转义工具、药丸链序（planGroupPillChain）、出省渐隐
@@ -278,7 +279,7 @@ eq([...V.computeDimmedSet(mixTP, { phase: 'none', focus: null })], [],
 eq([...V.computeDimmedSet(mixTP, { focus: 'tp' })].includes('tp'), true,
   '聚焦他省线时其自身也在调光侧（setFocus 入口另有拦截，不产生此态）');
 
-// ---------- visibleLabels（优先级：全局开关 ＞ 聚焦常显 ＞ 调光隐藏 ＞ zoom 门槛） ----------
+// ---------- visibleLabels（优先级：全局开关 ＞ 聚焦常显·其余隐藏 ＞ 调光隐藏 ＞ zoom 门槛） ----------
 console.log('visibleLabels:');
 const vlLabels = [
   { key: 's1', name: '甲1', group: false, lineIds: ['la'] },
@@ -298,13 +299,34 @@ eq(V.visibleLabels(vlLabels, 9, 800, {}).map((l) => l.key), [], 'z9 门槛层全
 eq(V.visibleLabels(vlLabels, 9, 800, { focus: 'la' }).map((l) => l.key).sort(), ['g1', 's1'],
   '聚焦线站名无视 zoom 门槛常显（组1 含 la 也常显）');
 eq(V.visibleLabels(vlLabels, 9, 800, { focus: 'la', dimmedSet: dimLB }).map((l) => l.key).sort(), ['g1', 's1'],
-  '聚焦常显优先于调光隐藏（优先级序：聚焦线标签先捞出，其余才走调光过滤）');
+  '聚焦常显优先于分期调光（聚焦优先级下 dim 维度让位——成员照显）');
+eq(V.visibleLabels(vlLabels, 13, 800, { focus: 'la' }).map((l) => l.key).sort(), ['g1', 's1'],
+  '聚焦时非聚焦线站名隐藏：z13 拉近也不显示（2026-11-22 真机反馈「站名也没有隐去」）');
+eq(V.visibleLabels(vlLabels, 13, 800, { focus: 'la', dimmedSet: dimLB }).map((l) => l.key).sort(), ['g1', 's1'],
+  '聚焦＋分期叠加：聚焦成员照显、其余隐藏（分期隐藏维度在聚焦时整体让位）；x1 无所属线跟随隐藏');
 eq(V.visibleLabels(vlLabels, 9, 800, { focus: 'lb', dimmedSet: dimLB }).map((l) => l.key).sort(), ['g1', 'g2', 's2'],
-  '聚焦被调光线（lb）站名仍常显：s2/g2/g1（均含 lb）无视调光与 zoom，s1/x1 不含 lb 走 z9 门槛被隐');
+  '聚焦被调光线（lb）站名仍常显：s2/g2/g1（均含 lb）无视调光与 zoom，s1/x1 隐藏');
 eq(V.visibleLabels(vlLabels, 13, 800, { dimmedSet: ['lb', 'lc'] }).map((l) => l.key), ['s1', 'g1', 'x1'],
   'dimmedSet 传数组（非 Set）也能容错');
 eq(V.visibleLabels(null, 13, 800, { focus: 'la' }), [], 'null 标签不崩');
 eq(V.visibleLabels(vlLabels, 13, 800), V.visibleLabels(vlLabels, 13, 800, {}), '缺省 state＝无约束');
+// focusMembers（2026-11-22 真机反馈轮·主支线合并）：聚焦判定＝标签 lineIds 与聚焦组
+// 成员集有交集——支线站的站名也是聚焦线站名，须常显
+const vlLabelsG = [
+  { key: 's1', name: '主线站', group: false, lineIds: ['m1'] },
+  { key: 'b1', name: '支线站', group: false, lineIds: ['b1'] },
+  { key: 'o1', name: '他线站', group: false, lineIds: ['o1'] },
+  { key: 'gm', name: '主支换乘', group: true, lineIds: ['m1', 'b1', 'o1'] },
+];
+eq(V.visibleLabels(vlLabelsG, 9, 800, { focus: 'm1', focusMembers: ['m1', 'b1'] }).map((l) => l.key).sort(),
+  ['b1', 'gm', 's1'],
+  'focusMembers：支线站 b1 常显（主支线合并——支线也是聚焦线）、他线站隐藏、组标签任一成员命中常显');
+eq(V.visibleLabels(vlLabelsG, 9, 800, { focus: 'm1' }).map((l) => l.key).sort(), ['gm', 's1'],
+  'focusMembers 缺省退 [focus]：仅含主线的标签常显（向后兼容）');
+eq(V.visibleLabels(vlLabelsG, 9, 800, { focus: 'm1', focusMembers: [] }).map((l) => l.key).sort(), ['gm', 's1'],
+  'focusMembers 空数组退 [focus]（脏输入防御）');
+eq(V.visibleLabels(vlLabelsG, 9, 800, { focus: 'm1', focusMembers: [null, ''] }).map((l) => l.key).sort(), ['gm', 's1'],
+  'focusMembers 全脏项过滤后空 → 退 [focus]');
 
 // ---------- connectorFadePlan（联络线渐变接入端判定，2026-11-22 用户需求 3） ----------
 console.log('connectorFadePlan:');
@@ -445,14 +467,15 @@ eq([...V.computeDimmedSet(mixTP, { phase: 'existing' })].sort(), ['lb', 'lc', 't
 eq([...V.computeDimmedSet(mixTP, { phase: 'existing', focus: 'la' })].sort(), ['lb', 'lc', 'tp'],
   '分期＋聚焦：并集只剩分期侧贡献');
 eq([...V.computeDimmedSet(mixTP, {})], [], '默认态不调光');
-// 下游兼容：聚焦线标签常显逻辑不变（非聚焦线标签不再因调光隐藏——dimmedSet 收窄的下游效应）
+// 下游兼容：聚焦线标签常显逻辑不变（2026-11-22 真机反馈轮后非聚焦线标签聚焦时一律隐藏
+//——站名维度由 visibleLabels 承接白罩的「罩住」语义，非聚焦线不再随 dimmedSet 收窄而显示）
 const veilDim = V.computeDimmedSet(mixTP, { focus: 'la' });
 eq(V.visibleLabels(vlLabels, 9, 800, { focus: 'la', dimmedSet: veilDim }).map((l) => l.key).sort(),
   ['g1', 's1'],
-  '聚焦下 z9 标签＝聚焦线常显照旧＋z9 低于组门槛全隐');
+  '聚焦下 z9 标签＝聚焦成员常显照旧＋其余隐藏');
 eq(V.visibleLabels(vlLabels, 11, 800, { focus: 'la', dimmedSet: veilDim }).map((l) => l.key).sort(),
-  ['g1', 'g2', 's1', 's2', 'x1'],
-  '聚焦下 z11 全部标签显示（非聚焦线 s2/g2/x1 不被调光隐藏——「全都不动」）');
+  ['g1', 's1'],
+  '聚焦下 z11 其余标签隐藏（2026-11-22 真机反馈轮改写——原「全都不动全显」的站名侧语义收回）');
 
 // ---------- stopList/pinOfStop 的 stroke 透传（联络线站圈描边，2026-11-22 用户需求 2） ----------
 console.log('stop stroke passthrough:');

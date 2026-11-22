@@ -32,6 +32,9 @@
 // 合并搜索条目（lineSearchEntries＋matchEntries 增 terms 附加搜索词——成员线名/别名/id 全
 // 命中同一条目）、站牌组名显示（lineLabelOf/linesOfPin——组成员一律显组名，主/支线去重）；
 // normalizeLines 同步保留 groupId 字段（net-index@2 的组信息与此双保险）。
+// 2026-11-22 真机反馈改版：visibleLabels 恢复聚焦隐藏维度——聚焦时非聚焦线站名一律
+// 隐藏、聚焦组成员（新入参 focusMembers 传成员线 id 数组，缺省退 [focus]）标签常显且
+// 无视分期调光与 zoom 门槛（与渲染层站圈/药丸移罩下＋罩上复制配套，图形侧见 viewer.js）。
 
 (function (G) {
   'use strict';
@@ -747,14 +750,20 @@
     return [];
   }
 
-  // ---------- 标签可见性（优先级：全局站名开关 ＞ 聚焦线常显 ＞ 被调光线隐藏 ＞ zoom 门槛） ----------
+  // ---------- 标签可见性（优先级：全局站名开关 ＞ 聚焦常显·其余隐藏 ＞ 被调光线隐藏 ＞ zoom 门槛） ----------
   // state：{ hideAll: 全局站名开关（true＝一切站名不显示，优先级最高）,
-  //          dimmedSet: Set<lineId> 被调光线集, focus: 聚焦 lineId|null }。
-  // 调光隐藏规则与药丸/大圈符号一致：组标签全部成员线被调光才隐藏（任一成员未调光则显示）；
-  // 无所属线信息的标签（防御）不因调光隐藏。聚焦线的标签无视 zoom 门槛常显（也不占 LABEL_CAP）；
-  // 按用户给的优先级序，聚焦常显高于调光隐藏——聚焦线即便因分期不匹配被调光，其站名仍常显。
-  function labelHasLine(l, lineId) {
-    return Array.isArray(l.lineIds) && l.lineIds.indexOf(lineId) >= 0;
+  //          dimmedSet: Set<lineId> 被调光线集, focus: 聚焦 lineId|null,
+  //          focusMembers: 聚焦组成员线 id 数组（可选——2026-11-22 主支线合并后支线站的
+  //                        站名也是聚焦线站名，须常显；缺省/空/全脏退 [focus]）}。
+  // 2026-11-22 真机反馈改版（用户「站名也没有隐去」）：聚焦时非聚焦线的站名一律隐藏
+  //（恢复旧调光模式的待遇——白罩只罩图形，站名维度由本函数承接）；聚焦组成员的标签
+  // 常显且无视分期调光与 zoom 门槛（不占 LABEL_CAP）。非聚焦时维持既有两级：调光隐藏
+  //（组标签全部成员线被调光才隐藏，任一成员未调光则显示；无所属线信息的标签防御性
+  // 不因调光隐藏）→ zoom 门槛。
+  function labelHasFocus(l, members) {
+    const ids = Array.isArray(l.lineIds) ? l.lineIds : [];
+    for (const m of members) if (ids.indexOf(m) >= 0) return true;   // 任一成员命中 → 聚焦参与
+    return false;
   }
   function labelShownUnderDim(l, dimSet) {
     const ids = Array.isArray(l.lineIds) ? l.lineIds : [];
@@ -769,12 +778,16 @@
       : new Set(Array.isArray(st.dimmedSet) ? st.dimmedSet.map(String) : []);
     const arr = Array.isArray(labels) ? labels.filter(Boolean) : [];
     const focus = st.focus != null && st.focus !== '' ? String(st.focus) : null;
-    if (!focus) return filterLabels(arr.filter((l) => labelShownUnderDim(l, dimSet)), zoom, cap);
-    // 聚焦常显：含聚焦线的标签先捞出（无视调光与 zoom 门槛——优先级序在调光隐藏之前），
-    // 其余标签走「调光隐藏 → zoom 门槛」；两类互斥不重复
-    const always = arr.filter((l) => labelHasLine(l, focus));
-    const rest = filterLabels(arr.filter((l) => !labelHasLine(l, focus) && labelShownUnderDim(l, dimSet)), zoom, cap);
-    return always.concat(rest);
+    if (focus) {
+      // 聚焦组成员集（脏项过滤；空集退 [focus]——S.focus 恒主线 id，胶水层无组时同此）
+      let members = Array.isArray(st.focusMembers)
+        ? st.focusMembers.map((m) => (m != null ? String(m) : '')).filter(Boolean) : [];
+      if (!members.length) members = [focus];
+      // 聚焦优先级：成员标签常显（无视分期调光与 zoom 门槛——分期态下聚焦组照显、
+      // 其余隐藏，分期隐藏维度在聚焦时整体让位），其余标签一律隐藏
+      return arr.filter((l) => labelHasFocus(l, members));
+    }
+    return filterLabels(arr.filter((l) => labelShownUnderDim(l, dimSet)), zoom, cap);
   }
 
   // ---------- 调光纯逻辑（2026-11-22 改版：分期四档＋聚焦双模式，任一条件调光即调光） ----------
