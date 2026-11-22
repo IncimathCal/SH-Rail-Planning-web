@@ -16,6 +16,16 @@
   4. 家族内几何孪生（同 cmyk、bbox/弧长几乎相同，如源图重复描边）只保留命中多的一条；
   5. 组内每圆投影到家族中最近 path 得 t（d ≥ 25pt 记 outlier 供人工查看，不落站）。
 
+换乘标（2026-11-22 增补；Trans 子层，黑描边白填充 fill+stroke）：
+  6. 24×24 大圆＝双线换乘标（实证 95% 恰命中 2 线、圆心在交点上）；
+     非方形药丸＝多线换乘标（3 线为主、最多 6 线，线越多药丸越长）；
+  7. 每个换乘标中心投影到 25pt 内的**每条**线各得一个 t（与单线圆一站一线不同，跨线）；
+     命中 <2 线的（如只连隐藏层线路）记 unboundTransfers 供人工核对；
+  8. 并线去重：同一条线上、圆心距换乘标 <25pt 的既有单线圆站被换乘站替换（换乘语义优先）；
+     该线无任何单线圆 item 时以 stationGroup='Trans' 兜底建 item（编辑器按签名照常匹配）；
+  9. Trans 层的 12pt 跨线关系斜线（LiveShape 线段）**不进产物**——用户后续自行研究表达方式。
+     （解析器 ai_native_tree3.py 已修大写 L/C/V/Y 丢点问题，斜线几何在 ai_layer_paths.json 里是完整的。）
+
 用法（Windows，无第三方依赖；站名建议需 PyMuPDF，可省略）：
   python -X utf8 tools/station_extract.py \
       --layers 零散/ai_layer_paths.json \
@@ -39,6 +49,8 @@ BIND_D = 25.0        # 圆心到 path 的绑定/outlier 距离阈值（pt）
 NAME_D = 25.0        # 圆心到文本 bbox 的建议距离阈值（pt）；实证中位 13.7、93% < 25
 CIRCLE_MIN = 14.0    # 站圆边长下限（pt；每线站圆 18×18，换乘大圆 24×24）
 CIRCLE_MAX = 30.0
+BIG_TOL = 2.0        # 换乘大圆边长容差（24×24 ±2pt 且近似方形）
+MARK_MIN = 14.0      # 换乘标（大圆/药丸）边长下限（pt），小于按碎形跳过
 TWIN_BBOX = 1.0      # 孪生 path 判定容差（pt）
 TWIN_LEN = 0.01      # 孪生弧长相对差
 PREFILTER = BIND_D + 5.0   # bbox 预筛余量
@@ -89,6 +101,79 @@ def dedup_circles(groups):
                 kept.append(c)
         out[name] = (kept, removed)
     return out
+
+
+# ---------- Trans 层换乘标 ----------
+
+def load_transfer_marks(layers_file):
+    """Trans 子层 → [换乘标 dict]（大圆/药丸；跨线斜线不进产物，见 docstring 规则 9）。
+    中心转 SVG 基准（y 翻转，无平移）。"""
+    tree = json.loads(Path(layers_file).read_text(encoding="utf-8"))
+    roots = {n["name"]: n for n in tree}
+    tr = next((c for c in roots["Station"]["children"] if c["name"] == "Trans"), None)
+    if tr is None:
+        return []
+    marks = []
+    for p in tr["paths"]:
+        if p.get("paint") != "b":      # 只要 fill+stroke 标形（S=跨线斜线，跳过）
+            continue
+        w, h = p["x1"] - p["x0"], p["y1"] - p["y0"]
+        if w < MARK_MIN or h < MARK_MIN:
+            continue                    # 碎形防护
+        if abs(w - h) <= BIG_TOL and 24 - BIG_TOL <= w <= 24 + BIG_TOL \
+                and 24 - BIG_TOL <= h <= 24 + BIG_TOL:
+            kind = "circle"             # 24×24 双线换乘大圆
+        else:
+            kind = "pill"               # 非方形多线换乘药丸
+        marks.append({
+            "kind": kind,
+            "x": round((p["x0"] + p["x1"]) / 2.0, 2),
+            "y": round(-(p["y0"] + p["y1"]) / 2.0, 2),   # 原生 y-up → SVG y-down
+            "w": round(w, 1), "h": round(h, 1),
+        })
+    return marks
+
+
+def bind_transfers(marks, paths):
+    """换乘标中心 → 25pt 内每条线各一个 t（跨线，与单线圆一站一线不同）。
+    返回 (ok, lost)：ok=命中 ≥2 线；lost=命中 <2 线（多连隐藏层线路）供人工核对。"""
+    ok, lost = [], []
+    for i, m in enumerate(marks):
+        cands = [(P, d, t) for P, d, t in near_paths(m["x"], m["y"], paths) if d < BIND_D]
+        entry = {"id": "trans-%03d" % (i + 1), "kind": m["kind"],
+                 "x": m["x"], "y": m["y"], "w": m["w"], "h": m["h"],
+                 "lines": [{"sourceLayer": P["sourceLayer"], "t": round(t, 6),
+                            "d": round(d, 1)} for P, d, t in cands]}
+        (ok if len(cands) >= 2 else lost).append(entry)
+    return ok, lost
+
+
+def merge_transfer_stops(bound, transfers, by_layer):
+    """换乘站并入各线 stops（原地）；同线圆心距 <25pt 的既有单线圆站被替换（换乘语义优先）。
+    该线无任何含它的 bound 项时记入 orphanLines（main 以 stationGroup='Trans' 兜底建项）。
+    返回 (replaced, orphanPaths)：被替换的单线圆站数、兜底 [(P, [stop...])]。"""
+    replaced = 0
+    orphan = collections.defaultdict(list)   # sourceLayer → [stop]（该层无 bound 项的线）
+    for tr in transfers:
+        for ln in tr["lines"]:
+            P = by_layer[ln["sourceLayer"]]
+            host = next((b for b in bound if any(q is P for q in b["family"])), None)
+            stop = {"circle": {"x": tr["x"], "y": tr["y"],
+                               "r": round((tr["w"] if tr["kind"] == "circle"
+                                           else max(tr["w"], tr["h"])) / 2.0, 2)},
+                    "d": ln["d"], "t": ln["t"],
+                    "transfer": tr["id"], "transferKind": tr["kind"]}
+            if host is None:
+                orphan[ln["sourceLayer"]].append(stop)
+                continue
+            lst = host["stops"].setdefault(P["sourceLayer"], [])
+            keep = [s for s in lst
+                    if "transfer" in s
+                    or math.hypot(s["circle"]["x"] - tr["x"], s["circle"]["y"] - tr["y"]) >= BIND_D]
+            replaced += len(lst) - len(keep)
+            keep.append(stop)
+            host["stops"][P["sourceLayer"]] = keep
+    return replaced, [(by_layer[sl], sts) for sl, sts in orphan.items()]
 
 
 # ---------- import path ----------
@@ -345,6 +430,17 @@ def main():
     plain = {k: v for k, (v, _r) in groups.items()}
     bound, unbound = bind_groups(plain, paths)
 
+    marks = load_transfer_marks(args.layers)
+    transfers_ok, transfers_lost = bind_transfers(marks, paths)
+    by_layer = {P["sourceLayer"]: P for P in paths}
+    replaced, orphan_lines = merge_transfer_stops(bound, transfers_ok, by_layer)
+    for P, sts in orphan_lines:      # 无任何单线圆 item 的线：Trans 兜底项（编辑器按签名照常匹配）
+        bound.append({"stationGroup": "Trans", "family": [P],
+                      "stops": {P["sourceLayer"]: sts}, "outliers": []})
+    print(f"换乘标 {len(marks)} 个（大圆+药丸）：有效 {len(transfers_ok)}、未绑定 {len(transfers_lost)}；"
+          f"并入 {sum(len(t['lines']) for t in transfers_ok)} 线站、替换单线圆站 {replaced}、"
+          f"兜底线 {len(orphan_lines)}")
+
     texts = []
     if args.ai:
         try:
@@ -366,6 +462,9 @@ def main():
                 t = round(s["t"], 6)   # t ∈ [0,1] 双闭（2026-11-21 裁定；环线 t=1 与 t=0 物理同点，不另拦截）
                 entry = {"t": t, "x": s["circle"]["x"], "y": s["circle"]["y"],
                          "r": s["circle"]["r"], "d": round(s["d"], 1)}
+                if "transfer" in s:    # 换乘标站：来自 Trans 层（跨线，编组仍人工）
+                    entry["transfer"] = s["transfer"]
+                    entry["transferKind"] = s["transferKind"]
                 if "nameSuggestion" in s:
                     entry["nameSuggestion"] = s["nameSuggestion"]
                     entry["suggestDist"] = s["suggestDist"]
@@ -379,16 +478,36 @@ def main():
             })
     items.sort(key=lambda it: (it["stationGroup"], it["sourceLayer"]))
     stop_total = sum(len(it["stops"]) for it in items)
+    transfer_total = sum(1 for it in items for s in it["stops"] if "transfer" in s)
     suggested = sum(1 for it in items for s in it["stops"] if "nameSuggestion" in s)
     group_outliers = {b["stationGroup"]: b["outliers"] for b in bound if b["outliers"]}
 
+    # transfers 顶层：跨线关联全表（建议名取各线换乘站里文本归属最近的一条）
+    trans_out = []
+    for tr in transfers_ok:
+        best = None
+        for b in bound:
+            for sl, sts in b["stops"].items():
+                for s in sts:
+                    if s.get("transfer") == tr["id"] and "nameSuggestion" in s:
+                        if best is None or s["suggestDist"] < best[1]:
+                            best = (s["nameSuggestion"], s["suggestDist"])
+        e = {"id": tr["id"], "kind": tr["kind"], "x": tr["x"], "y": tr["y"],
+             "w": tr["w"], "h": tr["h"], "lines": tr["lines"]}
+        if best:
+            e["nameSuggestion"] = best[0]
+            e["suggestDist"] = best[1]
+        trans_out.append(e)
+
     out = {
-        "schema": "fmt/stations-import@1",
+        "schema": "fmt/stations-import@2",
         "source": f"远期.ai Station 层（{Path(args.layers).name}）+ {import_source}",
         "generated": datetime.date.today().isoformat(),
         "note": "预置草稿：t 为站圆圆心到线路 path 的弧长投影（6 位小数）；"
                 "nameSuggestion 为源图就近文字，仅供参考、点选采用，绝不自动写入正式站名；"
                 "signature 为线路 path 几何签名（首点/bbox/弧长/cmyk），编辑器据此绑定，不依赖 path-NN；"
+                "transfer/transferKind 标记该站来自 Trans 层换乘标（大圆=双线、药丸=多线），"
+                "transfers 为跨线关联全表——换乘编组仍由人工在编辑器完成，绝不自动建组；"
                 "unbound 各组与 groupOutliers 各圆仅供人工核对。",
         "thresholds": {"bindDistancePt": BIND_D, "nameDistancePt": NAME_D},
         "stats": {
@@ -399,6 +518,12 @@ def main():
             "circlesDeduped": total_dedup,
             "items": len(items),
             "stops": stop_total,
+            "transferMarks": len(marks),
+            "transfersBound": len(transfers_ok),
+            "transfersLost": len(transfers_lost),
+            "transferStops": sum(len(t["lines"]) for t in transfers_ok),
+            "transferItemsStops": transfer_total,
+            "singleReplacedByTransfer": replaced,
             "outliers": sum(len(v) for v in group_outliers.values()),
             "unboundCircles": sum(u["circles"] for u in unbound),
             "namesSuggested": suggested,
@@ -410,6 +535,13 @@ def main():
              "circlesDetail": u["nearestDetail"]}
             for u in unbound
         ],
+        "unboundTransfers": [
+            {"id": t["id"], "kind": t["kind"], "x": t["x"], "y": t["y"],
+             "w": t["w"], "h": t["h"], "lines": t["lines"],
+             "reason": "25pt 内命中线路不足 2 条（多连隐藏层线路）——仅供人工核对"}
+            for t in transfers_lost
+        ],
+        "transfers": trans_out,
         "groupOutliers": group_outliers,
         "items": items,
     }
@@ -421,7 +553,8 @@ def main():
         f.write("\n")
 
     # ---- 控制台报告 ----
-    print(f"\n绑定 {len(bound)} 组 / 未绑定 {len(unbound)} 组；落站 {len(items)} 条 path 共 {stop_total} 站；"
+    print(f"\n绑定 {len(bound)} 组（含 Trans 兜底 {len(orphan_lines)}）/ 未绑定 {len(unbound)} 组；"
+          f"落站 {len(items)} 条 path 共 {stop_total} 站（换乘标站 {transfer_total}）；"
           f"outlier {out['stats']['outliers']} 圆、未绑定组圆 {out['stats']['unboundCircles']} 个"
           + (f"；站名建议 {suggested}/{stop_total}（{out['stats']['namesCoverage']*100:.1f}%）" if texts else ""))
     print("\n=== 未绑定组（圆仅供人工核对） ===")

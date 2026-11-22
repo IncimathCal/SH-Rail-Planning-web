@@ -392,6 +392,20 @@
     return best;
   }
 
+  /** 站点 t 就近查预置换乘标（|Δt| ≤ dtEps）；返回 {id, kind} 或 null。仅展示用——
+   *  「换」chip 提示该站位置来自 Trans 层换乘标（circle=双线大圆 / pill=多线药丸），
+   *  供编组时重点核对；换乘编组本身绝不自动（预置 transfers 全表也只是参考）。 */
+  function transferMarkForStop(item, t, dtEps = 0.002) {
+    if (!item) return null;
+    let best = null;
+    for (const s of item.stops || []) {
+      if (!s.transfer) continue;
+      const d = Math.abs(s.t - t);
+      if (d <= dtEps && (!best || d < best.d)) best = { id: s.transfer, kind: s.transferKind, d };
+    }
+    return best;
+  }
+
   /** 线路按 meta.layer 分组（分类＝源图 Line 直属子图层名，用户自有图层词汇，与 sourceLayer 同性质）。
    *  返回 [{layer, lines}]：有分类的组按名称拼音序（localeCompare 'zh'）排列，
    *  未分类（layer 缺失/空/非字符串）组固定最后；组内按 id 升序。
@@ -653,7 +667,7 @@
     pruneSections, migrateLineToV2, planSectionSplit, applySectionMerge, sectionSpanOf, sectionIssuesOf,
     canPlaceArrow, planGroupPillChain, nextStopKind,
     nextStopSeq, fixStatusField, lineIssues, planBulkFill,
-    planStopImport, applyStopImport, suggestForStop,
+    planStopImport, applyStopImport, suggestForStop, transferMarkForStop,
     layerGroupsOf, junctionStroke, planStationGroup, connValidTargets,
     normalizeLineOrder,
     calibForward, calibInverse, tpsForward, tpsInverse, poly3Forward, poly3Inverse,
@@ -847,7 +861,7 @@
   const isLineObj = (o) => o && /^l\d{4}$/.test(o.id || '')
     && (o.schema === 'fmt/line@1' || o.schema === 'fmt/line@2');
 
-  /** 站圆预置（fmt/stations-import@1）载入：items 并入 S.stationPresets，同源替换。只读参考数据。
+  /** 站圆预置（fmt/stations-import@2，@1 同构兼容）载入：items 并入 S.stationPresets，同源替换。只读参考数据。
    *  去重键用 obj.source（内容级标识）——boot 自动拉取与手动载入同一文件不会重复堆积。 */
   function addStationPreset(obj, fileName) {
     const src = obj.source || fileName || '（未知来源）';
@@ -894,7 +908,7 @@
 
   function loadDataObject(obj, fileName) {
     if (obj && obj.schema === 'fmt/import@1') { addImportRecord(obj); return; }
-    if (obj && obj.schema === 'fmt/stations-import@1') {
+    if (obj && obj.schema === 'fmt/stations-import@2') {   // @2＝增换乘标站（transfer 字段）与 transfers 全表
       const n = addStationPreset(obj, fileName);
       renderLineForm(); renderStopList();
       setStatus(`已载入站圆预置 ${n} 条（${fileName || obj.source}）——在线路属性面板「从预置导入车站」。`);
@@ -1789,6 +1803,8 @@
         || (isArr && !(i === 0 || i === l.stops.length - 1));   // 箭头离开头尾即标红
       // 站名建议 chip：仅普通空名站展示（源图就近文字，点选才写入；绝不自动命名；线路所/出省箭头不参与）
       const sug = preset && !isBlk && !isArr && !(st.name && st.name.trim()) ? suggestForStop(preset, st.t) : null;
+      // 「换」chip：该站位置来自 Trans 层换乘标（大圆=双线/药丸=多线），编组时重点核对；仅提示，编组绝不自动
+      const tfm = preset && !isBlk && !isArr ? transferMarkForStop(preset, st.t) : null;
       const nk = nextStopKind(st.kind, { isLoop: l.loop, isEnd: i === 0 || i === l.stops.length - 1 });
       const cur = isBlk ? 'block' : isArr ? 'arrow' : null;
       return `
@@ -1799,6 +1815,7 @@
           placeholder="${isBlk ? '（线路所，可无名）' : isArr ? '（出省箭头，可无名）' : '（站名）'}">
         ${sug ? `<span class="namehint stop-suggest" data-sugsid="${st.id}" data-sugname="${esc(sug.name)}"
           title="源图就近文字（距站圆 ${sug.dist}pt），仅供参考、不保证正确；点击采用">${esc(sug.name)}</span>` : ''}
+        ${tfm ? `<span class="stop-trans" title="该站位置来自 Trans 层换乘标 ${esc(tfm.id)}（${tfm.kind === 'circle' ? '双线大圆' : '多线药丸'}）——此处为换乘，编组时重点核对；编组需人工完成，预置不自动建组">换</span>` : ''}
         <input type="text" value="${st.t.toFixed(6)}" data-tedit="${st.id}"
           class="tin${tBad ? ' warn' : ''}" title="弧长位置 t∈[0,1]，可手改（如起点改 0、开线终点改 1）">
         <button class="mini kind-tgl ${cur ? 'primary' : ''}" data-kind="${st.id}"
@@ -2011,7 +2028,9 @@
     const added = applyStopImport(l, plan);
     l.meta.updated = today();
     renderAll();
+    const nTrans = item.stops.filter((s) => s.transfer).length;
     setStatus(`站圆预置导入「${item.stationGroup}」：新增 ${added.length} 站`
+      + (nTrans ? `（含 ${nTrans} 个换乘标站，站列表「换」chip 标记）` : '')
       + `、跳过 ${plan.skippedExist}（已有站在位）`
       + (plan.skippedConflict ? `、${plan.skippedConflict}（位置过近冲突）` : '')
       + `、预置共 ${plan.total} 圆。站名未写入——空名站旁的建议 chips 点选采用；撤销一次回退整批。`);
@@ -3269,7 +3288,7 @@
         else if (/\.json$/i.test(f.name)) {
           const obj = await readJsonFile(f);
           if (obj.schema === 'fmt/import@1') addImportRecord(obj);
-          else if (obj.schema === 'fmt/stations-import@1') {
+          else if (obj.schema === 'fmt/stations-import@2') {
             const n = addStationPreset(obj, f.name);
             setStatus(`已载入站圆预置 ${n} 条（${f.name}）。`);
           }

@@ -459,6 +459,17 @@ eq(L.suggestForStop(item, 0.2).name, '乙站', '精确匹配建议');
 ok(L.suggestForStop(item, 0.7) === null, '超出 dtEps 无建议');
 ok(L.suggestForStop({ stops: [{ t: 0.5 }] }, 0.5) === null, '无 nameSuggestion 不建议');
 ok(L.suggestForStop(null, 0.5) === null, '无预置项不崩');
+// 10b) 换乘标 transferMarkForStop（2026-11-22：Trans 层大圆/药丸并入预置 stops 的 transfer 字段）
+const itemT = { stops: [
+  { t: 0.2, nameSuggestion: '乙站' },
+  { t: 0.5, transfer: 'trans-078', transferKind: 'circle' },
+  { t: 0.5005, transfer: 'trans-079', transferKind: 'pill' },
+] };
+eq(L.transferMarkForStop(itemT, 0.5001).id, 'trans-078', 't 就近取换乘标（更近者优先）');
+eq(L.transferMarkForStop(itemT, 0.2), null, '非换乘站无标记');
+ok(L.transferMarkForStop(itemT, 0.9) === null, '超出 dtEps 无标记');
+ok(L.transferMarkForStop({ stops: [{ t: 0.5, nameSuggestion: 'x' }] }, 0.5) === null, '无 transfer 字段不标记');
+ok(L.transferMarkForStop(null, 0.5) === null, '无预置项不崩');
 // 11) t=1 合法（域改 [0,1] 双闭，2026-11-21）：落末位、簿记成立、不触发递增告警
 let pt = mkLine(false);
 pt.stops = [{ id: 'l0001-s01', name: 'a', t: 0.3 }];
