@@ -1499,11 +1499,12 @@
       const stops = line.stops;
       const segs = line.segments || [];
       const n = stops.length;
-      // 站数<2（零设站的预控通道/联络线、仅 1 站的线）：整线单段、状态取线路级 status（建线默认
-      // 远期）——与 flatten「站数<2 整线单段」同口径（2026-11-22 用户需求：预控通道线不设站，
-      // 须在图上完全显示；此前只画弱化底 path，与查看器所见不一致）。缺省 future 同
-      // fixStatusField/migrateLineToV2 的兜底（线路级 status 的录入口已撤，载入统一补 future）
-      if (n < 2) {
+      // 预控通道线不设站（2026-11-22 用户说明）：站数<2 时整线单段显示，状态取线路级 status
+      // （建线默认远期）。**仅限预控通道**（用户明确限定，不得扩及其他类别）；其余类别站数<2
+      // 一律只画弱化底 path，加满 2 站后才按站间段显示。缺省 future 同 fixStatusField/
+      // migrateLineToV2 的兜底（线路级 status 的录入口已撤，载入统一补 future）
+      const wholeLine = n < 2 && !!(line.meta && line.meta.layer === LAYER_RESERVED);
+      if (wholeLine) {
         const st = SEG_ORDER.includes(line.status) ? line.status : 'future';
         el('path', { d: line.path, class: `seg-common seg-${st}`,
           'vector-effect': 'non-scaling-stroke' }, gLine);
