@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 上海轨道交通远期规划图网页：编辑器（editor.html，仅本地、永不部署）＋查看器（index.html，GitHub Pages 从 /docs 发布）。**本文件夹已 git 化（分支 main，无远端）**，用户将发布为 **SH-Rail-Planning-web**。
 
 - 阶段 0 标定 / 1 规范骨架：完成（标定已定案＝手动 TPS，见下）。
-- 阶段 2 编辑器：MVP＋多轮加固完成；**data/lines/ 仍为空，录入未开始**（首批 4 条线要求含环线/支线/共线/联络线各一例）。
+- 阶段 2 编辑器：MVP＋多轮加固＋性能治理（画布增量渲染）完成；仓库 `data/lines/` 仍为空。**录入在用户工作区 `C:\Users\18916\Documents\远期图测试` 进行**（2026-11-22 已 58 线；只读扫描/校验可以，未经用户明示不得改动）。
 - 阶段 3 查看器：MVP＋产品化＋显示规则八条改版＋白板字样改版完成，真数据目验中。
 
 **⚠ 开工前必读**：《架构方案-01-Schema与目录与阶段.md》（实施基准 v1.5）＋**《进度状态-02-阶段总览.md》**（当前全量明细：编辑器/查看器逐轮功能与裁定、标定与 .ai 提取始末、踩坑教训、待办占位——CLAUDE.md 2026-11-22 已瘦身，细节以该文档为准）；讨论史《讨论记录-01~04》。过程文档均 gitignore 仅本地。
@@ -17,8 +17,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 数据链：`data/`（lines/*.json **fmt/line@2**＋groups.json＋manifest.json）→ `tools/flatten.py` → `net/*.geojson` → 查看器；编辑器 `editor.html`＋`src/editor.js`/`src/geom.js`（逻辑层有 node 单测）。AI 源图仅导出线路 path（`svg_parse.py --import`→`import/*.json`）；设站站名纯手动录入。
 - schema v1.5：分段一等实体（`sections[{name,status}]` 铺满全线＋`segments` 整数索引，flatten 拒 @1）；组类型 same-station / out-of-station / junction（接轨站，描边取成员线角色优先级色 main＞standalone＞branch＞connector）；`stop.kind`: block（线路所，网页隐藏）/ arrow（出省箭头，网页显示）；联络线结构字段 `connects`（≥2 线 id）；设站编号水位 `meta.stopSeq` 防复用；线路分类 `meta.layer`（源图子图层名，中文合法：市域线/市区线/联络线/预控通道/他省…）。
 - 查看器类别裁定：**联络线不出列表**（地图照画、搜索照收）；**他省线仅显示级**（不可聚焦、恒调光、点选无面板）。
+- 编辑器画布＝**增量渲染**（2026-11-22 性能治理）：每线 `<g>` 跨渲染持久，`lineStale` 逐字段比对「画法输入」决定是否重建；当前线／选中站／待编组是瞬态，只原地切 class、挪选中环；缩放只原地改屏幕恒定尺寸。**给线路绘制新增数据依赖时，必须同步补进 `lineStale`（或换乘组 `sig`、`syncHints` 判据）的比对项**，否则改了数据画布不更新。
+- 编辑器「归档」的线：文件留在 `lines/`（`meta.archived: true`）、须列入 `manifest.archived`、不进 `manifest.lines`；validate 对账只比未归档线，flatten/publish 剔除。
 - 标定：现行 `data/calibration.json`＝手动 TPS λ=1e5、38 控点（2026-11-21 用户验收定案，勿重拟合）；回滚＝calibration-autotps-backup.json / calibration-deg3-backup.json（编辑器「标定」按钮）/ git 历史。.ai 全量提取＝`tools/ai_parse.py`→`import/远期图-全量.json`（84 线，命名裁定见进度状态-02）。
-- **MapLibre 血泪教训（改样式前必看）**：运行时错误默认不上控制台——层级校验失败是「弃层不弃 style」（filter `'!'` 吃 0/1 数字曾致站圈全没，**filter 一律显式 `['==',['get','x'],0/1]`**）；`line-cap`/`line-join` 是 layout 属性，放 paint 拒载整个 style 全黑；zoom 插值 stops 保持全常量、档位差异拆层做（数据驱动×zoom 复合真机不连续求值）；无头浏览器验证渲染不可靠（连 load 周期都不完成），排查走真实浏览器控制台＋一次性无头截图。
+- **MapLibre 血泪教训（改样式前必看）**：运行时错误默认不上控制台——层级校验失败是「弃层不弃 style」（filter `'!'` 吃 0/1 数字曾致站圈全没，**filter 一律显式 `['==',['get','x'],0/1]`**）；`line-cap`/`line-join` 是 layout 属性，放 paint 拒载整个 style 全黑；zoom 插值 stops 保持全常量、档位差异拆层做（数据驱动×zoom 复合真机不连续求值）；无头浏览器验证渲染不可靠（连 load 周期都不完成），排查走真实浏览器控制台＋一次性无头截图。**例外——编辑器纯 SVG/DOM 层**可用本机 Chrome 无头（`chrome --headless=new --disable-gpu --user-data-dir=<临时目录> --dump-dom <file://页面>`，勿用用户默认 profile）做实测：JS＋强制样式/布局可同步量；逐帧整帧量测要 rAF 循环＋挂起连接推迟 load 事件；改动渲染前后用**差分验证**（旧实现为标准答案，同一数据同一操作序列逐步比对）＋随机操作模糊测试。帧间隔按 16.7ms 量化、软件渲染，数值只作相对比较（做法见进度状态-02「画布增量渲染」节）。
 
 ## 常用命令
 
@@ -39,6 +41,7 @@ python -X utf8 tools/calib_manual_fit.py           # 手动标定重拟合（GE 
 python -X utf8 tools/ge_convert.py to-ge import/远期图-全量.json --out 检视.kmz   # 图→GE：线路导出 KMZ 目视核对（--layer 子串过滤）
 python -X utf8 tools/ge_convert.py from-ge 源资产/xxx.kmz --out 点位.csv          # GE→图：地标经纬度反变换为画板 x,y
 python -X utf8 tools/flatten.py --data data --out build/net            # 录入成果→GeoJSON（查看器数据源；正式发布由 publish.py 代跑）
+python -X utf8 tools/flatten.py --data "C:/Users/18916/Documents/远期图测试" --out build/net   # 把用户当前工作区载入查看器预览（查看器 net/ 不存在时回退 build/net；工作区无 calibration.json 时自动取 data/calibration.json；归档线剔除）
 python -X utf8 tools/publish.py                                        # 发布快照：校验→flatten→白名单拷贝 docs/（冒烟：--data tools/fixtures/sample --out build/docs-test）
 node tools/test_viewer_logic.js                                        # 查看器纯逻辑单测
 python -X utf8 tools/serve.py                       # 本地开发服务（仓库根静态＋POST /api/ai-parse 代解析 .ai），开 http://localhost:8000/editor.html；替代 python -m http.server——8000 被旧服务占用时拒启（先停旧服务，或 --port 显式换口）

@@ -545,6 +545,52 @@
     return { rows: all.slice((p - 1) * n, p * n), page: p, pages };
   }
 
+  // ---------- 画布增量渲染的判脏键（纯比对逻辑，node 单测覆盖；界面层 lineStale 据此决定某线是否重建） ----------
+  /** 是否「预控通道」类线：不设站，站数<2 时整线单段显示（2026-11-22 用户说明，仅限该类别） */
+  function isReservedLine(line) {
+    return !!(line && line.meta && line.meta.layer === LAYER_RESERVED);
+  }
+  /** 各站间段的绘制状态（＝sections[segments[i]].status，缺记录/非法值兜底 existing）；站数<2 为空表。
+   *  段数与 flatten 同口径：非环线 n 站 n-1 段、环线 n 段（末段环绕）。画布绘制与判脏共用 */
+  function segStatusesOf(line) {
+    const stops = line.stops || [], segs = line.segments || [], secs = line.sections || [];
+    const n = stops.length, cnt = n < 2 ? 0 : (line.loop ? n : n - 1), out = [];
+    for (let i = 0; i < cnt; i++) {
+      const sec = secs[segs[i]];
+      out.push(sec && SEG_ORDER.includes(sec.status) ? sec.status : 'existing');
+    }
+    return out;
+  }
+  /** 线路「画法输入」比对键：线级字段 path/loop/color/role/status/是否预控通道＋逐站 [id,t,name,kind,
+   *  所属组键]＋各站间段绘制状态。grpKeyOf：sid -> 所属换乘组的 `${id}|${type}`（无组可缺）。
+   *  **给线路绘制新增数据依赖时必须同步补进这里**，否则改了数据画布不更新（联络线的目标集与
+   *  几何代际依赖别的线，另由界面层比对）。 */
+  function lineDrawKey(line, grpKeyOf) {
+    const stops = line.stops || [], stopKeys = new Array(stops.length);
+    for (let i = 0; i < stops.length; i++) {
+      const a = stops[i];
+      stopKeys[i] = [a.id, a.t, a.name, a.kind, (grpKeyOf ? grpKeyOf.get(a.id) : '') || ''];
+    }
+    return { path: line.path, loop: !!line.loop, color: line.color, role: line.role, status: line.status,
+      reserved: isReservedLine(line), stopKeys, segStatus: segStatusesOf(line) };
+  }
+  /** 两个比对键是否等价（等价＝画法不变，已画的 DOM 可原样复用）。逐字段值比较，与对象身份无关 */
+  function sameLineDraw(a, b) {
+    if (a === b) return true;
+    if (!a || !b || a.path !== b.path || a.loop !== b.loop || a.color !== b.color || a.role !== b.role
+      || a.status !== b.status || a.reserved !== b.reserved) return false;
+    const x = a.stopKeys, y = b.stopKeys;
+    if (x.length !== y.length) return false;
+    for (let i = 0; i < x.length; i++) {
+      const p = x[i], q = y[i];
+      if (p[0] !== q[0] || p[1] !== q[1] || p[2] !== q[2] || p[3] !== q[3] || p[4] !== q[4]) return false;
+    }
+    const sx = a.segStatus, sy = b.segStatus;
+    if (sx.length !== sy.length) return false;
+    for (let i = 0; i < sx.length; i++) if (sx[i] !== sy[i]) return false;
+    return true;
+  }
+
   /** 接轨站（stationGroups type:'junction'）合并圈描边色：按成员线角色优先级取色，
    *  main > standalone > branch > connector（main 胜 branch、非联络线胜联络线为用户明定；
    *  standalone 与 branch 的先后为本实现假设，待用户确认）。
@@ -770,6 +816,7 @@
     planStopImport, applyStopImport, suggestForStop, transferMarkForStop, conflictsForStop, backfillTransferNames,
     layerGroupsOf, junctionStroke, planStationGroup, connValidTargets,
     normalizeLineOrder, LAYER_RESERVED, searchTermsOf, matchesTerms, groupSearchText, pageSlice,
+    isReservedLine, segStatusesOf, lineDrawKey, sameLineDraw,
     calibForward, calibInverse, tpsForward, tpsInverse, poly3Forward, poly3Inverse,
     lonToTileX, latToTileY, tileXToLon, tileYToLat };
   global.SHEditorLogic = SHLogic;
@@ -889,7 +936,7 @@
     S.groups = d.groups;
     // imports 不随快照回滚（见 snapshot 注释）；旧版快照含 imports 键亦忽略
     S.lineOrder = Array.isArray(d.lineOrder) ? d.lineOrder : null;   // 旧快照无此键＝null（回退 id 升序）
-    S.arcs = new Map();
+    S.arcs = reuseArcs(S.arcs, S.lines);   // path 没变的线沿用旧弧；变了的丢掉重建
     if (S.selImport && !S.imports.some((im) => im.source === S.selImport.source)) S.selImport = null;
     if (!S.lines.has(S.activeLine)) S.activeLine = null;
     S.selStop = null; S.pending = [];
@@ -946,6 +993,10 @@
       const diskSources = new Set(S.imports.map((i) => i.source));
       S.imports = snapImports.filter((i) => !diskSources.has(i.source)).concat(S.imports);
       S.activeLine = snap.activeLine && S.lines.has(snap.activeLine) ? snap.activeLine : null;
+      // 暂存不带选中/待编组态：清掉，免左栏高亮与就近提示残留；弧缓存随线路集整体替换
+      // （path 没变的沿用旧弧，变了的丢弃重建——否则同 id 异 path 的线会按旧几何落站）
+      S.selStop = null; S.pending = [];
+      S.arcs = reuseArcs(S.arcs, S.lines);
       $('banner').classList.remove('show');
       syncCountersWithLoaded(); renderAll();
       backfillTransfersOnLoad();   // 数据就绪：自动回填（免得刷新后还要再保存一次，见其注释）
@@ -1126,13 +1177,28 @@
     if (!S.arcs.has(lid)) {
       const line = S.lines.get(lid);
       if (!line) return null;
-      try { S.arcs.set(lid, G.pathFromD(line.path)); }
+      try {
+        const ap = G.pathFromD(line.path);
+        ap.pathD = line.path;   // 记下来源 path：线路集整体替换时 path 没变的线沿用旧弧（见 reuseArcs）
+        S.arcs.set(lid, ap);
+      }
       catch (e) {
         setStatus(`线路 ${lid} path 解析失败：${e.message}`);
         S.arcs.set(lid, null);
       }
     }
     return S.arcs.get(lid);
+  }
+  /** 线路集整体替换（撤销／载入／恢复暂存）后的弧缓存：path 没变的线沿用旧弧对象——免重新解析压平
+   *  （58 线约 9 ms），其段字符串 memo 一并保留，画布增量渲染也不会误判几何变化（几何代际不递增）；
+   *  path 变了或已不存在的线丢弃，待 arcOf 惰性重建（同 id 异 path 时绝不能留旧弧：站会按旧几何落位） */
+  function reuseArcs(oldArcs, lines) {
+    const next = new Map();
+    for (const [lid, line] of lines) {
+      const prev = oldArcs.get(lid);
+      if (prev && prev.pathD === line.path) next.set(lid, prev);
+    }
+    return next;
   }
 
   // ---------- 视图（平移/缩放） ----------
@@ -1373,19 +1439,77 @@
       + (oos ? `  ${grp.id}（出闸换乘）` : '');
   }
 
-  function renderWorld() {
-    // 底图组跨渲染持久保留（否则打字等高频重绘会反复清空瓦片造成闪烁）；
-    // 未建线导入组同理保留（性能，见 rawG 声明处注释）
-    if (basemapG && basemapG.parentNode === world) world.removeChild(basemapG);
-    if (rawG && rawG.parentNode === world) world.removeChild(rawG);
-    world.textContent = '';
+  // ---------- 画布渲染（增量，2026-11-22 性能改版） ----------
+  // 此前每次 renderWorld 都清空 #world 后全量重建（58 线 ≈4200 个 SVG 元素；本机 Chrome 无头
+  // 实测：每次点击、每格滚轮 33~50 ms、掉 2~3 帧）。现在：
+  //  · 每线 <g> 跨渲染持久（lineDom）：该线的「画法输入」（path／设站／分段状态／所属组…）没变
+  //    就原样复用，变了只重建这一条线（≈1 ms）；
+  //  · 当前线／选中站／待编组是瞬态，不进重建——只原地改样式、挪选中环、切 class；
+  //  · 缩放只原地改屏幕恒定尺寸（站圈半径、描边宽、箭头三角…），不重建；
+  //  · 换乘药丸／合并圈按组判脏，就近提示按输入判脏；未建线导入组沿用既有持久组逻辑。
+  // 层叠序与全量重建时一致：底图 → 未建线导入 path → 各线（S.lines 迭代序）→ 药丸 → 合并圈 → 就近提示。
+  // 约定：凡改了某线「画法输入」的数据，下一次 renderWorld 必须能由 lineStale 判出（逐字段比对，
+  // 不靠调用方标脏；比对键＝纯逻辑层 lineDrawKey／sameLineDraw，node 单测覆盖）；日后给线路绘制
+  // 新增依赖时，须同步把该依赖补进比对键。
+  let gradDefs = null;                                   // 联络线渐变 <defs>（常驻，渐变随联络线增删）
+  let gLines = null, pillG = null, gMerge = null, gHint = null;   // 常驻层容器
+  const lineDom = new Map();                             // lid -> 线渲染记录（见 buildLine）
+  const grpDom = new Map();                              // gid -> 药丸／合并圈记录（见 buildGroupShape）
+  const grads = new Map();                               // lid -> 联络线 linearGradient 元素
+  let lastArcs = [];                                     // 上次渲染时各线弧对象（S.lines 迭代序）
+  let geomGen = 0;                                       // 几何代际：任一线弧对象更换即 +1
+  let hintSig = null, hintGen = 0;                       // 就近提示层判脏
+  /** 画板单位→屏幕像素比例（站圈等屏幕恒定尺寸＝像素数 ÷ 它） */
+  function viewScale() {
+    return S.view ? Math.max(svg.clientWidth, 1) / S.view.w : 1;
+  }
+  /** 常驻层容器只建一次、次序固定（defs 不参与绘制；rawG 重建时插到 gLines 之前） */
+  function ensureWorldLayers() {
+    if (gLines) {
+      if (basemapG.parentNode !== world) world.insertBefore(basemapG, world.firstChild);
+      return;
+    }
     if (!basemapG) basemapG = el('g', { id: 'basemap' });
+    gradDefs = el('defs', { id: 'conn-grads' }, world);
+    gLines = el('g', { id: 'lines' }, world);
+    pillG = el('g', { id: 'pillG' }, world);
+    gMerge = el('g', { id: 'merged' }, world);
+    gHint = el('g', { id: 'hints' }, world);
     world.insertBefore(basemapG, world.firstChild);
-    if (rawG) world.insertBefore(rawG, basemapG.nextSibling);
-    scheduleBasemap();
-    // 联络线渐变容器 <defs>：随上方 world.textContent='' 每次重绘整体清理重建（防泄漏与
-    // 悬空引用；与 basemapG 的跨渲染保留不同——渐变无瓦片闪烁顾虑，重建成本可忽略）
-    const gradDefs = el('defs', { id: 'conn-grads' }, world);
+  }
+  function dropGrad(lid) {
+    const g = grads.get(lid);
+    if (g) { g.remove(); grads.delete(lid); }
+  }
+  function dropLineDom(lid) {
+    const rec = lineDom.get(lid);
+    if (rec) { rec.g.remove(); lineDom.delete(lid); }
+    dropGrad(lid);
+  }
+  function dropGroupDom(gid) {
+    const rec = grpDom.get(gid);
+    if (rec) { for (const e of rec.els) e.remove(); grpDom.delete(gid); }
+  }
+  /** 出省箭头三角 path（线色实心、指向线路外侧；头站取切线反方向）。尺寸为屏幕恒定（÷scale） */
+  function arrowPathString(ap, t, idx, scale) {
+    const [x, y] = ap.pointAt(t);
+    // 切向：t 处沿正向的单位切向量（邻点差分；t≈1 用向后差分）
+    const dt = 2e-3;
+    let a = t, b = t + dt;
+    if (b > 1) { b = t; a = Math.max(0, t - dt); }
+    const p1 = ap.pointAt(a), p2 = ap.pointAt(b);
+    let dx = p2[0] - p1[0], dy = p2[1] - p1[1];
+    const dl = Math.hypot(dx, dy) || 1;
+    dx /= dl; dy /= dl;
+    if (idx === 0) { dx = -dx; dy = -dy; }
+    const px = -dy, py = dx;                          // 垂直方向（基线展开用）
+    const tipL = 9 / scale, halfW = 6 / scale;        // 屏幕恒定尺寸（视觉档≈站圈 5.5px）
+    return `M${(x + dx * tipL).toFixed(2)},${(y + dy * tipL).toFixed(2)}`
+      + `L${(x - dx * tipL + px * halfW).toFixed(2)},${(y - dy * tipL + py * halfW).toFixed(2)}`
+      + `L${(x - dx * tipL - px * halfW).toFixed(2)},${(y - dy * tipL - py * halfW).toFixed(2)}Z`;
+  }
+  /** 本帧渲染上下文：每次 renderWorld 现算（联络线目标、比例、编组索引、几何代际） */
+  function renderCtx() {
     // 联络线有效目标索引（lid -> connValidTargets 结果[{lid,color,ap}]）：每次重绘现算，
     // 目标线被删/改色即时生效、无缓存阻碍（S.lines 实时判定；arcOf 缓存已随删线清理）
     const connTgtsOf = new Map();
@@ -1406,33 +1530,364 @@
       const tg = connTgtsOf.get(line.id);
       return tg ? connNearestTarget(tg, pt).color : CONNECTOR_FALLBACK;
     };
-    const scale = S.view ? Math.max(svg.clientWidth, 1) / S.view.w : 1;
-    const rStop = 5.5 / scale, ringR = 8.5 / scale, hintR = 12 / scale;
-
+    const scale = viewScale();
     // 换乘组索引：同站/接轨组成员隐藏小圈（画合并圈）；出闸组成员圈描黑边；
     // 同站组 ≥3 线改画药丸——成员圈同样隐去（药丸即换乘标识，2026-11-22 用户裁定）；
     // 恰好 2 线维持大圈
     const stationGroups = (S.groups && S.groups.stationGroups) || [];
     const grpOf = new Map();               // sid -> 组对象
-    const lineOfStop = new Map();          // sid -> lid（组内线数统计用）
+    const grpKeyOf = new Map();            // sid -> `${id}|${type}`（线路判脏用）
+    const lineOfStop = new Map();          // sid -> lid（组内线数统计、合并圈成员查找用）
     for (const [lid0, line0] of S.lines) for (const st0 of line0.stops) lineOfStop.set(st0.id, lid0);
     const pillGroups = new Set();          // same-station 且 ≥3 线的组 id
     const mergedHidden = new Set();        // 同站/接轨组（含药丸组）成员 sid
     for (const g of stationGroups) {
-      for (const sid of g.stops) grpOf.set(sid, g);
+      for (const sid of g.stops) { grpOf.set(sid, g); grpKeyOf.set(sid, g.id + '|' + (g.type || '')); }
       if (g.type === 'same-station') {
         const nLines = new Set(g.stops.map((sid) => lineOfStop.get(sid)).filter(Boolean)).size;
-        if (nLines >= 3) pillGroups.add(g.id);   // ≥3 线画药丸（成员圈一并隐去，见下方合并图形段）
+        if (nLines >= 3) pillGroups.add(g.id);   // ≥3 线画药丸（成员圈一并隐去，见 buildGroupShape）
       }
       if (g.type === 'same-station' || g.type === 'junction') for (const sid of g.stops) mergedHidden.add(sid);
     }
-
-    // 未建线的导入 path（灰色虚线；2026-11-21 halo 方案用户否决回退，灰 #666→#999 提亮）
-    // ＋透明加宽命中线；选中态（S.selImport 命中）虚线改强调色加粗。
-    // 持久组 rawG：导入集/绑定集真正变化才重建（性能，见 rawG 声明处注释）——选中态不重建、
-    // 仅在下方遍历切 class
+    // 几何代际：任一线的弧对象换了（「更新path」／撤销／载入重建 S.arcs）即 +1——联络线渐变
+    // 端色与换乘合并圈的位置/取色依赖**其他线**的几何，靠它判脏（本线几何变化由 path 比对覆盖）
+    const arcsNow = [...S.lines.keys()].map(arcOf);
+    if (arcsNow.length !== lastArcs.length || arcsNow.some((a, i) => a !== lastArcs[i])) geomGen++;
+    lastArcs = arcsNow;
+    let connDigest = '';                   // 联络线目标集及其取色的摘要（合并圈成员色判脏用）
+    for (const [cid, tg] of connTgtsOf) connDigest += cid + tg.map((t) => t.lid + t.color).join('');
+    return { connTgtsOf, connColorAt, scale, stationGroups, grpOf, grpKeyOf, lineOfStop,
+      pillGroups, mergedHidden, geomGen, connDigest, pend: new Set(S.pending) };
+  }
+  /** 线路的「画法输入」是否变了（变了才重建该线；瞬态——当前线/选中站/待编组——不在此列）。
+   *  本线数据走 lineDrawKey 逐字段比对（纯逻辑层，单测覆盖）；联络线另比目标集取色与几何代际
+   *  （线身渐变与站圈取色取决于**别的线**，不在本线比对键里） */
+  function lineStale(rec, line, ctx) {
+    if (!sameLineDraw(rec.key, lineDrawKey(line, ctx.grpKeyOf))) return true;
+    if (line.role === 'connector') {
+      const tg = ctx.connTgtsOf.get(line.id);
+      if (rec.geomGen !== ctx.geomGen
+        || rec.connKey !== (tg ? tg.map((t) => t.lid + ':' + t.color).join(',') : '-')) return true;
+    }
+    return false;
+  }
+  /** 重建一条线的 <g>（只设与比例无关的属性；屏幕恒定尺寸由 syncLineScale 统一写） */
+  function buildLine(lid, line, ap, ctx) {
+    dropGrad(lid);
+    const g = el('g', { class: 'svg-line' }, null);
+    // 联络线线身取色（2026-11-22 用户裁定：取消颜色属性，颜色由所联络的两条线决定）：
+    // 有效时 stroke＝SVG linearGradient——两端各取「距本线首/末端最近的 connects 目标线色」
+    // 作 stop，gradientUnits=userSpaceOnUse 沿贝塞尔起讫连线渐变（线性近似「沿曲线填充」，
+    // 编辑器工具界面足够；查看器为 MapLibre 另行实现）。段 path/.line-base 自身无 stroke
+    // （CSS 只设宽度/透明度/虚线，已逐一确认），全靠此处 g.style.stroke 继承上色；
+    // 无效（信息未填写完全：目标不足 2 条等）→深灰兜底。有 groupId 的联络线仍走本规则
+    // （防御：编辑器线身渲染不消费组色，组逻辑不改联络线颜色）。
+    const connTgts = line.role === 'connector' ? ctx.connTgtsOf.get(lid) : null;
+    if (line.role === 'connector' && connTgts) {
+      const p0 = ap.pointAt(0), p1 = ap.pointAt(1);
+      const g0 = connNearestTarget(connTgts, p0), g1 = connNearestTarget(connTgts, p1);
+      if (Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) < 1e-6) {
+        g.style.stroke = g0.color;   // 首末重合（闭合 path 极端情形）：零向量渐变未定义，退化单色
+      } else {
+        // connects ≥3：两端各取最近目标、其余忽略（用户裁定，见 connValidTargets 注释）
+        const grad = el('linearGradient', { id: `grad-${lid}`, gradientUnits: 'userSpaceOnUse',
+          x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1] }, gradDefs);
+        el('stop', { offset: '0', 'stop-color': g0.color }, grad);
+        el('stop', { offset: '1', 'stop-color': g1.color }, grad);
+        grads.set(lid, grad);
+        g.style.stroke = `url(#grad-${lid})`;
+      }
+    } else {
+      g.style.stroke = line.role === 'connector' ? CONNECTOR_FALLBACK : line.color;
+    }
+    g.dataset.lid = lid;
+    // 底图：完整原始贝塞尔 path（弱化）
+    const base = el('path', { d: line.path, class: 'line-base',
+      'vector-effect': 'non-scaling-stroke' }, g);
+    base.dataset.lid = lid;
+    const stops = line.stops, segs = line.segments || [], n = stops.length;
+    // 预控通道线不设站（2026-11-22 用户说明）：站数<2 时整线单段显示，状态取线路级 status
+    // （建线默认远期）。**仅限预控通道**（用户明确限定，不得扩及其他类别）；其余类别站数<2
+    // 一律只画弱化底 path，加满 2 站后才按站间段显示。缺省 future 同 fixStatusField/
+    // migrateLineToV2 的兜底（线路级 status 的录入口已撤，载入统一补 future）
+    if (n < 2 && isReservedLine(line)) {
+      const st = SEG_ORDER.includes(line.status) ? line.status : 'future';
+      el('path', { d: line.path, class: `seg-common seg-${st}`,
+        'vector-effect': 'non-scaling-stroke' }, g);
+      const wholeHit = el('path', { d: line.path, class: 'seg-hit',
+        'vector-effect': 'non-scaling-stroke' }, g);
+      wholeHit.dataset.lid = lid;   // 无 data-seg：整线单段不是站间段（选择模式点选语义同底 path）
+    }
+    const segStatus = segStatusesOf(line);
+    for (let i = 0; i < segStatus.length; i++) {
+      const t1 = stops[i].t;
+      const t2 = (line.loop && i + 1 === n) ? stops[0].t : stops[i + 1].t;  // 环线末段环绕
+      const dstr = segPathString(ap, t1, t2);
+      if (!dstr) continue;
+      // 段样式派生：分段实体（fmt/line@2）——sections[segments[i]].status；站数<2 的线不进本循环
+      el('path', { d: dstr, class: `seg-common seg-${segStatus[i]}`,
+        'vector-effect': 'non-scaling-stroke' }, g);
+      const hit = el('path', { d: dstr, class: 'seg-hit',
+        'vector-effect': 'non-scaling-stroke' }, g);
+      hit.dataset.lid = lid; hit.dataset.seg = i;
+    }
+    // 设站（同站/接轨组成员的独立小圈不画，统一画合并圈；出闸换乘描黑边；
+    // 线路所 kind:'block'＝虚线圆（同尺寸、线色），仅编辑器可见、正式网页隐藏；
+    // 出省箭头 kind:'arrow'＝线色实心三角指向线路外侧，编辑器与正式网页都显示）
+    const recStops = [];
+    stops.forEach((st, idx) => {
+      if (ctx.mergedHidden.has(st.id)) return;
+      const [x, y] = ap.pointAt(st.t);
+      const grp = ctx.grpOf.get(st.id);
+      const oos = grp && grp.type === 'out-of-station';
+      const isBlk = st.kind === 'block';
+      if (st.kind === 'arrow') {
+        // 复用 .stop-c 类获得指针/命中/拖动交互；fill/stroke 走内联样式盖过类默认白底。
+        // fill 走 connColorAt：联络线箭头取「该点最近目标线色」（无效深灰），白描边不动
+        const tri = el('path', { d: '', class: 'stop-c stop-arrow' }, g);
+        tri.style.stroke = '#fff';
+        tri.dataset.lid = lid; tri.dataset.sid = st.id;
+        const tt = el('title', {}, tri);
+        tt.textContent = stopTitle(line, st, idx, grp);
+        recStops.push({ el: tri, id: st.id, t: st.t, idx, x, y, kind: 'arrow',
+          fill: ctx.connColorAt(line, [x, y]) });
+      } else {
+        // 描边色走 connColorAt：联络线站圈取「该站最近目标线色」（无效深灰）、出闸组黑边优先不变
+        const c = el('circle', { cx: x, cy: y, class: 'stop-c',
+          stroke: oos ? '#000' : ctx.connColorAt(line, [x, y]) }, g);
+        c.dataset.lid = lid; c.dataset.sid = st.id;
+        const t = el('title', {}, c);
+        t.textContent = stopTitle(line, st, idx, grp);
+        recStops.push({ el: c, id: st.id, t: st.t, idx, x, y, kind: 'circle', blk: isBlk });
+      }
+    });
+    return { g, base, ap, stops: recStops, ring: null, ringFor: null, scale: NaN,
+      key: lineDrawKey(line, ctx.grpKeyOf), geomGen: ctx.geomGen,
+      connKey: connTgts ? connTgts.map((t) => t.lid + ':' + t.color).join(',') : '-' };
+  }
+  /** 比例变化（缩放/窗体尺寸）：只原地改屏幕恒定尺寸属性，不重建 */
+  function syncLineScale(rec, scale) {
+    const rStop = 5.5 / scale, sw = 1.2 / scale;
+    for (const s of rec.stops) {
+      if (s.kind === 'arrow') {
+        s.el.setAttribute('d', arrowPathString(rec.ap, s.t, s.idx, scale));
+        s.el.style.strokeWidth = sw + 'px';
+      } else {
+        s.el.setAttribute('r', rStop);
+        s.el.setAttribute('stroke-width', sw);
+        if (s.blk) s.el.setAttribute('stroke-dasharray', `${3 / scale} ${3 / scale}`);   // 屏幕恒定虚线
+      }
+    }
+    if (rec.ring) rec.ring.setAttribute('r', 8.5 / scale);
+    rec.scale = scale;
+  }
+  /** 瞬态落到 DOM：当前线底图加粗提亮、选中环挪到选中站前、待编组站标黄（不重建） */
+  function applyLineState(rec, line, ctx) {
+    const active = line.id === S.activeLine;
+    rec.base.style.strokeWidth = active ? 7 : 5;
+    rec.base.style.opacity = active ? 0.42 : 0.22;
+    const selIdx = active && S.selStop ? rec.stops.findIndex((s) => s.id === S.selStop) : -1;
+    if (selIdx >= 0) {
+      const s = rec.stops[selIdx];
+      if (!rec.ring) rec.ring = el('circle', { class: 'stop-ring', 'vector-effect': 'non-scaling-stroke' });
+      if (rec.ringFor !== s.id) {   // 选中环紧跟在选中站图形之前（与全量重建时的层序一致）
+        rec.g.insertBefore(rec.ring, s.el);
+        rec.ringFor = s.id;
+        rec.ring.setAttribute('cx', s.x); rec.ring.setAttribute('cy', s.y);
+        rec.ring.setAttribute('r', 8.5 / rec.scale);
+      }
+    } else if (rec.ring) {
+      rec.ring.remove(); rec.ring = null; rec.ringFor = null;
+    }
+    for (const s of rec.stops) {
+      const pend = ctx.pend.has(s.id);
+      s.el.classList.toggle('pend', pend);
+      if (s.kind === 'arrow') s.el.style.fill = pend ? 'var(--warn)' : s.fill;
+    }
+  }
+  /** 把一串元素按序放到 prev 之后（prev 为 null＝容器最前）；次序已正确时不动 DOM。
+   *  药丸是两个元素一组，逐元素对齐（只对齐组首会把下一组的垫层插进本组两层之间） */
+  function placeAfter(container, els, prev) {
+    let anchor = prev ? prev.nextSibling : container.firstChild;
+    for (const e of els) {
+      if (e !== anchor) container.insertBefore(e, anchor);
+      anchor = e.nextSibling;
+    }
+  }
+  /** 各线对齐到当前数据：该重建的重建、次序对齐 S.lines、比例同步、落瞬态。返回是否有线被重建 */
+  function syncLines(ctx) {
+    const seen = new Set();
+    let prev = null, changed = false;
+    for (const [lid, line] of S.lines) {
+      const ap = arcOf(lid);
+      if (!ap) { dropLineDom(lid); changed = true; continue; }   // path 解析失败的线不画（arcOf 已提示）
+      let rec = lineDom.get(lid);
+      if (!rec || lineStale(rec, line, ctx)) {
+        const fresh = buildLine(lid, line, ap, ctx);
+        if (rec) rec.g.replaceWith(fresh.g); else gLines.appendChild(fresh.g);
+        lineDom.set(lid, fresh); rec = fresh; changed = true;
+      }
+      // 层叠序＝S.lines 迭代序（后画者在上）；只在次序不符时挪动
+      placeAfter(gLines, [rec.g], prev);
+      prev = rec.g; seen.add(lid);
+      if (rec.scale !== ctx.scale) syncLineScale(rec, ctx.scale);
+      applyLineState(rec, line, ctx);
+    }
+    // 线被移除也算「变了」：就近提示层按站现算，得跟着重画
+    for (const lid of [...lineDom.keys()]) {
+      if (!seen.has(lid)) { dropLineDom(lid); changed = true; }
+    }
+    return changed;
+  }
+  /** 重建一个换乘组的图形（≥3 线同站组＝药丸；其余同站/接轨组＝合并圈） */
+  function buildGroupShape(g, members, isPill, ctx, sig) {
+    if (isPill) {
+      // 药丸：双描边法——黑垫层（厚＋2×边宽）＋白面层，圆帽圆角＝胶囊；命中/提示挂在面层。
+      // 胶囊沿成员站圈位置的贪心最近邻链（planGroupPillChain，n 点连线 n-1 次）
+      const pts = members.map((m) => m.ap.pointAt(m.st.t));
+      const chain = planGroupPillChain(pts);
+      const dstr = 'M' + chain.map((k) => `${pts[k][0].toFixed(2)},${pts[k][1].toFixed(2)}`).join('L');
+      const under = el('path', { d: dstr, class: 'grp-pill-under', fill: 'none', stroke: '#000',
+        'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, pillG);
+      const pill = el('path', { d: dstr, class: 'grp-pill', fill: 'none',
+        'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, pillG);
+      pill.dataset.grp = g.id;
+      const tp = el('title', {}, pill);
+      const nLinesP = new Set(members.map((m) => m.line.id)).size;
+      tp.textContent = `${g.id} 同站换乘（${nLinesP} 线药丸）：${g.stops.map((sid) => stopLabel(sid)).join('；')}`;
+      return { isPill: true, sig, scale: NaN, pend: null, els: [under, pill] };
+    }
+    // 合并圈：位置取距所有成员线路最近点（投影质心迭代收敛）。
+    // 接轨站（junction，支线/联络线接轨用）：尺寸与普通设站圆一致（不做换乘大圈）、
+    // 不画黑边（黑边是换乘语义），描边色按成员线角色优先级 main > standalone > branch > connector
+    // 取（junctionStroke；取不到成员线颜色退 '#000'；联络线成员先换「该站最近目标线色」，2026-11-22）；
+    // fill 仍白底。就近提示/点选/编组交互复用既有机制。
+    let px = 0, py = 0;
+    for (const m of members) { const p = m.ap.pointAt(m.st.t); px += p[0]; py += p[1]; }
+    px /= members.length; py /= members.length;
+    for (let it = 0; it < 12; it++) {
+      let sx = 0, sy = 0;
+      for (const m of members) {
+        const pr = m.ap.project(px, py);
+        sx += pr.p[0]; sy += pr.p[1];
+      }
+      const nx = sx / members.length, ny = sy / members.length;
+      const moved = Math.hypot(nx - px, ny - py);
+      px = nx; py = ny;
+      if (moved < 1e-3) break;
+    }
+    const isJunc = g.type === 'junction';
+    const anyBlk = isJunc && members.some((m) => m.st.kind === 'block');   // 组内含线路所→虚线（属性可见）
+    // 描边宽 2026-11-22 用户裁定整体 ×0.6（junction 2→1.2、双线大圈黑边 2.2→1.32）；
+    // junction 成员色：联络线成员经 connColorAt 换「该站最近目标线色」（无效深灰）后再入
+    // 角色优先级比较——混合组本就轮不到联络线色，全联络线接轨组自然取到目标线色
+    const c = el('circle', { cx: px, cy: py, class: 'stop-merge',
+      stroke: isJunc
+        ? junctionStroke(members.map((m) => ({ role: m.line.role,
+            color: m.line.role === 'connector'
+              ? ctx.connColorAt(m.line, m.ap.pointAt(m.st.t)) : m.line.color })))
+        : '#000' }, gMerge);
+    c.dataset.grp = g.id;
+    const t = el('title', {}, c);
+    t.textContent = `${g.id} ${isJunc ? '接轨站' : '同站换乘'}：${g.stops.map((sid) => stopLabel(sid)).join('；')}`
+      + (anyBlk ? '（含线路所：仅编辑器可见，正式网页隐藏）' : '');
+    return { isPill: false, sig, scale: NaN, pend: null, els: [c], junc: isJunc, blk: anyBlk };
+  }
+  function syncGroupScale(rec, scale) {
+    if (rec.isPill) {
+      const thick = (7.5 * 2) / scale;      // ＝双线大圈直径（2×7.5），视觉等宽
+      const border = 2.2 / scale;           // 黑边宽维持 2.2（2026-11-22 站圈描边整体 ×0.6 裁定下药丸黑边不动，视觉独立）
+      rec.els[0].setAttribute('stroke-width', thick + 2 * border);
+      rec.els[1].setAttribute('stroke-width', thick);
+    } else {
+      const c = rec.els[0];
+      c.setAttribute('r', rec.junc ? 5.5 / scale : 7.5 / scale);
+      c.setAttribute('stroke-width', (rec.junc ? 1.2 : 1.32) / scale);
+      if (rec.blk) c.setAttribute('stroke-dasharray', `${3 / scale} ${3 / scale}`);
+    }
+    rec.scale = scale;
+  }
+  /** 换乘药丸／合并圈对齐到当前数据：按组判脏重建，待编组标黄原地切 */
+  function syncGroupShapes(ctx) {
+    const seen = new Set();
+    let prevPill = null, prevMerge = null;
+    for (const g of ctx.stationGroups) {
+      if (g.type !== 'same-station' && g.type !== 'junction') { dropGroupDom(g.id); continue; }
+      const members = [];
+      for (const sid of g.stops) {
+        const lid2 = ctx.lineOfStop.get(sid);
+        const line2 = lid2 !== undefined ? S.lines.get(lid2) : null;
+        const st = line2 && line2.stops.find((x) => x.id === sid);
+        if (!st) continue;
+        const ap2 = arcOf(lid2);
+        if (ap2) members.push({ ap: ap2, st, line: line2 });
+      }
+      if (!members.length) { dropGroupDom(g.id); continue; }
+      const isPill = ctx.pillGroups.has(g.id);
+      const sig = g.type + '|' + ctx.geomGen + '|' + ctx.connDigest + '|'
+        + members.map((m) => `${m.line.id}:${m.st.t}:${m.st.name}:${m.st.kind || ''}:${m.line.role}:${m.line.color}`).join(',');
+      let rec = grpDom.get(g.id);
+      if (!rec || rec.sig !== sig) {
+        dropGroupDom(g.id);
+        rec = buildGroupShape(g, members, isPill, ctx, sig);
+        grpDom.set(g.id, rec);
+      }
+      const container = isPill ? pillG : gMerge;
+      placeAfter(container, rec.els, isPill ? prevPill : prevMerge);
+      if (isPill) prevPill = rec.els[1]; else prevMerge = rec.els[0];
+      seen.add(g.id);
+      if (rec.scale !== ctx.scale) syncGroupScale(rec, ctx.scale);
+      const anyPend = g.stops.some((sid) => ctx.pend.has(sid));
+      if (rec.isPill) {
+        if (rec.pend !== anyPend) { rec.els[1].style.stroke = anyPend ? 'var(--warn)' : '#fff'; rec.pend = anyPend; }
+      } else {
+        rec.els[0].classList.toggle('pend', anyPend);
+      }
+    }
+    for (const gid of [...grpDom.keys()]) if (!seen.has(gid)) dropGroupDom(gid);
+  }
+  /** 编组就近提示（纯视觉，绝不自动成组）：输入（待编组集／比例／线路重建）变了才重画 */
+  function syncHints(ctx, linesChanged) {
+    if (!(S.mode === 'group' && S.pending.length)) {
+      if (hintSig !== null) { gHint.textContent = ''; hintSig = null; }
+      return;
+    }
+    if (linesChanged) hintGen++;
+    const sig = ctx.scale + '|' + hintGen + '|' + S.pending.join(',');
+    if (sig === hintSig) return;
+    hintSig = sig;
+    gHint.textContent = '';
+    const wpp = worldPerPixel();
+    const hintWorld = 30 * wpp;
+    const pendPts = [];
+    for (const [lid, line] of S.lines) {
+      const ap = arcOf(lid);
+      if (!ap) continue;
+      for (const sid of S.pending) {
+        const st = line.stops.find((x) => x.id === sid);
+        if (st) pendPts.push(ap.pointAt(st.t));
+      }
+    }
+    if (!pendPts.length) return;
+    const hintR = 12 / ctx.scale;
+    for (const [lid, line] of S.lines) {
+      const ap = arcOf(lid);
+      if (!ap) continue;
+      for (const st of line.stops) {
+        if (ctx.pend.has(st.id)) continue;
+        const p = ap.pointAt(st.t);
+        if (pendPts.some((q) => Math.hypot(q[0] - p[0], q[1] - p[1]) <= hintWorld)) {
+          el('circle', { cx: p[0], cy: p[1], r: hintR, class: 'hint-ring',
+            'vector-effect': 'non-scaling-stroke' }, gHint);
+        }
+      }
+    }
+  }
+  /** 未建线的导入 path 持久组对齐：导入集／已绑定 path 集变了才重建；选中态只切 class */
+  function syncRawImports() {
     const boundPaths = new Set([...S.lines.values()].map((l) => l.path));
     if (!rawG || rawGImpRef !== S.imports || !samePathSet(rawGBound, boundPaths)) {
+      if (rawG) rawG.remove();
       rawG = el('g', { id: 'imports-raw' });
       for (const imp of S.imports) {
         for (const p of imp.paths) {
@@ -1449,248 +1904,43 @@
       }
       rawGImpRef = S.imports;
       rawGBound = boundPaths;
-      world.insertBefore(rawG, basemapG.nextSibling);   // 渲染顺序：底图之上、线路之下
+      world.insertBefore(rawG, gLines);   // 渲染顺序：底图之上、线路之下
     }
     const selSrc = S.selImport && S.selImport.source, selLyr = S.selImport && S.selImport.sourceLayer;
     for (const node of rawG.children) {
       if (node.classList.contains('line-raw-hit')) continue;   // 命中线不带选中态
       node.classList.toggle('sel', !!selSrc && node.dataset.impSource === selSrc && node.dataset.impLayer === selLyr);
     }
-
-    // 线路
-    for (const [lid, line] of S.lines) {
-      const ap = arcOf(lid);
-      if (!ap) continue;
-      const gLine = el('g', { class: 'svg-line' }, world);
-      // 联络线线身取色（2026-11-22 用户裁定：取消颜色属性，颜色由所联络的两条线决定）：
-      // 有效时 stroke＝SVG linearGradient——两端各取「距本线首/末端最近的 connects 目标线色」
-      // 作 stop，gradientUnits=userSpaceOnUse 沿贝塞尔起讫连线渐变（线性近似「沿曲线填充」，
-      // 编辑器工具界面足够；查看器为 MapLibre 另行实现）。段 path/.line-base 自身无 stroke
-      // （CSS 只设宽度/透明度/虚线，已逐一确认），全靠此处 gLine.style.stroke 继承上色；
-      // 无效（信息未填写完全：目标不足 2 条等）→深灰兜底。有 groupId 的联络线仍走本规则
-      // （防御：编辑器线身渲染不消费组色，组逻辑不改联络线颜色）。
-      const connTgts = connTgtsOf.get(lid);
-      if (line.role === 'connector' && connTgts) {
-        const p0 = ap.pointAt(0), p1 = ap.pointAt(1);
-        const g0 = connNearestTarget(connTgts, p0), g1 = connNearestTarget(connTgts, p1);
-        if (Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) < 1e-6) {
-          gLine.style.stroke = g0.color;   // 首末重合（闭合 path 极端情形）：零向量渐变未定义，退化单色
-        } else {
-          // connects ≥3：两端各取最近目标、其余忽略（用户裁定，见 connValidTargets 注释）
-          const grad = el('linearGradient', { id: `grad-${lid}`, gradientUnits: 'userSpaceOnUse',
-            x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1] }, gradDefs);
-          el('stop', { offset: '0', 'stop-color': g0.color }, grad);
-          el('stop', { offset: '1', 'stop-color': g1.color }, grad);
-          gLine.style.stroke = `url(#grad-${lid})`;
-        }
-      } else {
-        gLine.style.stroke = line.role === 'connector' ? CONNECTOR_FALLBACK : line.color;
-      }
-      gLine.dataset.lid = lid;
-      const active = lid === S.activeLine;
-
-      // 底图：完整原始贝塞尔 path（弱化）
-      const base = el('path', { d: line.path, class: 'line-base',
-        'vector-effect': 'non-scaling-stroke' }, gLine);
-      base.style.strokeWidth = active ? 7 : 5;
-      base.style.opacity = active ? 0.42 : 0.22;
-      base.dataset.lid = lid;
-
-      const stops = line.stops;
-      const segs = line.segments || [];
-      const n = stops.length;
-      // 预控通道线不设站（2026-11-22 用户说明）：站数<2 时整线单段显示，状态取线路级 status
-      // （建线默认远期）。**仅限预控通道**（用户明确限定，不得扩及其他类别）；其余类别站数<2
-      // 一律只画弱化底 path，加满 2 站后才按站间段显示。缺省 future 同 fixStatusField/
-      // migrateLineToV2 的兜底（线路级 status 的录入口已撤，载入统一补 future）
-      const wholeLine = n < 2 && !!(line.meta && line.meta.layer === LAYER_RESERVED);
-      if (wholeLine) {
-        const st = SEG_ORDER.includes(line.status) ? line.status : 'future';
-        el('path', { d: line.path, class: `seg-common seg-${st}`,
-          'vector-effect': 'non-scaling-stroke' }, gLine);
-        const wholeHit = el('path', { d: line.path, class: 'seg-hit',
-          'vector-effect': 'non-scaling-stroke' }, gLine);
-        wholeHit.dataset.lid = lid;   // 无 data-seg：整线单段不是站间段（选择模式点选语义同底 path）
-      }
-      const segCount = n < 2 ? 0 : (line.loop ? n : n - 1);
-      for (let i = 0; i < segCount; i++) {
-        const t1 = stops[i].t;
-        const t2 = (line.loop && i + 1 === n) ? stops[0].t : stops[i + 1].t;  // 环线末段环绕
-        const dstr = segPathString(ap, t1, t2);
-        if (!dstr) continue;
-        // 段样式派生：分段实体（fmt/line@2）——sections[segments[i]].status；
-        // 段记录缺失等数据异常时兜底 existing（站数<2 的线不进本循环，见上）
-        const sec = line.sections && line.sections[segs[i]];
-        const st = sec && SEG_ORDER.includes(sec.status) ? sec.status : 'existing';
-        el('path', { d: dstr, class: `seg-common seg-${st}`,
-          'vector-effect': 'non-scaling-stroke' }, gLine);
-        const hit = el('path', { d: dstr, class: 'seg-hit',
-          'vector-effect': 'non-scaling-stroke' }, gLine);
-        hit.dataset.lid = lid; hit.dataset.seg = i;
-      }
-
-      // 设站（同站/接轨组成员的独立小圈不画，统一画合并圈；出闸换乘描黑边；
-      // 线路所 kind:'block'＝虚线圆（同尺寸、线色），仅编辑器可见、正式网页隐藏；
-      // 出省箭头 kind:'arrow'＝线色实心三角指向线路外侧，编辑器与正式网页都显示）
-      stops.forEach((st, idx) => {
-        if (mergedHidden.has(st.id)) return;
-        const [x, y] = ap.pointAt(st.t);
-        const isSel = S.selStop === st.id && lid === S.activeLine;
-        const isPend = S.pending.includes(st.id);
-        const grp = grpOf.get(st.id);
-        const oos = grp && grp.type === 'out-of-station';
-        const isBlk = st.kind === 'block';
-        if (isSel) el('circle', { cx: x, cy: y, r: ringR, class: 'stop-ring',
-          'vector-effect': 'non-scaling-stroke' }, gLine);
-        if (st.kind === 'arrow') {
-          // 切向：t 处沿正向的单位切向量（邻点差分；t≈1 用向后差分）。
-          // 头站（idx===0）箭头取切线反方向、尾站取正方向＝一律指向线路外侧
-          const dt = 2e-3;
-          let a = st.t, b = st.t + dt;
-          if (b > 1) { b = st.t; a = Math.max(0, st.t - dt); }
-          const p1 = ap.pointAt(a), p2 = ap.pointAt(b);
-          let dx = p2[0] - p1[0], dy = p2[1] - p1[1];
-          const dl = Math.hypot(dx, dy) || 1;
-          dx /= dl; dy /= dl;
-          if (idx === 0) { dx = -dx; dy = -dy; }
-          const px = -dy, py = dx;                          // 垂直方向（基线展开用）
-          const tipL = 9 / scale, halfW = 6 / scale;        // 屏幕恒定尺寸（视觉档≈站圈 5.5px）
-          const dstr = `M${(x + dx * tipL).toFixed(2)},${(y + dy * tipL).toFixed(2)}`
-            + `L${(x - dx * tipL + px * halfW).toFixed(2)},${(y - dy * tipL + py * halfW).toFixed(2)}`
-            + `L${(x - dx * tipL - px * halfW).toFixed(2)},${(y - dy * tipL - py * halfW).toFixed(2)}Z`;
-          // 复用 .stop-c 类获得指针/命中/拖动交互；fill/stroke 走内联样式盖过类默认白底。
-          // fill 走 connColorAt：联络线箭头取「该点最近目标线色」（无效深灰），白描边不动
-          const tri = el('path', { d: dstr, class: 'stop-c stop-arrow' + (isPend ? ' pend' : '') }, gLine);
-          tri.style.fill = isPend ? 'var(--warn)' : connColorAt(line, [x, y]);
-          tri.style.stroke = '#fff';
-          tri.style.strokeWidth = (1.2 / scale) + 'px';
-          tri.dataset.lid = lid; tri.dataset.sid = st.id;
-          const tt = el('title', {}, tri);
-          tt.textContent = stopTitle(line, st, idx, grp);
-          return;
-        }
-        // 描边宽 2026-11-22 用户裁定整体 ×0.6（原 2→1.2；线路所虚线圆同元素自动跟随）；
-        // 描边色走 connColorAt：联络线站圈取「该站最近目标线色」（无效深灰）、出闸组黑边优先不变
-        const c = el('circle', { cx: x, cy: y, r: rStop, class: 'stop-c' + (isPend ? ' pend' : ''),
-          stroke: oos ? '#000' : connColorAt(line, [x, y]), 'stroke-width': 1.2 / scale }, gLine);
-        if (isBlk) c.setAttribute('stroke-dasharray', `${3 / scale} ${3 / scale}`);   // 屏幕恒定虚线（同 hint-ring 3 3 习惯）
-        c.dataset.lid = lid; c.dataset.sid = st.id;
-        const t = el('title', {}, c);
-        t.textContent = stopTitle(line, st, idx, grp);
-      });
-    }
-
-    // 多线换乘药丸层（同站组 ≥3 线）：位于线路之上＝与双线大圈同层级（成员圈已隐去、
-    // 药丸即换乘标识，不能被线身描边压白）；具体胶囊在下方合并图形段填充
-    const pillG = el('g', { id: 'pillG' }, world);
-
-    // 同站换乘/接轨站合并圈：位置取距所有成员线路最近点（投影质心迭代收敛）。
-    // 同站组 ≥3 线改画药丸（pillGroups）：白底黑边胶囊沿成员站圈位置的贪心最近邻链
-    // （planGroupPillChain，n 点连线 n-1 次），厚度＝双线大圈直径；成员站圈已隐去
-    // （mergedHidden），药丸即换乘标识——点选/提示/待编组交互挂药丸面层；恰好 2 线维持大圈不变。
-    // 接轨站（junction，支线/联络线接轨用）：尺寸与普通设站圆一致（不做换乘大圈）、
-    // 不画黑边（黑边是换乘语义），描边色按成员线角色优先级 main > standalone > branch > connector
-    // 取（junctionStroke；取不到成员线颜色退 '#000'；联络线成员先换「该站最近目标线色」，2026-11-22）；
-    // fill 仍白底。就近提示/点选/编组交互复用既有机制。
-    // 出闸组/junction 组渲染不涉及药丸。
-    for (const g of stationGroups) {
-      if (g.type !== 'same-station' && g.type !== 'junction') continue;
-      const members = [];
-      for (const sid of g.stops) {
-        for (const [lid2, line2] of S.lines) {
-          const st = line2.stops.find((x) => x.id === sid);
-          if (st) {
-            const ap2 = arcOf(lid2);
-            if (ap2) members.push({ ap: ap2, st, line: line2 });
-          }
-        }
-      }
-      if (!members.length) continue;
-      if (pillGroups.has(g.id)) {
-        // 药丸：双描边法——黑垫层（厚＋2×边宽）＋白面层，圆帽圆角＝胶囊；命中/提示挂在面层
-        const pts = members.map((m) => m.ap.pointAt(m.st.t));
-        const chain = planGroupPillChain(pts);
-        const dstr = 'M' + chain.map((k) => `${pts[k][0].toFixed(2)},${pts[k][1].toFixed(2)}`).join('L');
-        const anyPendP = g.stops.some((sid) => S.pending.includes(sid));
-        const thick = (7.5 * 2) / scale;      // ＝双线大圈直径（2×7.5），视觉等宽
-        const border = 2.2 / scale;           // 黑边宽维持 2.2（2026-11-22 站圈描边整体 ×0.6 裁定下药丸黑边不动，视觉独立）
-        el('path', { d: dstr, class: 'grp-pill-under', fill: 'none', stroke: '#000',
-          'stroke-width': thick + 2 * border, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, pillG);
-        const pill = el('path', { d: dstr, class: 'grp-pill', fill: 'none',
-          'stroke-width': thick, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, pillG);
-        pill.style.stroke = anyPendP ? 'var(--warn)' : '#fff';
-        pill.dataset.grp = g.id;
-        const tp = el('title', {}, pill);
-        const nLinesP = new Set(members.map((m) => m.line.id)).size;
-        tp.textContent = `${g.id} 同站换乘（${nLinesP} 线药丸）：${g.stops.map((sid) => stopLabel(sid)).join('；')}`;
-        continue;
-      }
-      let px = 0, py = 0;
-      for (const m of members) { const p = m.ap.pointAt(m.st.t); px += p[0]; py += p[1]; }
-      px /= members.length; py /= members.length;
-      for (let it = 0; it < 12; it++) {
-        let sx = 0, sy = 0;
-        for (const m of members) {
-          const pr = m.ap.project(px, py);
-          sx += pr.p[0]; sy += pr.p[1];
-        }
-        const nx = sx / members.length, ny = sy / members.length;
-        const moved = Math.hypot(nx - px, ny - py);
-        px = nx; py = ny;
-        if (moved < 1e-3) break;
-      }
-      const anyPend = g.stops.some((sid) => S.pending.includes(sid));
-      const isJunc = g.type === 'junction';
-      const anyBlk = isJunc && members.some((m) => m.st.kind === 'block');   // 组内含线路所→虚线（属性可见）
-      // 描边宽 2026-11-22 用户裁定整体 ×0.6（junction 2→1.2、双线大圈黑边 2.2→1.32）；
-      // junction 成员色：联络线成员经 connColorAt 换「该站最近目标线色」（无效深灰）后再入
-      // 角色优先级比较——混合组本就轮不到联络线色，全联络线接轨组自然取到目标线色
-      const c = el('circle', { cx: px, cy: py, r: isJunc ? rStop : 7.5 / scale,
-        class: 'stop-merge' + (anyPend ? ' pend' : ''),
-        stroke: isJunc
-          ? junctionStroke(members.map((m) => ({ role: m.line.role,
-              color: m.line.role === 'connector'
-                ? connColorAt(m.line, m.ap.pointAt(m.st.t)) : m.line.color })))
-          : '#000',
-        'stroke-width': (isJunc ? 1.2 : 1.32) / scale }, world);
-      if (anyBlk) c.setAttribute('stroke-dasharray', `${3 / scale} ${3 / scale}`);
-      c.dataset.grp = g.id;
-      const t = el('title', {}, c);
-      t.textContent = `${g.id} ${isJunc ? '接轨站' : '同站换乘'}：${g.stops.map((sid) => stopLabel(sid)).join('；')}`
-        + (anyBlk ? '（含线路所：仅编辑器可见，正式网页隐藏）' : '');
-    }
-
-    // 编组就近提示（纯视觉，绝不自动成组）
-    if (S.mode === 'group' && S.pending.length) {
-      const wpp = worldPerPixel();
-      const hintWorld = 30 * wpp;
-      const pendPts = [];
-      for (const [lid, line] of S.lines) {
-        const ap = arcOf(lid);
-        if (!ap) continue;
-        for (const sid of S.pending) {
-          const st = line.stops.find((x) => x.id === sid);
-          if (st) pendPts.push(ap.pointAt(st.t));
-        }
-      }
-      if (pendPts.length) {
-        for (const [lid, line] of S.lines) {
-          const ap = arcOf(lid);
-          if (!ap) continue;
-          for (const st of line.stops) {
-            if (S.pending.includes(st.id)) continue;
-            const p = ap.pointAt(st.t);
-            if (pendPts.some((q) => Math.hypot(q[0] - p[0], q[1] - p[1]) <= hintWorld)) {
-              el('circle', { cx: p[0], cy: p[1], r: hintR, class: 'hint-ring',
-                'vector-effect': 'non-scaling-stroke' }, world);
-            }
-          }
-        }
-      }
-    }
+  }
+  function renderWorld() {
+    ensureWorldLayers();
+    scheduleBasemap();
+    const ctx = renderCtx();
+    syncRawImports();
+    const linesChanged = syncLines(ctx);
+    syncGroupShapes(ctx);
+    syncHints(ctx, linesChanged);
+  }
+  /** 滚轮缩放的画布同步合帧（每帧至多一次 renderWorld） */
+  let worldRaf = 0;
+  function scheduleWorld() {
+    if (worldRaf) return;
+    worldRaf = requestAnimationFrame(() => { worldRaf = 0; renderWorld(); });
   }
 
   // ---------- 侧栏渲染 ----------
+  // 面板内容没变就不动 DOM（2026-11-22 性能）：点选/编组/加站等操作每次都会把全部面板渲染函数走一遍，
+  // 逐个比对其产出的 HTML 串——相同则跳过 innerHTML 赋值（免解析重建、不失焦不跳滚动），不同才重写。
+  // 面板内事件全部委托在容器上、不绑子元素，故复用旧 DOM 无副作用；**面板容器只能经 setHtml 写入**。
+  // 绕过 setHtml 直接改过面板内 DOM 的（如站行选中高亮是点选时直接切 class）须 markPanelDirty，
+  // 否则下次渲染见 HTML 串没变会跳过重写、旧状态残留
+  const panelHtml = new WeakMap();   // 容器元素 -> 上次写入的 HTML
+  function setHtml(box, html) {
+    if (panelHtml.get(box) === html) return;
+    panelHtml.set(box, html);
+    box.innerHTML = html;   // 真正写入（勿再被「box.innerHTML = html → setHtml」式批量替换吞掉）
+  }
+  function markPanelDirty(box) { panelHtml.delete(box); }
   // 导入源/线路列表的筛选与翻页是**临时 UI 状态**（2026-11-22）：不进快照、不进撤销、不进自动暂存，
   // 重载后回默认（全部/第 1 页）——翻页/筛选不触碰数据，与编辑操作（先 snapshot 再改）彻底分离。
   const IMP_PAGE_SIZE = 10;                       // 导入源模块每页条数
@@ -1721,7 +1971,7 @@
   function renderImportList() {
     const box = $('impList');
     if (!S.imports.length) {
-      box.innerHTML = '<div class="imp-src">用工具导入或工具栏载入。选中一条 path 后可建线。</div>';
+      setHtml(box, '<div class="imp-src">用工具导入或工具栏载入。选中一条 path 后可建线。</div>');
       return;
     }
     const bound = new Set([...S.lines.values()].map((l) => l.path));
@@ -1764,7 +2014,7 @@
       </div>`;
       html += '</div>';
     }
-    box.innerHTML = html;
+    setHtml(box, html);
   }
 
   // 线路列表分页（临时 UI 状态，同导入源）：分类组各自独立翻页，组头照旧显示组内总数
@@ -1800,7 +2050,7 @@
 
   function renderLineList() {
     const box = $('lineList');
-    if (!S.lines.size) { box.innerHTML = '<div style="color:var(--dim)">暂无线路。</div>'; return; }
+    if (!S.lines.size) { setHtml(box, '<div style="color:var(--dim)">暂无线路。</div>'); return; }
     // 按 meta.layer 分组渲染：组头（分类名＋条数）＋组内按 id 升序；未分类组固定最后；
     // 只有一类且无未分类时也照常显示组头（layerGroupsOf 保证，保持一致）。
     // 每组每页 8 条、组脚独立翻页（2026-11-22）；组头显示的仍是组内总数
@@ -1846,7 +2096,7 @@
       </div>`;
       html += '</div>';
     }
-    box.innerHTML = html;
+    setHtml(box, html);
   }
 
   /** 线路 → 匹配的站圆预置项（fmt/stations-import@2）。
@@ -1881,7 +2131,7 @@
   function renderLineForm() {
     const box = $('lineform');
     const l = S.lines.get(S.activeLine);
-    if (!l) { box.innerHTML = '<div style="color:var(--dim)">选择或新建一条线路后编辑属性。</div>'; return; }
+    if (!l) { setHtml(box, '<div style="color:var(--dim)">选择或新建一条线路后编辑属性。</div>'); return; }
     const lgs = (S.groups && S.groups.lineGroups) || [];
     const lgOpts = ['<option value="">（无）</option>'].concat(
       lgs.map((g) => `<option value="${g.id}" ${l.groupId === g.id ? 'selected' : ''}>${g.id} ${esc(g.name)}</option>`),
@@ -1902,7 +2152,7 @@
     const layerOpts = ['<option value="">（未分类）</option>'].concat(
       [...layerSet].sort((a, b) => a.localeCompare(b, 'zh'))
         .map((v) => `<option value="${esc(v)}" ${curLayer === v ? 'selected' : ''}>${esc(v)}</option>`));
-    box.innerHTML = `
+    setHtml(box, `
       <div class="fld"><label>id</label><input type="text" value="${l.id}" disabled></div>
       <div class="fld"><label>名称</label><input type="text" id="lfName" value="${esc(l.name)}"></div>
       <!-- 联络线隐藏颜色输入（2026-11-22 用户裁定：颜色属性取消、派生自 connects 两端，
@@ -1939,7 +2189,7 @@
           title="用当前选中的导入 path 替换本线 path（设站按弧长 t 保留）">更新path</button>
         <button class="mini ${l.meta && l.meta.archived ? '' : 'danger'}" id="lfArchive">
           ${l.meta && l.meta.archived ? '取消归档' : '归档'}</button>
-      </div>`;
+      </div>`);
   }
 
   /** 线路显示标签（同站不同名提示用）：有名称则「名称（id）」，否则 id */
@@ -1952,7 +2202,7 @@
     const box = $('stopList');
     const l = S.lines.get(S.activeLine);
     if (!l || !l.stops.length) {
-      box.innerHTML = '<div style="color:var(--dim)">在「加站」模式下点击线路加站；站名在此录入。加站类型（车站/线路所/出省箭头）用上方按钮切换。</div>';
+      setHtml(box, '<div style="color:var(--dim)">在「加站」模式下点击线路加站；站名在此录入。加站类型（车站/线路所/出省箭头）用上方按钮切换。</div>');
       renderSections();
       return;
     }
@@ -1966,7 +2216,7 @@
       : k === 'arrow'
         ? '非站点，线色箭头指向线路外侧、可无名，编辑器与正式网页都显示；仅非环线头/尾可设'
         : '普通设站，需站名';
-    box.innerHTML = l.stops.map((st, i) => {
+    setHtml(box, l.stops.map((st, i) => {
       const prev = i > 0 ? l.stops[i - 1].t : null;
       const next = i < l.stops.length - 1 ? l.stops[i + 1].t : null;
       const isBlk = st.kind === 'block';
@@ -2012,7 +2262,7 @@
           title="当前：${kindName(cur)}。点击转为${kindName(nk)}：${kindDesc(nk)}">${kindChar(cur)}</button>
         <button class="mini danger" data-del="${st.id}" title="删除设站">✕</button>
       </div>`;
-    }).join('');
+    }).join(''));
     renderSections();
   }
 
@@ -2024,9 +2274,9 @@
     const line = S.lines.get(S.activeLine);
     const n = line ? line.stops.length : 0;
     if (!line || n < 2) {
-      rows.innerHTML = '<div style="color:var(--dim);font-size:11px">'
-        + '设站 ≥2 后可用（不足 2 站时线路级状态自动取「远期」兜底，无需手设）。</div>';
-      splitSel.innerHTML = '';
+      setHtml(rows, '<div style="color:var(--dim);font-size:11px">'
+        + '设站 ≥2 后可用（不足 2 站时线路级状态自动取「远期」兜底，无需手设）。</div>');
+      setHtml(splitSel, '');
       splitSel.disabled = splitBtn.disabled = true;
       hint.textContent = '';
       return;
@@ -2034,7 +2284,7 @@
     splitSel.disabled = splitBtn.disabled = false;   // 下方按候选重定
     // 每段一行（段序＝线路序）：名称输入（可空）＋状态三档＋并段 ✕；
     // 末段 ✕ 仅环线显示（并首段，跨环绕）；行下小字＝覆盖区间
-    rows.innerHTML = (line.sections || []).map((sec, k) => {
+    setHtml(rows, (line.sections || []).map((sec, k) => {
       const span = sectionSpanOf(line, k);
       const spanTxt = !span ? '' : `站 ${span[0]}–${span[1]}`
         + (line.loop && span[1] <= span[0] ? (span[0] === span[1] ? '（经环绕段，全线）' : '（经环绕段）') : '');
@@ -2055,7 +2305,7 @@
         </div>
         <div class="sec-span">${k + 1}. ${spanTxt}</div>
       </div>`;
-    }).join('');
+    }).join(''));
     // 切分站下拉：只列「两侧同段」的有意义边界（已不同段的站切了也是无操作）
     const label = (st) => {
       if (st.kind === 'block') return st.name && st.name.trim() ? `（线路所）${st.name.trim()}` : '（线路所）';
@@ -2069,9 +2319,9 @@
       if (segs.length && left === right) cand.push(k);
     }
     const old = splitSel.value;
-    splitSel.innerHTML = cand.length
+    setHtml(splitSel, cand.length
       ? cand.map((k) => `<option value="${k}">${k} ${esc(label(line.stops[k - 1]))}</option>`).join('')
-      : '<option value="">（无——各站边界已在段界上）</option>';
+      : '<option value="">（无——各站边界已在段界上）</option>');
     splitSel.value = [...splitSel.options].some((o) => o.value === old) ? old : splitSel.value;
     splitSel.disabled = splitBtn.disabled = !cand.length;
     hint.textContent = cand.length
@@ -2142,16 +2392,16 @@
       S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
     }
     // 待编组
-    $('pendingBox').innerHTML = S.mode === 'group' ? `
+    setHtml($('pendingBox'), S.mode === 'group' ? `
       <div style="font-size:12px;margin-bottom:4px">待编组：<b>${S.pending.length}</b> 站
         <button class="mini primary" id="btnMkGroup" ${S.pending.length >= 2 ? '' : 'disabled'}>编组</button>
         <button class="mini" id="btnClearPend" ${S.pending.length ? '' : 'disabled'}>清空</button></div>
-      <div style="font-size:11px;color:var(--dim)">黄色虚线圈=就近提示，仅供参考，绝不自动合并。</div>` : '';
+      <div style="font-size:11px;color:var(--dim)">黄色虚线圈=就近提示，仅供参考，绝不自动合并。</div>` : '');
     // 换乘节点组（含线路所的组：线路所不得进 same-station/out-of-station，类型下拉锁死 junction）
     // ＋搜索框过滤＋每页 8 个翻页（组头计数：搜索时显示「命中 / 总数」）
     const sg = sgVisible();
     $('sgCount').textContent = sg.terms.length ? `${sg.hit} / ${sg.total} 组` : `${sg.total} 组`;
-    $('stationGroups').innerHTML = (sg.rows.length ? sg.rows.map((g) => {
+    setHtml($('stationGroups'), sg.rows.length ? sg.rows.map((g) => {
       const hasBlk = g.stops.some((sid) => stopKindOf(sid) === 'block');
       const lock = hasBlk ? ' title="组内含线路所：只能为接轨站（junction）"' : '';
       return `
@@ -2178,7 +2428,7 @@
       </div>` : '');
     // 线组
     const lgs = S.groups.lineGroups || [];
-    $('lineGroups').innerHTML = (lgs.length ? lgs.map((g) => {
+    setHtml($('lineGroups'), lgs.length ? lgs.map((g) => {
       const members = [...S.lines.values()].filter((l) => l.groupId === g.id);
       return `<div class="grp-row" data-lgid="${g.id}">
         <span class="chip" style="display:inline-block;width:11px;height:11px;background:${esc(g.color || '#888')};border-radius:3px"></span>
@@ -2232,8 +2482,8 @@
       groupId: null, role: 'standalone', color: p.color,
       loop: /z/i.test(p.path), path: p.path, connects: [],
       // 建线一律默认远期（2026-11-22 用户说明：预控通道线默认均为远期、不设站）——
-      // 站数<2 时线路级 status 即整线显示状态（renderWorld 整线单段），第 2 站落位时
-      // 由 fixStatusField 据此生成默认分段
+      // 预控通道线站数<2 时线路级 status 即整线显示状态（renderWorld 整线单段，仅该类别），
+      // 第 2 站落位时由 fixStatusField 据此生成默认分段
       stops: [], segments: [], sections: [], status: 'future',
       info: {},
       meta: { created: today(), updated: today(), archived: false,
@@ -2451,6 +2701,15 @@
     const r = [...$('lineList').querySelectorAll('.line-row')].find((x) => x.dataset.lid === lid);
     if (r) r.scrollIntoView({ block: 'nearest' });
   }
+  /** 画布点站后的左栏同步：当前线没变只切站行高亮（不重建列表——同站列表点选的做法，免重建丢焦点）；
+   *  当前线变了才整体刷新三块 */
+  function syncAfterStopPick(prevActive) {
+    if (S.activeLine !== prevActive) { renderStopList(); renderLineList(); renderLineForm(); return; }
+    for (const r of $('stopList').querySelectorAll('.stop-row')) {
+      r.classList.toggle('sel', r.dataset.sid === S.selStop);
+    }
+    markPanelDirty($('stopList'));   // 直接改了 class：下次渲染须重写，免选中态回退后旧高亮残留
+  }
   /** 画布双击车站后：左栏定位滚动可见（线路行分页感知同上） */
   function locateStopInList(sid, lid) {
     const r = [...$('stopList').querySelectorAll('.stop-row')].find((x) => x.dataset.sid === sid);
@@ -2500,10 +2759,11 @@
     if (stopEl && S.mode === 'add') {
       // 加站模式：按住站圈拖动＝改位（2026-11-21 用户裁定：仅加站模式可拖动）
       const sid = stopEl.dataset.sid, lid = stopEl.dataset.lid;
+      const prevActive = S.activeLine;
       S.activeLine = lid;
       S.selStop = sid;
-      renderStopList(); renderLineList(); renderLineForm();
-      renderWorld();   // 先全量一次：渲染选中环并取重绘后的新站圈引用（旧元素已销毁），供拖动局部更新
+      syncAfterStopPick(prevActive);
+      renderWorld();   // 落选中环（增量渲染：只挪环，不重建线路），并取站圈引用供拖动局部更新
       drag = { type: 'stop', lid, sid, moved: false,
         el: world.querySelector(`.stop-c[data-sid="${CSS.escape(sid)}"]`),
         ring: world.querySelector('.stop-ring'),
@@ -2515,9 +2775,10 @@
     if (stopEl && S.mode === 'select') {
       // 选择模式点站：仅选中并切换当前线（不拖动）；随后的拖动落到下方平移
       const sid = stopEl.dataset.sid, lid = stopEl.dataset.lid;
+      const prevActive = S.activeLine;
       S.activeLine = lid;
       S.selStop = sid;
-      renderStopList(); renderLineList(); renderLineForm();
+      syncAfterStopPick(prevActive);
       regCanvasDbl(`stop:${sid}`, () => locateStopInList(sid, lid));   // 双击站圈：左栏定位
     }
     if (S.mode === 'group') {
@@ -2553,17 +2814,27 @@
       return;
     }
     if (drag && drag.type === 'stop') {
+      // 拖动途中若发生重绘（滚轮合帧／窗体尺寸变化），该线因 t 已变而被重建：重取引用，保持局部更新
+      if (!drag.el || !drag.el.isConnected) {
+        drag.el = world.querySelector(`.stop-c[data-sid="${CSS.escape(drag.sid)}"]`);
+        drag.ring = world.querySelector('.stop-ring');
+      }
       const [wx, wy] = toWorld(e);
       if (moveStop(drag.lid, drag.sid, nearestTOnLine(drag.lid, wx, wy))) {
         drag.moved = true;
-        // 拖动中只挪该站圆＋选中环＋title（松手再全量对齐列表 t 值/排序）——满规模防逐帧全量重建卡顿；
-        // 出省箭头是 <path>（挪 cx/cy 无效、方向还随位置变），走全量重绘分支
+        // 拖动中只挪该站图形＋选中环＋title（松手再对齐列表 t 值/排序）——满规模防逐帧重绘卡顿；
+        // 出省箭头是 <path>，原地重算三角（见下）
         const line = S.lines.get(drag.lid);
         const st = line && line.stops.find((x) => x.id === drag.sid);
         const ap = st && arcOf(drag.lid);
-        if (st && ap && drag.el && drag.el.isConnected && drag.el.tagName !== 'path') {
+        if (st && ap && drag.el && drag.el.isConnected) {
           const [x, y] = ap.pointAt(st.t);
-          drag.el.setAttribute('cx', x); drag.el.setAttribute('cy', y);
+          if (drag.el.tagName === 'path') {
+            // 出省箭头是 <path>（挪 cx/cy 无效、方向还随位置变）：原地重算三角，同样不全量重绘
+            drag.el.setAttribute('d', arrowPathString(ap, st.t, line.stops.indexOf(st), viewScale()));
+          } else {
+            drag.el.setAttribute('cx', x); drag.el.setAttribute('cy', y);
+          }
           if (drag.ring && drag.ring.isConnected) { drag.ring.setAttribute('cx', x); drag.ring.setAttribute('cy', y); }
           const tt = drag.el.querySelector('title');
           if (tt) tt.textContent = stopTitle(line, st, line.stops.indexOf(st),
@@ -2768,7 +3039,9 @@
     S.view.x = wx - (wx - S.view.x) * k;
     S.view.y = wy - (wy - S.view.y) * k;
     S.view.w = nw;
-    applyView(); renderWorld();
+    // 缩放只改 viewBox；站圈等屏幕恒定尺寸由 renderWorld 原地同步——合帧（每帧至多一次），
+    // 高分辨率滚轮/触控板一格内会连发多个 wheel 事件
+    applyView(); scheduleBasemap(); scheduleWorld();
   }, { passive: false });
 
   // ---------- 侧栏事件（委托） ----------
@@ -2899,6 +3172,7 @@
         // chip 会过期残留——此时绝不让建议覆盖手输名（想采用请先清空站名）
         if (st.name && st.name.trim() && st.name !== sugName) {
           sugEl.remove();
+          markPanelDirty($('stopList'));   // 直接改了 DOM：下次渲染须重写
           setStatus(`「${st.name}」为手动输入的站名，未用建议「${sugName}」覆盖——想采用建议请先清空站名。`, true);
           return;
         }
@@ -2927,6 +3201,7 @@
     for (const r of $('stopList').querySelectorAll('.stop-row')) {
       r.classList.toggle('sel', r.dataset.sid === S.selStop);
     }
+    markPanelDirty($('stopList'));   // 直接改了 class：下次渲染须重写，免选中态回退后旧高亮残留
     renderWorld();
   });
   // 站名输入框键盘切换（2026-11-22 需求 1）：↑/↓/Enter 跳上/下一站的名称框，光标置末尾；
@@ -2957,6 +3232,7 @@
       if (st.name.trim()) {
         const row = e.target.closest('.stop-row');
         if (row) for (const chip of row.querySelectorAll('.namehint')) chip.remove();
+        markPanelDirty($('stopList'));   // 直接改了 DOM：下次渲染须重写
       }
       // 站名不上画布（只在 title 提示里）：逐键仅更新该站 title，不全量重绘（合并圈成员留待下次全量渲染）
       const c = world.querySelector(`.stop-c[data-sid="${CSS.escape(sid)}"]`);
@@ -3178,8 +3454,9 @@
     if (touched) {
       l.meta.updated = today(); autosave();
       const fld = e.target.id;
-      // lfConnects 需重绘世界：connects 改动即时切换联络线渐变/深灰（2026-11-22 联络线取色改版）
-      scheduleFormRender(fld === 'lfColor' || fld === 'lfLoop' || fld === 'lfRole' || fld === 'lfConnects');
+      // 影响画布的字段：颜色/环线/角色/联络目标/分类——分类须重绘：预控通道线「站数<2 整线显示」
+      // 取决于它，改了类别画布要立刻跟着变
+      scheduleFormRender(fld === 'lfColor' || fld === 'lfLoop' || fld === 'lfRole' || fld === 'lfConnects' || fld === 'lfLayer');
     }
   });
   $('lineform').addEventListener('click', (e) => {
@@ -3338,7 +3615,6 @@
     b.textContent = S.basemap === 'amap' ? '底图：高德' : S.basemap === 'osm' ? '底图：OSM' : '底图：关';
     b.classList.toggle('primary', S.basemap !== 'off');
   }
-  $('btnUndo').addEventListener('click', () => undo());   // 顶栏撤销按钮（此前仅 Ctrl+Z，按钮未接线）
   $('btnBasemap').addEventListener('click', () => {
     const next = S.basemap === 'off' ? 'osm' : (S.basemap === 'osm' ? 'amap' : 'off');
     if (next !== 'off' && !S.calib) {
@@ -3491,7 +3767,7 @@
     // 工作区整体替换：显示顺序随 manifest.lineOrder（缺失＝null 回退 id 升序）
     S.lineOrder = (manifest && Array.isArray(manifest.lineOrder)) ? manifest.lineOrder : null;
     if (calib) takeCalibration(calib);
-    S.arcs = new Map();
+    S.arcs = reuseArcs(S.arcs, S.lines);   // path 没变的线沿用旧弧；变了的丢掉重建
     if (!S.lines.has(S.activeLine)) S.activeLine = lineFiles.size ? [...lineFiles.keys()][0] : null;
     S.selStop = null; S.pending = [];
     syncCountersWithLoaded();
@@ -3758,7 +4034,7 @@
   }
 
   // ---------- 启动 ----------
-  window.addEventListener('resize', () => { applyView(); renderWorld(); });
+  window.addEventListener('resize', () => { applyView(); scheduleWorld(); });   // 合帧：拖动窗体时连发
 
   (async function boot() {
     loadCounters();

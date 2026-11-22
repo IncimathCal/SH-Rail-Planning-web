@@ -817,6 +817,59 @@ eq(L.pageSlice(R20, 0, 8).page, 1, '页码 0 回正到 1');
 eq(L.pageSlice([], 5, 8), { rows: [], page: 1, pages: 1 }, '空列表：1 页 0 行');
 eq(L.LAYER_RESERVED, '预控通道', '预控通道类别名（不设站、默认远期、整线显示）');
 
+// ---------- 画布增量渲染判脏键（2026-11-22 性能改版：某线「画法输入」变了才重建该线） ----------
+console.log('canvas incremental render dirty key:');
+const mkKeyLine = () => ({
+  id: 'l0001', loop: false, color: '#112233', role: 'standalone', status: 'future', path: 'M0,0L10,10L20,0',
+  connects: [], segments: [0, 1], sections: [{ name: '', status: 'existing' }, { name: '乙段', status: 'future' }],
+  stops: [
+    { id: 'l0001-s01', name: '甲站', t: 0.1, geo: null },
+    { id: 'l0001-s02', name: '', t: 0.5, geo: null, kind: 'block' },
+    { id: 'l0001-s03', name: '丙站', t: 0.9, geo: null },
+  ],
+  meta: { archived: false, stopSeq: 3 },
+});
+const KGRP = new Map([['l0001-s02', 'g0001|same-station']]);   // sid -> 所属组键
+const sameDraw = (mutate, grp) => {
+  const a = mkKeyLine(), b = mkKeyLine();
+  if (mutate) mutate(b);
+  return L.sameLineDraw(L.lineDrawKey(a, KGRP), L.lineDrawKey(b, grp || KGRP));
+};
+ok(sameDraw(null), '数据未变（换对象亦然）＝等价，不重建');
+ok(!sameDraw((l) => { l.path = 'M0,0L5,5L20,0'; }), 'path 变');
+ok(!sameDraw((l) => { l.loop = true; }), '环线开关变');
+ok(!sameDraw((l) => { l.color = '#445566'; }), '颜色变');
+ok(!sameDraw((l) => { l.role = 'connector'; }), '角色变');
+ok(!sameDraw((l) => { l.status = 'existing'; }), '线路级状态变（预控通道整线段取色）');
+ok(!sameDraw((l) => { l.meta.layer = '预控通道'; }), '类别变成预控通道');
+ok(!sameDraw((l) => { l.stops[0].t = 0.2; }), '站位置变');
+ok(!sameDraw((l) => { l.stops[0].name = '丁站'; }), '站名变（title 文本）');
+ok(!sameDraw((l) => { delete l.stops[1].kind; }), '站类型变');
+ok(!sameDraw((l) => { l.stops[1].id = 'l0001-s09'; }), '站号变');
+ok(!sameDraw((l) => { l.stops.push({ id: 'l0001-s04', name: '', t: 0.95, geo: null }); }), '加站');
+ok(!sameDraw((l) => { l.stops.pop(); }), '删站');
+ok(!sameDraw((l) => { l.stops.reverse(); }), '站序变');
+ok(!sameDraw((l) => { l.sections[1].status = 'approved'; }), '分段状态变');
+ok(!sameDraw((l) => { l.segments[1] = 0; }), '段所属分段变');
+ok(!sameDraw((l) => { l.sections[1].status = 'bogus'; }), '分段状态变非法值：兜底 existing 与原值不同，判为变');
+ok(sameDraw((l) => { l.sections[0].status = 'bogus'; }), '非法值兜底后与原状态相同＝画法不变');
+ok(!sameDraw(null, new Map([['l0001-s02', 'g0001|out-of-station']])), '所属组类型变');
+ok(!sameDraw(null, new Map([['l0001-s02', 'g0002|same-station']])), '所属组号变');
+ok(!sameDraw(null, new Map()), '站被移出组');
+ok(sameDraw((l) => { l.meta.archived = true; }), '归档标记不影响画法（画布照画）');
+ok(sameDraw((l) => { l.sections[0].name = '甲段'; }), '分段名不上画布，不算变');
+ok(sameDraw((l) => { l.connects = ['l0002', 'l0003']; }), 'connects 归界面层另比（联络线目标集与几何代际）');
+ok(!L.sameLineDraw(null, L.lineDrawKey(mkKeyLine(), KGRP)) && !L.sameLineDraw(L.lineDrawKey(mkKeyLine(), KGRP), null),
+  '一侧缺键（首次渲染）＝须重建');
+eq(L.segStatusesOf(mkKeyLine()), ['existing', 'future'], '非环线 3 站 2 段，状态取所属分段');
+eq(L.segStatusesOf(Object.assign(mkKeyLine(), { loop: true, segments: [0, 1, 1] })), ['existing', 'future', 'future'], '环线 3 站 3 段（末段环绕）');
+eq(L.segStatusesOf(Object.assign(mkKeyLine(), { loop: true })), ['existing', 'future', 'existing'], '环线末段缺记录兜底 existing');
+eq(L.segStatusesOf(Object.assign(mkKeyLine(), { stops: mkKeyLine().stops.slice(0, 1), segments: [], sections: [] })), [], '不足 2 站无站间段');
+eq(L.segStatusesOf(Object.assign(mkKeyLine(), { sections: [{ name: '', status: 'bogus' }], segments: [0, 0, 5] })),
+  ['existing', 'existing'], '缺记录/非法状态兜底 existing');
+ok(L.isReservedLine({ meta: { layer: '预控通道' } }) && !L.isReservedLine({ meta: { layer: '市域线' } })
+  && !L.isReservedLine({}) && !L.isReservedLine(null), '预控通道类别判定');
+
 // ---------- 标定变换与瓦片数学（fmt/calibration@1 deg3 / @2 tps，文件存在时） ----------
 console.log('calibration:');
 const calibFile = require('path').join(__dirname, '..', 'data', 'calibration.json');
