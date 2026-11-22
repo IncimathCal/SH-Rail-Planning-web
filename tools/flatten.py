@@ -8,10 +8,14 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
 
   <out>/lines.geojson  线路×分段，每 feature 一条 LineString
                         properties: lineId / name / aliases / color / role /
-                        layer / loop / segIndex / segStatus / sectionName
+                        layer / loop / connects / segIndex / segStatus /
+                        sectionName
                         （sectionName＝所属分段名，空名段省略该键；
                         layer＝线路 meta.layer，中文值合法，查看器左栏
-                        类别过滤用）
+                        类别过滤用；connects＝联络线接轨对象线 id 列表，
+                        仅 role:"connector" 线携带、其余线为空数组——
+                        2026-11-22 用户需求 3：查看器聚焦时绑定联络线
+                        沿线渐变透明的方向判定用）
   <out>/stops.geojson  设站，每 feature 一个 Point
                         properties: sid / name / lineId / lineName / t /
                         groupId / groupType；出省箭头（v1.5 kind:"arrow"，
@@ -173,6 +177,10 @@ def flatten_line(line, ap, tps, group_color, stop_group):
         "role": line.get("role"),
         "layer": meta.get("layer"),   # 无则 null
         "loop": loop,
+        # 联络线接轨对象（2026-11-22 用户需求 3：查看器聚焦渐变高亮用）。仅
+        # role:"connector" 线在 schema 里携带（≥2 个线 id，无顺序语义——方向
+        # 由查看器按几何最近端判定）；非联络线 get 落空 → 输出空数组保持键齐
+        "connects": list(line.get("connects") or []),
     }
 
     def to_lonlat(x, y):

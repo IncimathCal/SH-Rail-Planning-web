@@ -21,6 +21,13 @@
 // styleimagemissing 按需注册，零外部资源零网络请求；不进搜索/hover/点选面板）；
 // ②≥3 线同站组药丸——沿贪心最近邻链序画双层折线（外黑内白＋圆头端帽＝白底黑边胶囊，
 // 厚度＝双线换乘大圈直径视觉等宽）；恰 2 线组维持合并大圈不动。
+// 2026-11-22 三项增补（用户需求）：①聚焦跳转——setFocus 进入聚焦时 fitBounds 到该线
+// 渲染 bbox、四边留白按实时布局动态取（顶栏/左栏/聚焦框/信息面板各让位＋24px 呼吸），
+// 退出聚焦绝对不动相机（「再次双击不必跳回」）；②地图画布双击线路同样触发聚焦（与左栏
+// 行双击同一 toggle 语义，命中且非「仅显示」级才 preventDefault 阻止原生双击缩放）；
+// ③聚焦线绑定的联络线沿线渐变透明——接聚焦线一端不透明、另一端 alpha 0（方向＝几何
+// 最近端判定，见 VIEWER_CORE.connectorFadePlan；MapLibre line-gradient 不能数据驱动，
+// 故每条联络线一个动态图层共享 conn-fade source，方向靠坐标序定向）。
 // 2026-11-22 三批（用户指示，仅查看器）：背景黑板改白（#fff）；站名黑字＋白色外描边
 //（paint-order:stroke fill 先描后填＝描边只露外侧，外扩＝字号 1/8——12px 字 3px 描边可见
 // 1.5px；CSS 见 index.html）＋站名缩放锚定站点（transform-origin 与 translate(-50%,-140%)
@@ -60,6 +67,14 @@
     dispCoord: V.makeDispCoord('none'), // 显示坐标变换（gaode＝WGS84→GCJ02；仅显示侧，见下方底图段）
     basemapPending: false,        // 样式未就绪时点击的补应用标记（目标态恒存 S.basemap）
     styleReady: false,            // map 'load' 已触发（样式只建一次，就绪后 addSource/addLayer 恒可用）
+    panelCollapsed: false,        // 线路面板收起态（2026-11-22 用户需求；会话内不持久化，刷新回展开——与底图三态等 UI 态同策）
+    // 2026-11-22 用户需求 3：联络线渐变高亮——fadeSet＝当前聚焦的绑定联络线 lineId 集
+    //（renderLinesFC 据此跳过基础线层 feature，防半透明底线垫在渐变尾端底下透出）；
+    // fadeConnPlan＝connectorFadePlan 缓存（rebuildConnFade 复用，避免重复几何判定）；
+    // connFadeLayerIds＝已加的动态渐变层 id（conn-fade-<lineId>，退出聚焦时移除）。
+    fadeSet: new Set(),
+    fadeConnPlan: [],
+    connFadeLayerIds: [],
   };
 
   // ---------- 通用 ----------
@@ -130,6 +145,9 @@
   // 渲染同帧一致；与 WGS84 差数百米，全图 fit 无感）。导出走权威结构，不经此处。
   // 2026-11-22 改版：特征带 dim 位（S.dimmed 调光线集），各图层 paint 据此半透明
   //（分期四档/聚焦两模式共用；调光状态下重设 source 即刷新）。
+  // 2026-11-22 用户需求 3：fadeSet 中的联络线不再产出 'lines' 层 feature——渐变图层
+  // 接管其显示后，半透明底线会垫在渐变尾端底下透出，违反「另一端 alpha 0」；
+  // 但 S.dispBbox 记账照旧（只跳 feature 不跳 bbox——fitBounds/搜索定位不受影响）。
   function renderLinesFC() {
     S.dispBbox = new Map();
     const dc = S.dispCoord;
@@ -137,6 +155,7 @@
     for (const line of S.linesMap.values()) {
       let bb = null;
       const dim = S.dimmed.has(line.lineId) ? 1 : 0;
+      const fade = S.fadeSet.has(line.lineId);
       for (const seg of line.segments) {
         const coords = [];
         for (const pt of seg.coords) {
@@ -146,6 +165,7 @@
           bb = mergeBbox(bb, [p[0], p[1], p[0], p[1]]);
         }
         if (coords.length < 2) continue;
+        if (fade) continue;   // 渐变联络线不进基础线层（bbox 已记账，见上注）
         features.push({
           type: 'Feature',
           geometry: { type: 'LineString', coordinates: coords },
@@ -376,6 +396,10 @@
           stops: { type: 'geojson', data: renderStopsFC() },
           pills: { type: 'geojson', data: renderPillsFC() },
           arrows: { type: 'geojson', data: renderArrowsFC() },
+          // 联络线渐变 source（2026-11-22 用户需求 3）：lineMetrics:true 是 line-gradient
+          // 的前置要求；初始空 FC，聚焦时由 rebuildConnFade 动态填数＋逐线加层。
+          // 渐变图层不进初始 layers——聚焦才建（见 rebuildConnFade）。
+          'conn-fade': { type: 'geojson', lineMetrics: true, data: { type: 'FeatureCollection', features: [] } },
         },
         layers: [
           { id: 'bg', type: 'background', paint: { 'background-color': '#ffffff' } },   // 2026-11-22 三批：黑板→白板
@@ -399,6 +423,20 @@
 
     map.on('move', scheduleLabels);
     map.on('resize', scheduleLabels);
+    // 2026-11-22 用户需求 2：地图画布双击线路同样触发聚焦（与左栏行双击同一 toggle
+    // 语义——再双击同线退出）。命中 'lines' 层且非「仅显示」级时 preventDefault 阻止
+    // MapLibre 原生双击缩放（聚焦跳转与缩放抢相机）；未命中/displayOnly 不拦截，保留
+    // 原生缩放。displayOnly 拦截与地图点选同源——「他省线仅显示、无交互」裁定。
+    map.on('dblclick', (e) => {
+      let hits = [];
+      try { hits = map.queryRenderedFeatures({ point: e.point, layers: ['lines'] }); } catch (err) { return; }
+      const p = hits && hits[0] && hits[0].properties;
+      if (!p || p.lineId == null || p.lineId === '') return;
+      const line = S.linesMap.get(String(p.lineId));
+      if (line && V.lineLayerRank(line) === 'displayOnly') return;
+      e.preventDefault();
+      toggleFocus(String(p.lineId));
+    });
     for (const id of LINE_LAYER_IDS) {
       map.on('click', id, (e) => {
         const p = e.features && e.features[0] && e.features[0].properties;
@@ -535,6 +573,7 @@
     if (S.map.getSource('stops')) S.map.getSource('stops').setData(renderStopsFC());
     if (S.map.getSource('pills')) S.map.getSource('pills').setData(renderPillsFC());
     if (S.map.getSource('arrows')) S.map.getSource('arrows').setData(renderArrowsFC());
+    rebuildConnFade();   // 渐变特征坐标必须同帧过 S.dispCoord（2026-11-22 用户需求 3）
     scheduleLabels();
   }
   // 目标态恒存 S.basemap（按钮文案/署名即时跟随）；样式未就绪（buildMap 前/样式加载中）只置
@@ -549,19 +588,103 @@
   }
 
   // ---------- 分期四档 / 聚焦 / 调光 / 全局站名开关 ----------
-  // 调光应用：重算 S.dimmed → 四个 source 全量重设（渲染特征重带 dim 位）→ 标签重排。
-  // 与底图切换共用 render* 函数（互相独立、叠加不冲突——坐标变换与 dim 位各管各的）。
-  // 样式未就绪时只置 pending 标记（同底图三态模式），on('load') 后补应用，点击不丢失。
+  // 调光应用：重算 S.dimmed 与联络线渐变集 → 四个 source 全量重设（渲染特征重带 dim 位、
+  // fadeSet 线跳基础层）→ 渐变层重建 → 标签重排。与底图切换共用 render* 函数（互相独立、
+  // 叠加不冲突——坐标变换与 dim 位各管各的）。样式未就绪时只置 pending 标记（同底图三态
+  // 模式），on('load') 后补应用，点击不丢失。
   function applyDimState() {
     S.dimmed = V.computeDimmedSet(S.linesMap, { phase: S.phase, focus: S.focus });
+    updateFadeSet();   // fadeSet 须在 renderLinesFC 之前就绪（基础层跳 feature 依赖它）
     if (!S.map || !(S.styleReady || S.map.isStyleLoaded())) { S.dimPending = true; return; }
     S.dimPending = false;
     if (S.map.getSource('lines')) S.map.getSource('lines').setData(renderLinesFC());
     if (S.map.getSource('stops')) S.map.getSource('stops').setData(renderStopsFC());
     if (S.map.getSource('pills')) S.map.getSource('pills').setData(renderPillsFC());
     if (S.map.getSource('arrows')) S.map.getSource('arrows').setData(renderArrowsFC());
+    rebuildConnFade();
     scheduleLabels();
   }
+  // ---------- 联络线渐变高亮（2026-11-22 用户需求 3：聚焦线的绑定联络线沿线渐变透明） ----------
+  // 聚焦线 L 时，connects 含 L 的每条联络线渲染为：接 L 的一端不透明 → 沿线贝塞尔插值
+  // 降低透明度 → 另一端 alpha 0。技术约束：MapLibre 的 line-gradient 不能数据驱动
+  //（不能引用 feature 属性），且要求 source 开 lineMetrics:true、feature 为单条
+  // LineString——故共享一个 source（'conn-fade'）、每条绑定联络线动态 addLayer 一个层，
+  // 各自 line-gradient 用常量色（该线颜色）从 alpha1 渐到 alpha0，并以 filter
+  // ['==',['get','lineId'],…] 只渲染自己的 feature（层间互不串色）。几何方向靠坐标序
+  // 定向：拼接时 attachEnd===1 就反转坐标数组，保证梯度恒为「首端(接入端)不透明 →
+  // 末端 0」。渐变层不绑任何点击/hover（联络线本体的点选开面板走 'lines' 层——被
+  // fadeSet 排除后渐变层上点不到就算了，可接受）。
+  // fadeSet 重算（纯数据，不碰地图）：必须在任何 renderLinesFC 之前执行——基础线层
+  // 跳 feature 依赖它。plan 缓存进 S.fadeConnPlan 供 rebuildConnFade 复用。
+  function updateFadeSet() {
+    const plan = S.focus != null ? V.connectorFadePlan(S.linesMap, S.focus) : [];
+    S.fadeConnPlan = plan;
+    S.fadeSet = new Set(plan.map((it) => it.lineId));
+  }
+  const EMPTY_CONN_FC = { type: 'FeatureCollection', features: [] };
+  // 渐变层定义：line-cap/line-join 是 layout 属性（⚠ 放 paint 会整个 style 拒载全黑——
+  // 本项目踩过的坑）；线宽与线层同宽同缩放（V.zoomInterp(V.scaledSize(7),7)）。
+  function connFadeLayerDef(layerId, lineId, color) {
+    const hex = V.normalizeHex(color) || '#888888';
+    const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+    return {
+      id: layerId, type: 'line', source: 'conn-fade',
+      filter: ['==', ['get', 'lineId'], lineId],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-gradient': ['interpolate', ['linear'], ['line-progress'],
+          0, 'rgba(' + r + ',' + g + ',' + b + ',1)',
+          1, 'rgba(' + r + ',' + g + ',' + b + ',0)'],
+        'line-width': V.zoomInterp(V.scaledSize(7), 7),
+      },
+    };
+  }
+  // 重建渐变层：先移除旧动态层（getLayer 判断）；无聚焦或 plan 空 → fadeSet 清空、
+  // source 置空 FC；否则逐条产出拼接 LineString（segments 按 segIndex 拼接 → 过滤
+  // 有限坐标 → 逐点过 S.dispCoord 显示变换——与四 source 同帧，底图切换 gaode 下渐变
+  // 坐标才不漂）并 addLayer（插在 'pills-outer' 之前＝紧挨线层之上、药丸之下）。
+  // 挂接点：applyDimState 与 applyBasemapToMap 末尾（调光与底图切换都重设 source 坐标）；
+  // 样式未就绪的 pending 路径由既有 dimPending/basemapPending 补应用机制自然覆盖。
+  function rebuildConnFade() {
+    const map = S.map;
+    if (!map) return;
+    for (const id of S.connFadeLayerIds) {
+      if (map.getLayer(id)) map.removeLayer(id);
+    }
+    S.connFadeLayerIds = [];
+    const src = map.getSource('conn-fade');
+    const plan = S.fadeConnPlan || [];
+    if (!plan.length) {
+      if (src) src.setData(EMPTY_CONN_FC);
+      return;
+    }
+    const dc = S.dispCoord;
+    const feats = [];
+    for (const it of plan) {
+      const line = S.linesMap.get(it.lineId);
+      if (!line) continue;
+      const coords = [];
+      for (const seg of line.segments) {   // normalizeLines 已保证按 segIndex 升序
+        for (const pt of seg.coords) {
+          if (!pt || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
+          coords.push(dc(pt[0], pt[1]));
+        }
+      }
+      if (coords.length < 2) continue;   // 全无效坐标的线本就不进基础层，这里同样不进渐变
+      if (it.attachEnd === 1) coords.reverse();   // 方向定向：恒「首端＝接入聚焦线的一端」
+      feats.push({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: coords },
+        properties: { lineId: line.lineId, color: line.color },
+      });
+      const layerId = 'conn-fade-' + line.lineId;
+      const before = map.getLayer('pills-outer') ? 'pills-outer' : undefined;
+      map.addLayer(connFadeLayerDef(layerId, line.lineId, line.color), before);
+      S.connFadeLayerIds.push(layerId);
+    }
+    if (src) src.setData({ type: 'FeatureCollection', features: feats });
+  }
+
   // 分期四档循环：无 → 既有 → 已批复 → 远期 → 无（「无」＝全部正常显示）
   function syncPhaseUI() {
     const b = $('btnPhase');
@@ -572,8 +695,10 @@
     syncPhaseUI();
     applyDimState();
   }
-  // 聚焦：双击列表行切换（再双击同一行退出、双击别的行切换）、Esc 退出；
-  // 「仅显示」级（他省线）不可聚焦——setFocus 入口统一拦截（列表双击/搜索选中都走这里）
+  // 聚焦：双击列表行/双击地图线路切换（再双击同一对象退出、双击别的线切换）、Esc 退出；
+  // 「仅显示」级（他省线）不可聚焦——setFocus 入口统一拦截（列表双击/地图双击/搜索选中
+  // 都走这里）。2026-11-22 用户需求 1：进入聚焦时相机 fitBounds 跳到该线（退出聚焦
+  // 绝对不动相机——用户明令「再次双击不必跳回之前的视图」）。
   function setFocus(lineId) {
     const id = lineId || null;
     if (id != null) {
@@ -582,8 +707,41 @@
     }
     S.focus = id;
     syncFocusRows();
-    syncFocusBox();
+    syncFocusBox();        // 先把聚焦框显示出来——focusPadding 量其 offsetHeight 才拿得到
     applyDimState();
+    if (id != null) fitFocusLine(id);   // 需求 1：仅进入聚焦跳相机；setFocus(null) 不跳
+  }
+  // 2026-11-22 用户需求 1：聚焦线相机跳转——fitBounds 到该线渲染 bbox（S.dispBbox 与
+  // 渲染特征同帧，gaode 底图下也正确）；bbox 不存在时静默不跳。maxZoom 13 与搜索定位同档。
+  function fitFocusLine(id) {
+    const bb = S.dispBbox.get(id);
+    if (!bb || !S.map) return;
+    S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]],
+      { padding: focusPadding(), duration: 600, maxZoom: 13 });
+  }
+  // 面板可见性运行时探测：!el.hidden 且 rect.width>0（另有并行改动在做面板收起——
+  // 读实时状态即可自然兼容，不依赖静态假设，也不去改面板代码）。
+  function panelVisible(el) {
+    if (!el || el.hidden) return false;
+    return el.getBoundingClientRect().width > 0;
+  }
+  // 2026-11-22 用户需求 1：聚焦跳转的四边动态留白（线路相对界面四边保留合理距离居中，
+  // 线路面板显示时左侧边缘以线路面板为界）：
+  //   上＝#topbar 底缘＋24；左＝#linePanel 可见时其右缘＋24、否则 64；
+  //   下＝#focusBox 展开后的 offsetHeight＋24（syncFocusBox 已先显示，offsetHeight
+  //        强制布局拿得到）；右＝#infoPanel 可见时其宽度＋24、否则 64。
+  function focusPadding() {
+    const GAP = 24, FALLBACK = 64;
+    const topEl = $('topbar');
+    const topRect = topEl ? topEl.getBoundingClientRect() : null;
+    const top = topRect ? topRect.bottom + GAP : GAP;
+    const lp = $('linePanel');
+    const left = panelVisible(lp) ? lp.getBoundingClientRect().right + GAP : FALLBACK;
+    const fb = $('focusBox');
+    const bottom = fb && !fb.hidden ? fb.offsetHeight + GAP : GAP;
+    const ip = $('infoPanel');
+    const right = panelVisible(ip) ? ip.getBoundingClientRect().width + GAP : FALLBACK;
+    return { top, bottom, left, right };
   }
   function toggleFocus(lineId) { setFocus(S.focus === lineId ? null : lineId); }
   function clearFocus() { if (S.focus != null) setFocus(null); }
@@ -805,14 +963,17 @@
     input.blur();
     if (ent.type === 'line') {
       // 搜索选中线路＝聚焦（多选高亮已删）；「仅显示」级（他省线）不聚焦不开面板，
-      // 仅飞过去看（与地图点选/列表双击的「仅显示、无交互」裁定一致）
+      // 仅飞过去看（与地图点选/列表双击的「仅显示、无交互」裁定一致）——保持自带
+      // fitBounds padding 80 定位。非「仅显示」级走 setFocus（2026-11-22 用户需求 1
+      // 起聚焦自带动态留白跳转），不再单独 fitBounds——避免双重跳转。
       const line = S.linesMap.get(ent.id);
       const displayOnly = !!line && V.lineLayerRank(line) === 'displayOnly';
-      const bb = S.dispBbox.get(ent.id) || (ent.ref && ent.ref.bbox);
-      if (bb) {
-        S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 80, duration: 600, maxZoom: 13 });
-      }
-      if (!displayOnly) {
+      if (displayOnly) {
+        const bb = S.dispBbox.get(ent.id) || (ent.ref && ent.ref.bbox);
+        if (bb) {
+          S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 80, duration: 600, maxZoom: 13 });
+        }
+      } else {
         setFocus(ent.id);
         openLinePanel(ent.id);
       }
@@ -909,6 +1070,18 @@
   }
   function hideStopTip() { $('stopTip').hidden = true; }
 
+  // ---------- 线路面板收起/展开（2026-11-22 用户需求） ----------
+  // 收起＝藏 #linePanel、亮出左缘「线路」半出药丸 #linePanelTab；点药丸恢复面板。
+  // ⚠ #linePanel 的 display:flex 会压过 UA 样式表的 [hidden]{display:none}，index.html 已
+  // 显式补 #linePanel[hidden]{display:none}（legendPanel 注释同款坑），此处只管切 hidden。
+  // 会话内不持久化，刷新回展开（与底图三态等 UI 态一致）。
+  //（聚焦跳转 focusPadding() 运行时探测 linePanel 可见性，收起后左留白自动回 64，无需在此联动）
+  function setLinePanelCollapsed(collapsed) {
+    S.panelCollapsed = collapsed;
+    $('linePanel').hidden = collapsed;
+    $('linePanelTab').hidden = !collapsed;
+  }
+
   // ---------- 顶栏 / 面板交互 ----------
   //（2026-11-22 改版：图例联动段删除——三档线样与「突出既有」开关退役，图例卡只剩底图署名行）
   function wireUI() {
@@ -924,6 +1097,9 @@
     syncNamesUI();     // 与 S.namesOn 初始态（true）对齐：按钮文案「站名：显示」
     syncBasemapUI();   // 与 S.basemap 初始态（'off'）对齐：按钮文案「底图：无」、署名隐藏
     $('infoClose').addEventListener('click', () => { $('infoPanel').hidden = true; });
+    // 线路面板收起/展开（2026-11-22 用户需求）：面板头按钮收起、左缘药丸展开
+    $('linePanelCollapse').addEventListener('click', () => setLinePanelCollapsed(true));
+    $('linePanelTab').addEventListener('click', () => setLinePanelCollapsed(false));
     $('focusClose').addEventListener('click', clearFocus);
     document.addEventListener('keydown', (ev) => {
       if (ev.key !== 'Escape') return;

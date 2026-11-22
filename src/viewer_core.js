@@ -12,6 +12,8 @@
 // 2026-11-22 改版（用户八条指示）：渲染不再区分期次（删三档透明/远期虚线，导出同步纯色实线）、
 // 分期四档＋聚焦双模式调光（computeDimmedSet）、标签可见性优先级（visibleLabels）、
 // 普通站标签门槛 12→11、z<11 尺寸线性缩小（zoomInterp/scaledSize）、左栏类别过滤常量。
+// 2026-11-22 增：联络线渐变接入端判定（connectorFadePlan——聚焦线绑定的联络线沿线渐变
+// 透明，connects 无顺序语义、方向按几何最近端判；normalizeLines 同步保留 connects 字段）。
 
 (function (G) {
   'use strict';
@@ -145,6 +147,9 @@
           role: typeof p.role === 'string' ? p.role : '',
           layer: typeof p.layer === 'string' ? p.layer : '',
           loop: !!p.loop,
+          // 联络线接轨对象线 id 列表（2026-11-22 用户需求 3：聚焦渐变高亮用）——
+          // flatten 侧每段 feature 均带同值，此处首段建 line 对象时取一次即可
+          connects: Array.isArray(p.connects) ? p.connects.filter((s) => typeof s === 'string' && s) : [],
           segments: [],
         };
         out.set(id, line);
@@ -446,6 +451,63 @@
       .map((g) => ({ layer: g.layer, lines: g.lines.slice().sort(byOrder) }));
   }
 
+  // ---------- 联络线渐变接入端判定（2026-11-22 用户需求 3：聚焦高亮用） ----------
+  // connectorFadePlan(linesMap, focusId)：找 linesMap 中 connects 含 focusId 的每条线 C
+  //（联络线），返回 [{lineId, attachEnd}]——attachEnd∈{0,1} 表示接入聚焦线的一端是
+  // C 全部 segments 按 segIndex 拼接折线的首端(0)还是末端(1)。
+  // connects 无顺序语义（schema 未定义哪端对应哪个 id），方向靠几何最近端判定——
+  // 联络线与主线在接轨点物理相接：取拼接折线的首点与末点，分别算到聚焦线全部坐标点的
+  // 最小距离，近者为接入端；平手或任一方取不到有效坐标时兜底 0。
+  // focusId 为空 / 聚焦线不在 linesMap / 聚焦线无有效坐标 → 返回 []。
+  function connectorFadePlan(linesMap, focusId) {
+    const fid = focusId != null && focusId !== '' ? String(focusId) : null;
+    if (!fid || !(linesMap instanceof Map)) return [];
+    const focusLine = linesMap.get(fid);
+    if (!focusLine) return [];
+    const fpts = [];   // 聚焦线全部有效坐标点（接入端判定的靶点集）
+    for (const seg of focusLine.segments || []) {
+      for (const pt of (seg && seg.coords) || []) {
+        if (Array.isArray(pt) && Number.isFinite(pt[0]) && Number.isFinite(pt[1])) fpts.push(pt);
+      }
+    }
+    if (!fpts.length) return [];
+    const plan = [];
+    for (const line of linesMap.values()) {
+      if (!line || line.lineId == null) continue;
+      const conn = Array.isArray(line.connects) ? line.connects.map(String) : [];
+      if (conn.indexOf(fid) < 0) continue;   // connects 不含聚焦线 → 不参与
+      // 拼接折线首末点（normalizeLines 已保证 segments 按 segIndex 升序；逐点过滤无效坐标）
+      let head = null, tail = null;
+      for (const seg of line.segments || []) {
+        for (const pt of (seg && seg.coords) || []) {
+          if (!Array.isArray(pt) || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
+          if (head == null) head = pt;
+          tail = pt;
+        }
+      }
+      if (head == null || tail == null) {   // 联络线自身无有效坐标 → 兜底 0（防御）
+        plan.push({ lineId: String(line.lineId), attachEnd: 0 });
+        continue;
+      }
+      // 距离用平面近似坐标（planarOf 共享参考纬度取首末两点纬度均值——同一比较内同一
+      // 常数，只影响相对几何不影响结论；接入端与接轨点物理相接，远近悬殊不怕度量近似）
+      const lat0 = (head[1] + tail[1]) / 2;
+      const [hx, hy] = planarOf(head[0], head[1], lat0);
+      const [tx, ty] = planarOf(tail[0], tail[1], lat0);
+      let dHead = Infinity, dTail = Infinity;
+      for (const pt of fpts) {
+        const [px, py] = planarOf(pt[0], pt[1], lat0);
+        const dh = (hx - px) * (hx - px) + (hy - py) * (hy - py);
+        const dt = (tx - px) * (tx - px) + (ty - py) * (ty - py);
+        if (dh < dHead) dHead = dh;
+        if (dt < dTail) dTail = dt;
+      }
+      // 近者为接入端；平手（dHead === dTail，含全 Infinity 不可能——fpts 非空且有限）兜底 0
+      plan.push({ lineId: String(line.lineId), attachEnd: dTail < dHead ? 1 : 0 });
+    }
+    return plan;
+  }
+
   // ---------- 搜索匹配 ----------
   // 条目：{type:'line', id, text, aliases, ref} / {type:'stop', id, text, ref}。
   // 命中：主名或别名（大小写不敏感）前缀(rank0) > 包含(rank1)；线路优先于站；再按名称本地序。
@@ -680,7 +742,7 @@
     xmlEscape, normalizeHex, hexToKmlColor,
     normalizeLines, lineBboxOf, stopList, buildStopView, buildArrowViews,
     planGroupPillChain, planarOf, lineSummaries, layerGroups, visibleListGroups,
-    linePhaseOf, lineLayerRank, computeDimmedSet, nextPhase,
+    linePhaseOf, lineLayerRank, computeDimmedSet, nextPhase, connectorFadePlan,
     zoomInterp, scaledSize,
     matchEntries, filterLabels, visibleLabels,
     buildLineGeoJSON, buildLineKML,

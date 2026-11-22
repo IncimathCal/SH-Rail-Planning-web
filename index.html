@@ -94,10 +94,25 @@
       background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
       backdrop-filter: blur(6px); overflow: hidden;
     }
+    /* ⚠ hidden 坑（下方 legendPanel 注释同款）：#linePanel 的 display:flex 优先级高于 UA 样式表
+       的 [hidden]{display:none}，直接设 hidden 属性藏不住——收起功能必须显式补这条才能生效；
+       #linePanelTab 本身未设 display，一并防御免后人加 display 时踩坑 */
+    #linePanel[hidden], #linePanelTab[hidden] { display: none; }
+    /* 面板头改 flex：左标题＋右收起按钮（2026-11-22 用户需求：收起后左缘药丸代为展开） */
     #linePanel .panel-head {
-      padding: 8px 12px; font-weight: 600;
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 8px 8px 12px; font-weight: 600;
       border-bottom: 1px solid var(--panel-border); flex: none;
     }
+    #linePanel .panel-title {
+      flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    /* 收起按钮样式仿 #infoClose：无边框幽灵按钮、灰字 hover 变亮 */
+    #linePanelCollapse {
+      flex: none; border: none; background: none; color: var(--text-dim);
+      font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 6px;
+    }
+    #linePanelCollapse:hover { color: var(--text); }
     #lineList { overflow: auto; padding: 4px 0; flex: 1; }
     .line-group { margin-bottom: 2px; }
     .line-group-head {
@@ -123,6 +138,19 @@
       padding: 0 5px; border: 1px solid var(--panel-border); border-radius: 8px;
     }
     .panel-tip { padding: 8px 12px; color: var(--text-dim); font-size: 12px; }
+
+    /* 面板收起后的左缘「线路」半出药丸（2026-11-22 用户需求）：贴页面左缘垂直居中、
+       右缘全圆角＝右半胶囊形态、左缘贴边故不设左边框；默认隐藏，收起时由 viewer.js 亮出。
+       视觉基调与既有深色面板一致（--panel 底＋blur 磨砂） */
+    #linePanelTab {
+      position: absolute; left: 0; top: 50%; transform: translateY(-50%); z-index: 10;
+      writing-mode: vertical-rl; letter-spacing: 6px; font-weight: 600;
+      color: var(--text-dim); cursor: pointer; user-select: none;
+      background: var(--panel); border: 1px solid var(--panel-border); border-left: none;
+      border-radius: 0 999px 999px 0;
+      backdrop-filter: blur(6px); padding: 16px 7px;
+    }
+    #linePanelTab:hover { color: var(--text); }
 
     /* 右：信息面板（点线 / 点站 / 搜索选择） */
     #infoPanel {
@@ -238,9 +266,16 @@
   </header>
 
   <aside id="linePanel">
-    <div class="panel-head">线路</div>
+    <!-- 2026-11-22 用户需求：面板头加收起按钮，收起后由左缘「线路」药丸（#linePanelTab）代为展开 -->
+    <div class="panel-head">
+      <div class="panel-title">线路</div>
+      <button id="linePanelCollapse" title="收起线路面板">«</button>
+    </div>
     <div id="lineList"></div>
   </aside>
+
+  <!-- 收起态左缘半出药丸（默认隐藏；点击恢复线路面板，接线在 viewer.js wireUI） -->
+  <div id="linePanelTab" hidden title="展开线路面板">线路</div>
 
   <aside id="infoPanel" hidden>
     <div id="infoHead">

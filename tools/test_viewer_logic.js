@@ -293,6 +293,59 @@ eq(V.visibleLabels(vlLabels, 13, 800, { dimmedSet: ['lb', 'lc'] }).map((l) => l.
 eq(V.visibleLabels(null, 13, 800, { focus: 'la' }), [], 'null 标签不崩');
 eq(V.visibleLabels(vlLabels, 13, 800), V.visibleLabels(vlLabels, 13, 800, {}), '缺省 state＝无约束');
 
+// ---------- connectorFadePlan（联络线渐变接入端判定，2026-11-22 用户需求 3） ----------
+console.log('connectorFadePlan:');
+const fadeFC = fc(
+  lineFeat('fa', 0, 'existing', [[0, 0], [0, 3]], { name: 'A线', color: '#ff0000' }),            // 左侧竖线
+  lineFeat('fb', 0, 'existing', [[10, 0], [10, 3]], { name: 'B线', color: '#0000ff' }),          // 右侧竖线
+  lineFeat('fc', 0, 'existing', [[0, 1.5], [5, 1.5], [10, 1.5]],                                 // 横向联络线：首端近 A、末端近 B
+    { name: 'C联络线', role: 'connector', connects: ['fa', 'fb'] }),
+);
+const lmF = V.normalizeLines(fadeFC);
+eq(lmF.get('fc').connects, ['fa', 'fb'], 'normalizeLines 保留 connects');
+eq(lmF.get('fa').connects, [], '非联络线 connects 空数组（flatten 无该字段缺省）');
+eq(V.connectorFadePlan(lmF, 'fa'), [{ lineId: 'fc', attachEnd: 0 }], '聚焦 fa：C 首端近 fa → attachEnd 0');
+eq(V.connectorFadePlan(lmF, 'fb'), [{ lineId: 'fc', attachEnd: 1 }], '聚焦 fb：C 末端近 fb → attachEnd 1');
+eq(V.connectorFadePlan(lmF, 'zz'), [], 'connects 不含聚焦线（zz 无绑定联络线）→ []');
+eq(V.connectorFadePlan(lmF, null), [], 'focus null → []');
+eq(V.connectorFadePlan(lmF, ''), [], 'focus 空串 → []');
+eq(V.connectorFadePlan(null, 'fa'), [], 'linesMap 非 Map → []');
+// 聚焦线无有效坐标（NaN 点）→ []
+const lmF2 = V.normalizeLines(fc(
+  lineFeat('fz', 0, 'existing', [[0, 0], [1, 1]], { connects: ['fempty'] }),
+  { type: 'Feature', geometry: { type: 'LineString', coordinates: [[NaN, NaN], [NaN, NaN]] },
+    properties: { lineId: 'fempty', segIndex: 0, segStatus: 'existing' } },
+));
+eq(V.connectorFadePlan(lmF2, 'fz'), [], '聚焦线无有效坐标 → []');
+// 联络线自身无有效坐标 → 兜底 attachEnd 0（防御）
+const lmF3 = V.normalizeLines(fc(
+  lineFeat('fm', 0, 'existing', [[4, 0], [5, 0], [6, 0]], {}),
+  { type: 'Feature', geometry: { type: 'LineString', coordinates: [[NaN, NaN], [NaN, NaN]] },
+    properties: { lineId: 'fbad', segIndex: 0, segStatus: 'existing', connects: ['fm'] } },
+));
+eq(V.connectorFadePlan(lmF3, 'fm'), [{ lineId: 'fbad', attachEnd: 0 }], '联络线无有效坐标 → 兜底 0');
+// 两端到聚焦线等距（平手）→ 兜底 0
+const lmF4 = V.normalizeLines(fc(
+  lineFeat('fq', 0, 'existing', [[4, 0], [5, 0], [6, 0]], {}),
+  lineFeat('fe', 0, 'existing', [[5, -2], [5, 2]], { connects: ['fq'] }),   // 首(5,-2)/末(5,2) 距 fq 各 2
+));
+eq(V.connectorFadePlan(lmF4, 'fq'), [{ lineId: 'fe', attachEnd: 0 }], '两端等距平手 → 兜底 0');
+// 多条联络线绑定同一聚焦线：全部列出，各自判定
+const lmF5 = V.normalizeLines(fc(
+  lineFeat('fp', 0, 'existing', [[0, 0], [0, 5]], {}),
+  lineFeat('fc1', 0, 'existing', [[0, 0.5], [3, 0.5]], { connects: ['fp', 'fx1'] }),
+  lineFeat('fc2', 0, 'existing', [[3, 4.5], [0, 4.5]], { connects: ['fx2', 'fp'] }),   // 画反序：末端近 fp
+));
+eq(V.connectorFadePlan(lmF5, 'fp'), [{ lineId: 'fc1', attachEnd: 0 }, { lineId: 'fc2', attachEnd: 1 }],
+  '两条绑定联络线各判其端（fc2 反向画→末端近 fp）');
+// connects 脏数据（非字符串项过滤）
+const lmF6 = V.normalizeLines(fc(
+  lineFeat('fn', 0, 'existing', [[0, 0], [1, 1]], {}),
+  lineFeat('fd', 0, 'existing', [[9, 9], [9, 8]], { connects: ['fn', 42, null, ''] }),
+));
+eq(lmF6.get('fd').connects, ['fn'], 'connects 非字符串项被过滤');
+eq(V.connectorFadePlan(lmF6, 'fn'), [{ lineId: 'fd', attachEnd: 1 }], '脏 connects 过滤后仍命中（fd 末端(9,8)近 fn 末端(1,1)）');
+
 // ---------- visibleListGroups（左栏类别过滤；地图照画、搜索照收） ----------
 console.log('visibleListGroups:');
 const lgrVis = V.visibleListGroups(lm, ['联络线']);
