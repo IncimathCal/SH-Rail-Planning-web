@@ -783,6 +783,40 @@ eq(L.planGroupPillChain([[0, 0], [1, 0], [2, 0], [-10, 0]]), [2, 1, 0, 3], '最�
 const rp = [[3, 1], [-2, -2], [7, 5], [0, 9], [4, 4]];
 eq([...L.planGroupPillChain(rp)].sort((a, b) => a - b), [0, 1, 2, 3, 4], '五点返回完整排列');
 
+// ---------- 换乘节点组列表：搜索与分页（2026-11-22 用户需求：每页 8 个＋搜索框） ----------
+console.log('station group list:');
+eq(L.searchTermsOf(''), [], '空查询无词');
+eq(L.searchTermsOf('  龙阳路   L0021 '), ['龙阳路', 'l0021'], '按空白拆词、统一小写');
+eq(L.searchTermsOf(null), [], 'null 不崩');
+ok(L.matchesTerms('g0001 同站\nl0002 龙阳路', ['龙阳路']), '包含即命中');
+ok(L.matchesTerms('g0001 同站\nl0002 龙阳路', ['龙阳路', '同站']), '多词须全部命中（AND）');
+ok(!L.matchesTerms('g0001 同站\nl0002 龙阳路', ['龙阳路', '出闸']), '缺一词不命中');
+ok(L.matchesTerms('abc', []), '无词＝全部命中');
+ok(L.matchesTerms(undefined, ['x']) === false, '空文本不崩、不命中');
+// 检索文本：组号／类型中文标签／成员站的站号、站名、线路 id 与线名
+const GI = (sid) => ({
+  'l0002-s08': { lineId: 'l0002', lineName: '2号线', stopName: '龙阳路' },
+  'l0007-s05': { lineId: 'l0007', lineName: '7号线', stopName: '龙阳路' },
+})[sid];
+const gA = { id: 'g0001', type: 'same-station', stops: ['l0002-s08', 'l0007-s05'] };
+const txtA = L.groupSearchText(gA, GI);
+ok(txtA.includes('g0001') && txtA.includes('同站') && txtA.includes('l0002 2号线 龙阳路')
+  && txtA.includes('l0007-s05'), '检索文本含组号/类型/站号/线路/站名');
+eq(L.groupSearchText({ id: 'g0002', type: null, stops: [] }, GI), 'g0002\ntype 未定', '类型未定与空成员');
+eq(L.groupSearchText({ id: 'g0003', type: 'out-of-station', stops: ['l0099-s01'] }, GI),
+  'g0003\n出闸\nl0099-s01\n', '成员查不到所属线也不崩（仅站号可检索）');
+ok(L.matchesTerms(txtA, L.searchTermsOf('7号线')), '按线名命中');
+ok(L.matchesTerms(txtA, L.searchTermsOf('G0001')), '组号不区分大小写');
+ok(!L.matchesTerms(txtA, L.searchTermsOf('出闸')), '类型不符不命中');
+// 分页切片：每页 8 个、页码回正
+const R20 = Array.from({ length: 20 }, (_, i) => i);
+eq(L.pageSlice(R20, 1, 8), { rows: [0, 1, 2, 3, 4, 5, 6, 7], page: 1, pages: 3 }, '第 1 页 8 条');
+eq(L.pageSlice(R20, 3, 8).rows, [16, 17, 18, 19], '末页取余');
+eq(L.pageSlice(R20, 9, 8).page, 3, '页码超界回正到末页');
+eq(L.pageSlice(R20, 0, 8).page, 1, '页码 0 回正到 1');
+eq(L.pageSlice([], 5, 8), { rows: [], page: 1, pages: 1 }, '空列表：1 页 0 行');
+eq(L.LAYER_RESERVED, '预控通道', '预控通道类别名（不设站、默认远期、整线显示）');
+
 // ---------- 标定变换与瓦片数学（fmt/calibration@1 deg3 / @2 tps，文件存在时） ----------
 console.log('calibration:');
 const calibFile = require('path').join(__dirname, '..', 'data', 'calibration.json');

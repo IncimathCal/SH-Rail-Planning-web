@@ -29,7 +29,7 @@
   footer#status { grid-area: st; padding: 4px 10px; background: var(--panel);
     border-top: 1px solid var(--border); color: var(--dim); font-size: 12px; min-height: 22px; }
 
-  button, select, input[type=text] { font: inherit; }
+  button, select, input[type=text], input[type=search] { font: inherit; }
   button { background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
     border-radius: 4px; padding: 3px 10px; cursor: pointer; }
   button:hover { border-color: var(--acc); }
@@ -37,8 +37,9 @@
   button.danger { border-color: var(--err); color: var(--err); }
   button.mini { padding: 1px 6px; font-size: 12px; }
   button[disabled] { opacity: .45; cursor: default; }
-  input[type=text], input[type=color] { background: var(--bg); color: var(--fg);
+  input[type=text], input[type=search], input[type=color] { background: var(--bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
+  input[type=search] { -webkit-appearance: none; appearance: none; }   /* 去原生搜索框外观，与普通输入框同款 */
   label { color: var(--dim); }
   #bulkName summary, #secPanel summary { cursor: pointer; color: var(--dim); font-size: 12px; user-select: none; }
   #bulkNames { width: 100%; margin-top: 4px; min-height: 70px; resize: vertical;
@@ -83,8 +84,8 @@
   /* 导入源模块筛选行（全部/未建线/已建线三选；2026-11-22 分页＋筛选） */
   .imp-filter { display: flex; align-items: center; gap: 4px; margin: 2px 0 3px; }
   .imp-filter .imp-count { color: var(--dim); font-size: 11px; margin-left: 3px; }
-  /* 导入源模块页脚 / 线路分类组页脚（上一页/下一页＋页码/总页数；翻页为临时 UI 状态不进撤销） */
-  .imp-foot, .ll-foot { display: flex; align-items: center; gap: 6px; padding: 3px 2px;
+  /* 导入源模块页脚 / 线路分类组页脚 / 换乘节点组页脚（上一页/下一页＋页码/总页数；翻页为临时 UI 状态不进撤销） */
+  .imp-foot, .ll-foot, .sg-foot { display: flex; align-items: center; gap: 6px; padding: 3px 2px;
     color: var(--dim); font-size: 11px; }
 
   .line-row { display: flex; align-items: center; gap: 6px; padding: 3px 4px;
@@ -150,6 +151,11 @@
 
   .grp-row { padding: 3px 2px; border-bottom: 1px dashed var(--border); font-size: 12px; }
   .grp-row .m { color: var(--dim); }
+  /* 换乘节点组列表：组头计数／搜索框／命中高亮（2026-11-22 翻页＋搜索） */
+  .sg-head { display: flex; align-items: baseline; gap: 6px; margin-bottom: 2px; }
+  .sg-head .sg-count { color: var(--dim); font-size: 11px; }
+  #sgSearch { display: block; width: 100%; margin-bottom: 2px; }
+  #stationGroups .hl { color: var(--warn); }   /* 搜索命中片段（成员站名/线路 id/组号） */
 
   #canvas .hint { position: absolute; top: 8px; left: 10px; color: var(--dim);
     font-size: 12px; pointer-events: none; }
@@ -279,6 +285,11 @@
     <h3>编组</h3>
     <div class="body">
       <div id="pendingBox"></div>
+      <!-- 换乘节点组：组头计数＋搜索框（静态元素——列表重渲染只动 #stationGroups，输入焦点/输入法不丢）；
+           列表每页 8 个翻页。搜索与翻页均为临时 UI 状态，不进快照/撤销/自动暂存 -->
+      <div class="sg-head"><b>换乘节点组</b><span id="sgCount" class="sg-count"></span></div>
+      <input type="search" id="sgSearch" autocomplete="off" placeholder="搜索：站名／线路／组号"
+        title="按空格分隔多个关键词（都包含才显示）：匹配组号、类型（同站/出闸/接轨站）、成员站的站名、站号、线路 id 或线名；命中处橙色标出。Esc 清空搜索">
       <div id="stationGroups"></div>
       <hr style="border-color:var(--border);border-style:dashed">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">

@@ -511,6 +511,40 @@
     return out;
   }
 
+  /** 「预控通道」类别（meta.layer＝源图 Line 直属子图层名原样转写）：该类线不设站——建线默认
+   *  远期、无需加站即整线显示（2026-11-22 用户说明；查看器侧另有 联络线/他省 的类别裁定） */
+  const LAYER_RESERVED = '预控通道';
+
+  /** 换乘节点组列表的搜索与分页（纯逻辑，node 单测覆盖；2026-11-22 用户需求：每页 8 个＋搜索框）。
+   *  query 按空白拆词、不区分大小写、逐词「包含」且全部命中才算匹配（AND）；空 query＝全部命中。 */
+  function searchTermsOf(q) {
+    return String(q == null ? '' : q).toLowerCase().split(/\s+/).filter(Boolean);
+  }
+  function matchesTerms(text, terms) {
+    const low = String(text == null ? '' : text).toLowerCase();
+    return (terms || []).every((t) => low.includes(t));
+  }
+  /** 组 → 可检索文本：组号、类型（与列表下拉同款中文标签）、成员站的站号／站名／所属线路 id 与线名。
+   *  stopInfoOf(sid) 由调用方注入 → {lineId, lineName, stopName}（查不到返回 undefined 也不崩）。 */
+  const GROUP_TYPE_TEXT = { 'same-station': '同站', 'out-of-station': '出闸', junction: '接轨站', '': 'type 未定' };
+  function groupSearchText(group, stopInfoOf) {
+    const g = group || {};
+    const parts = [g.id, GROUP_TYPE_TEXT[g.type || '']];
+    for (const sid of g.stops || []) {
+      const o = stopInfoOf ? stopInfoOf(sid) : null;
+      parts.push(sid, o ? `${o.lineId || ''} ${o.lineName || ''} ${o.stopName || ''}` : '');
+    }
+    return parts.join('\n');
+  }
+  /** 列表分页切片：返回 {rows, page, pages}，page 越界/非整数回正到 [1, pages]（空列表 pages=1）。 */
+  function pageSlice(rows, page, size) {
+    const all = rows || [];
+    const n = Math.max(1, Math.floor(size) || 1);
+    const pages = Math.max(1, Math.ceil(all.length / n));
+    const p = Math.min(Math.max(1, Math.floor(page) || 1), pages);
+    return { rows: all.slice((p - 1) * n, p * n), page: p, pages };
+  }
+
   /** 接轨站（stationGroups type:'junction'）合并圈描边色：按成员线角色优先级取色，
    *  main > standalone > branch > connector（main 胜 branch、非联络线胜联络线为用户明定；
    *  standalone 与 branch 的先后为本实现假设，待用户确认）。
@@ -735,7 +769,7 @@
     nextStopSeq, fixStatusField, lineIssues, planBulkFill,
     planStopImport, applyStopImport, suggestForStop, transferMarkForStop, conflictsForStop, backfillTransferNames,
     layerGroupsOf, junctionStroke, planStationGroup, connValidTargets,
-    normalizeLineOrder,
+    normalizeLineOrder, LAYER_RESERVED, searchTermsOf, matchesTerms, groupSearchText, pageSlice,
     calibForward, calibInverse, tpsForward, tpsInverse, poly3Forward, poly3Inverse,
     lonToTileX, latToTileY, tileXToLon, tileYToLat };
   global.SHEditorLogic = SHLogic;
@@ -1465,24 +1499,28 @@
       const stops = line.stops;
       const segs = line.segments || [];
       const n = stops.length;
-      const segCount = line.loop ? n : Math.max(n - 1, 0);
+      // 站数<2（零设站的预控通道/联络线、仅 1 站的线）：整线单段、状态取线路级 status（建线默认
+      // 远期）——与 flatten「站数<2 整线单段」同口径（2026-11-22 用户需求：预控通道线不设站，
+      // 须在图上完全显示；此前只画弱化底 path，与查看器所见不一致）。缺省 future 同
+      // fixStatusField/migrateLineToV2 的兜底（线路级 status 的录入口已撤，载入统一补 future）
+      if (n < 2) {
+        const st = SEG_ORDER.includes(line.status) ? line.status : 'future';
+        el('path', { d: line.path, class: `seg-common seg-${st}`,
+          'vector-effect': 'non-scaling-stroke' }, gLine);
+        const wholeHit = el('path', { d: line.path, class: 'seg-hit',
+          'vector-effect': 'non-scaling-stroke' }, gLine);
+        wholeHit.dataset.lid = lid;   // 无 data-seg：整线单段不是站间段（选择模式点选语义同底 path）
+      }
+      const segCount = n < 2 ? 0 : (line.loop ? n : n - 1);
       for (let i = 0; i < segCount; i++) {
         const t1 = stops[i].t;
-        let t2;
-        if (line.loop) {
-          t2 = (i + 1 === n) ? stops[0].t : stops[i + 1].t;  // 末段环绕
-        } else {
-          if (i + 1 >= n) break;
-          t2 = stops[i + 1].t;
-        }
-        // 环线仅 1 站：环绕段 = 整条闭合路径
-        const dstr = (line.loop && n === 1) ? line.path : segPathString(ap, t1, t2);
+        const t2 = (line.loop && i + 1 === n) ? stops[0].t : stops[i + 1].t;  // 环线末段环绕
+        const dstr = segPathString(ap, t1, t2);
         if (!dstr) continue;
         // 段样式派生：分段实体（fmt/line@2）——sections[segments[i]].status；
-        // 站数<2（分段为空、状态由线路级 status 接管）或数据异常时逐级兜底
+        // 段记录缺失等数据异常时兜底 existing（站数<2 的线不进本循环，见上）
         const sec = line.sections && line.sections[segs[i]];
-        const st = sec && SEG_ORDER.includes(sec.status) ? sec.status
-          : (n < 2 && SEG_ORDER.includes(line.status) ? line.status : 'existing');
+        const st = sec && SEG_ORDER.includes(sec.status) ? sec.status : 'existing';
         el('path', { d: dstr, class: `seg-common seg-${st}`,
           'vector-effect': 'non-scaling-stroke' }, gLine);
         const hit = el('path', { d: dstr, class: 'seg-hit',
@@ -2057,6 +2095,47 @@
     return null;
   }
 
+  // 换乘节点组列表的搜索与翻页（2026-11-22 用户需求：同线路列表/导入源口径，每页 8 个＋搜索框）。
+  // 临时 UI 状态——不进快照、不进撤销、不进自动暂存，刷新回默认（同 impListUi/lineListUi）。
+  // 搜索框是 editor.html 里的静态元素：列表重渲染只动 #stationGroups，输入焦点与输入法不丢。
+  const SG_PAGE_SIZE = 8;
+  const sgUi = { page: 1, q: '' };
+  /** sid → 所属线路 id／线名／站名（检索文本与成员悬停提示用；每次渲染现建，规模小） */
+  function stopInfoIndex() {
+    const m = new Map();
+    for (const l of S.lines.values()) for (const st of l.stops) m.set(st.id, { lineId: l.id, lineName: l.name, stopName: st.name });
+    return m;
+  }
+  /** 搜索命中片段高亮：text 中命中任一关键词处包 <b class="hl">（逐段转义防注入；无关键词原样转义） */
+  function hlMatch(text, terms) {
+    if (text == null || text === '') return '';
+    if (!terms.length) return esc(text);
+    const re = new RegExp('(' + terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'gi');
+    return String(text).split(re).map((piece, i) => (i % 2 ? `<b class="hl">${esc(piece)}</b>` : esc(piece))).join('');
+  }
+  /** 当前搜索命中的组（保持 stationGroups 原序）与页切片；页码越界在此回正 */
+  function sgVisible() {
+    const sgs = (S.groups && S.groups.stationGroups) || [];
+    const info = stopInfoIndex();
+    const terms = searchTermsOf(sgUi.q);
+    const hit = terms.length ? sgs.filter((g) => matchesTerms(groupSearchText(g, (sid) => info.get(sid)), terms)) : sgs;
+    const pg = pageSlice(hit, sgUi.page, SG_PAGE_SIZE);
+    sgUi.page = pg.page;   // 拆组/换工作区后结果变短：页码回正（临时状态，无快照）
+    return { rows: pg.rows, page: pg.page, pages: pg.pages, total: sgs.length, hit: hit.length, info, terms };
+  }
+  /** 新建组后的左栏定位（临时 UI 状态）：翻到该组所在页；被当前搜索词滤掉则清空搜索
+   *  （输入框同步）——分页后新组追加在末尾，否则要翻到末页才看得到刚建的组 */
+  function pageGroupIntoView(gid) {
+    const sgs = (S.groups && S.groups.stationGroups) || [];
+    const info = stopInfoIndex();
+    const terms = searchTermsOf(sgUi.q);
+    const hit = terms.length ? sgs.filter((g) => matchesTerms(groupSearchText(g, (sid) => info.get(sid)), terms)) : sgs;
+    const list = hit.some((g) => g.id === gid) ? hit : sgs;
+    if (list === sgs && terms.length) { sgUi.q = ''; $('sgSearch').value = ''; }
+    const idx = list.findIndex((g) => g.id === gid);
+    if (idx >= 0) sgUi.page = Math.floor(idx / SG_PAGE_SIZE) + 1;
+  }
+
   function renderGroupsPanel() {
     if (!S.groups) {
       S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
@@ -2068,25 +2147,34 @@
         <button class="mini" id="btnClearPend" ${S.pending.length ? '' : 'disabled'}>清空</button></div>
       <div style="font-size:11px;color:var(--dim)">黄色虚线圈=就近提示，仅供参考，绝不自动合并。</div>` : '';
     // 换乘节点组（含线路所的组：线路所不得进 same-station/out-of-station，类型下拉锁死 junction）
-    const sgs = S.groups.stationGroups || [];
-    $('stationGroups').innerHTML = '<div style="margin-bottom:2px"><b>换乘节点组</b></div>' +
-      (sgs.length ? sgs.map((g) => {
-        const hasBlk = g.stops.some((sid) => stopKindOf(sid) === 'block');
-        const lock = hasBlk ? ' title="组内含线路所：只能为接轨站（junction）"' : '';
-        return `
-        <div class="grp-row" data-gid="${g.id}">
-          <b>${g.id}</b>
-          <select data-gtype="${g.id}"${lock}>
-            <option value="same-station" ${g.type === 'same-station' ? 'selected' : ''} ${hasBlk ? 'disabled' : ''}>同站</option>
-            <option value="out-of-station" ${g.type === 'out-of-station' ? 'selected' : ''} ${hasBlk ? 'disabled' : ''}>出闸</option>
-            <option value="junction" ${g.type === 'junction' ? 'selected' : ''}>接轨站</option>
-            <option value="" ${!g.type ? 'selected' : ''} ${hasBlk ? 'disabled' : ''}>type 未定</option>
-          </select>
-          <button class="mini danger" data-gdel="${g.id}">拆组</button>
-          <div class="m">${g.stops.map((s2) => esc(stopLabel(s2))).join('；')}</div>
-        </div>`;
-      }).join('')
-        : '<div style="color:var(--dim);font-size:12px">（暂无）</div>');
+    // ＋搜索框过滤＋每页 8 个翻页（组头计数：搜索时显示「命中 / 总数」）
+    const sg = sgVisible();
+    $('sgCount').textContent = sg.terms.length ? `${sg.hit} / ${sg.total} 组` : `${sg.total} 组`;
+    $('stationGroups').innerHTML = (sg.rows.length ? sg.rows.map((g) => {
+      const hasBlk = g.stops.some((sid) => stopKindOf(sid) === 'block');
+      const lock = hasBlk ? ' title="组内含线路所：只能为接轨站（junction）"' : '';
+      return `
+      <div class="grp-row" data-gid="${g.id}">
+        <b>${hlMatch(g.id, sg.terms)}</b>
+        <select data-gtype="${g.id}"${lock}>
+          <option value="same-station" ${g.type === 'same-station' ? 'selected' : ''} ${hasBlk ? 'disabled' : ''}>同站</option>
+          <option value="out-of-station" ${g.type === 'out-of-station' ? 'selected' : ''} ${hasBlk ? 'disabled' : ''}>出闸</option>
+          <option value="junction" ${g.type === 'junction' ? 'selected' : ''}>接轨站</option>
+          <option value="" ${!g.type ? 'selected' : ''} ${hasBlk ? 'disabled' : ''}>type 未定</option>
+        </select>
+        <button class="mini danger" data-gdel="${g.id}">拆组</button>
+        <div class="m">${g.stops.map((s2) => {
+          const o = sg.info.get(s2);
+          return `<span title="${esc(o ? o.lineName || '' : '')}">${hlMatch(stopLabel(s2), sg.terms)}</span>`;
+        }).join('；')}</div>
+      </div>`;
+    }).join('')
+      : `<div style="color:var(--dim);font-size:12px">${sg.total ? '（无匹配）' : '（暂无）'}</div>`)
+      + (sg.pages > 1 ? `<div class="sg-foot">
+        <button class="mini" data-sgpg="prev" ${sg.page <= 1 ? 'disabled' : ''}>上一页</button>
+        <span>${sg.page} / ${sg.pages} 页</span>
+        <button class="mini" data-sgpg="next" ${sg.page >= sg.pages ? 'disabled' : ''}>下一页</button>
+      </div>` : '');
     // 线组
     const lgs = S.groups.lineGroups || [];
     $('lineGroups').innerHTML = (lgs.length ? lgs.map((g) => {
@@ -2142,19 +2230,25 @@
       schema: 'fmt/line@2', id: lid, name: '',
       groupId: null, role: 'standalone', color: p.color,
       loop: /z/i.test(p.path), path: p.path, connects: [],
+      // 建线一律默认远期（2026-11-22 用户说明：预控通道线默认均为远期、不设站）——
+      // 站数<2 时线路级 status 即整线显示状态（renderWorld 整线单段），第 2 站落位时
+      // 由 fixStatusField 据此生成默认分段
       stops: [], segments: [], sections: [], status: 'future',
       info: {},
       meta: { created: today(), updated: today(), archived: false,
         aliases: [], sourceLayer: sourceLayer, stopSeq: 0 },
     };
-    // 站数<2 时分段为空（线路级 status 接管）；默认分段 [{name:"",status:"future"}]
-    // 在第 2 站落位时由 fixStatusField 依 line.status 生成（语义同「建新线默认分段」）。
     // 分类继承：path 记录带 layer 字段（.ai Line 直属子图层名，可能不存在——防御式读取）则原样带入。
     // 「更新path」不回写分类——layer 只在建线时作初始值，此后属人工设定（renderLineForm 分类下拉改）。
     if (typeof p.layer === 'string' && p.layer) line.meta.layer = p.layer;
     S.lines.set(lid, line);
     S.activeLine = lid; S.selStop = null;
     renderAll();
+    // 预控通道线不设站（用户说明，见上）：提示语不再引导设站
+    if (line.meta.layer === LAYER_RESERVED) {
+      setStatus(`已建线 ${lid}（${LAYER_RESERVED}）：默认远期、无需设站即整线显示。请在属性面板命名。`);
+      return;
+    }
     setStatus(`已建线 ${lid}。请在属性面板命名，再到「加站」模式点击线路设站。`);
   }
 
@@ -2648,6 +2742,7 @@
     const id = bumpCounter('nextG', 'g', 4);
     S.groups.stationGroups.push({ id, stops: fresh, type: plan.type, info: {} });
     S.pending = S.pending.filter((sid) => !fresh.includes(sid));   // 已入组的不再留在待编组
+    pageGroupIntoView(id);   // 新组在末尾：翻到其所在页（被搜索滤掉则清空搜索）
     renderAll();
     setStatus(plan.allBlock
       ? `拉框已建接轨站组 ${id}（${fresh.length} 个线路所；描边取成员线角色最高优先级色）`
@@ -3144,6 +3239,15 @@
   });
 
   $('stationGroups').addEventListener('click', (e) => {
+    // 列表翻页（临时 UI 状态）：重渲染后页脚滚回可见（同线路列表/导入源）
+    const pg = e.target.closest('[data-sgpg]');
+    if (pg && !pg.disabled) {
+      sgUi.page += pg.dataset.sgpg === 'prev' ? -1 : 1;
+      renderGroupsPanel();
+      const foot = $('stationGroups').querySelector('.sg-foot');
+      if (foot) foot.scrollIntoView({ block: 'nearest' });
+      return;
+    }
     const gid = e.target.dataset.gdel;
     if (!gid) return;
     snapshot();
@@ -3163,6 +3267,23 @@
     }
     snapshot();   // 组类型切换可撤销（与建组/拆组一致）
     g.type = e.target.value || null; renderWorld(); autosave();
+    // 有搜索词时重渲染保持列表如实（类型是检索字段之一，改后该行可能不再命中）；
+    // 无搜索词不重渲染：保住下拉焦点，便于连续改多行
+    if (searchTermsOf(sgUi.q).length) renderGroupsPanel();
+  });
+  // 换乘节点组搜索框（静态元素，见 editor.html）：逐键过滤（含中文输入法组词中的 input）、回第 1 页
+  $('sgSearch').addEventListener('input', (e) => {
+    sgUi.q = e.target.value; sgUi.page = 1;
+    renderGroupsPanel();
+  });
+  // 搜索框内 Esc＝清空搜索；不冒泡到全局 Esc（取消选择），免得连待编组一起清掉。
+  // 输入法组词中的 Esc 交给输入法自己（取消组词），不拦不改输入框
+  $('sgSearch').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !e.isComposing && e.target.value) {
+      e.preventDefault(); e.stopPropagation();
+      e.target.value = ''; sgUi.q = ''; sgUi.page = 1;
+      renderGroupsPanel();
+    }
   });
 
   $('pendingBox').addEventListener('click', (e) => {
@@ -3190,6 +3311,7 @@
       const id = bumpCounter('nextG', 'g', 4);
       S.groups.stationGroups.push({ id, stops: [...S.pending], type: plan.type, info: {} });
       S.pending = [];
+      pageGroupIntoView(id);   // 新组在末尾：翻到其所在页（被搜索滤掉则清空搜索）
       renderAll();
       setStatus(plan.allBlock
         ? `已建接轨站组 ${id}（全线路所：合并为普通尺寸虚线圈，描边取成员线角色最高优先级色）。`
