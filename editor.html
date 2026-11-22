@@ -118,6 +118,8 @@
     border: 1px solid var(--acc); border-radius: 3px; color: var(--acc); cursor: pointer; }
   .namehint:hover { background: var(--acc); color: #fff; }
   .stop-row .namehint.stop-suggest { flex: none; padding: 1px 5px; }
+  /* 同站不同名冲突 chip（2026-11-22 方案一）：虚线边框＋⚠ 区别于普通建议，可点选采用其一 */
+  .stop-row .namehint.stop-conflict { flex: none; padding: 1px 5px; border-style: dashed; }
   /* 「换」chip：该站位置来自 Trans 层换乘标（非交互提示，区别于可点击的建议名 chip） */
   .stop-row .stop-trans { flex: none; font-size: 11px; padding: 1px 4px; border-radius: 3px;
     color: var(--dim); border: 1px solid var(--dim); cursor: help; }

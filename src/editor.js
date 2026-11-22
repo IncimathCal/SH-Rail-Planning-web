@@ -407,34 +407,69 @@
     return best;
   }
 
+  /** 站点 t 就近查预置站的同站不同名冲突（|Δt| ≤ dtEps）；返回 [{name, lines}] 或 null。仅展示用——
+   *  多名并列供人工点选采用其一，绝不自动写入（2026-11-22 用户裁定「方案一」，见 backfillTransferNames）。 */
+  function conflictsForStop(item, t, dtEps = 0.002) {
+    if (!item) return null;
+    let best = null;
+    for (const s of item.stops || []) {
+      if (!s.nameConflict || !s.nameConflict.length) continue;
+      const d = Math.abs(s.t - t);
+      if (d <= dtEps && (!best || d < best.d)) best = s.nameConflict;
+    }
+    return best;
+  }
+
   /** 换乘站名回填（2026-11-22 需求 3，node 单测覆盖）：从各线**已命名**的换乘标站收集
-   *  {transId → 站名}（先到先得，同站多线应同名），写回预置里同 trans id 且**还缺建议名**的站
+   *  {transId → {站名 → [所用线路 id]}}，写回预置里同 trans id 且**还缺建议名**的站
    *  （只填空缺、绝不覆盖已有 nameSuggestion；manualName=true 标记人工回填来源）。
+   *  同站不同名（2026-11-22 用户裁定「方案一」）：同一换乘标被录成 ≥2 个名字时**不自动填补**——
+   *  换乘标是物理站、站名属于「线路×站」，多名多为有意（市域/国铁与地铁命名体系不同），不该被
+   *  自动统一；该预置站改标 nameConflict=[{name, lines}]，站列表并列显示供人工点选其一。此前若已按
+   *  单名回填过（manualName），冲突出现时撤回该回填建议（它基于不完整信息）；源图文字建议不动。
    *  pairs = [{line, preset}]（preset 由 UI 层 matchPresetForLine 预解析）；
    *  presets = S.stationPresets（原地修改，内存级即改即生效，不落盘）。
-   *  返回 {filled, names}：填补的预置站数、收集到的换乘站名表。 */
+   *  返回 {filled, conflicts, byMark}：填补的预置站数、处于多名冲突的换乘标数（按 transId 去重）、收集表。 */
   function backfillTransferNames(pairs, presets, dtEps = 0.002) {
-    const names = new Map();
+    const byMark = new Map();
     for (const { line, preset } of pairs || []) {
       if (!line || !preset) continue;
       for (const st of line.stops || []) {
         if (st.kind === 'block' || st.kind === 'arrow') continue;   // 线路所/箭头不参与
         if (!st.name || !st.name.trim()) continue;                  // 只收已命名站
         const m = transferMarkForStop(preset, st.t, dtEps);
-        if (m && !names.has(m.id)) names.set(m.id, st.name.trim());
+        if (!m) continue;
+        let byName = byMark.get(m.id);
+        if (!byName) byMark.set(m.id, byName = new Map());
+        const nm = st.name.trim();
+        if (!byName.has(nm)) byName.set(nm, []);
+        const lids = byName.get(nm);
+        if (!lids.includes(line.id)) lids.push(line.id);
       }
     }
     let filled = 0;
+    const conflictIds = new Set();
     for (const it of presets || []) {
       for (const s of it.stops || []) {
-        if (s.transfer && names.has(s.transfer) && !s.nameSuggestion) {
-          s.nameSuggestion = names.get(s.transfer);
+        if (!s.transfer) continue;
+        const byName = byMark.get(s.transfer);
+        if (!byName) { delete s.nameConflict; continue; }   // 已无已命名站命中（站名被清空等）：清冲突标记
+        const names = [...byName.keys()];
+        if (names.length >= 2) {
+          if (s.manualName) { delete s.nameSuggestion; delete s.manualName; }   // 撤回基于单名的回填
+          s.nameConflict = names.map((name) => ({ name, lines: byName.get(name).slice() }));
+          conflictIds.add(s.transfer);
+          continue;
+        }
+        delete s.nameConflict;   // 曾冲突、现已统一：清标记，按单名处理
+        if (!s.nameSuggestion) {
+          s.nameSuggestion = names[0];
           s.manualName = true;
           filled++;
         }
       }
     }
-    return { filled, names };
+    return { filled, conflicts: conflictIds.size, byMark };
   }
 
   /** 线路按 meta.layer 分组（分类＝源图 Line 直属子图层名，用户自有图层词汇，与 sourceLayer 同性质）。
@@ -698,7 +733,7 @@
     pruneSections, migrateLineToV2, planSectionSplit, applySectionMerge, sectionSpanOf, sectionIssuesOf,
     canPlaceArrow, planGroupPillChain, nextStopKind,
     nextStopSeq, fixStatusField, lineIssues, planBulkFill,
-    planStopImport, applyStopImport, suggestForStop, transferMarkForStop, backfillTransferNames,
+    planStopImport, applyStopImport, suggestForStop, transferMarkForStop, conflictsForStop, backfillTransferNames,
     layerGroupsOf, junctionStroke, planStationGroup, connValidTargets,
     normalizeLineOrder,
     calibForward, calibInverse, tpsForward, tpsInverse, poly3Forward, poly3Inverse,
@@ -1852,11 +1887,12 @@
         const it = matchPresetForLine(l);
         if (!it) return `<div class="fld"><label>站圆预置</label><span style="flex:1;color:var(--dim);font-size:11px">（无匹配${S.stationPresets.length ? '' : '——未载入预置文件'}）</span></div>`;
         const ns = it.stops.filter((s) => s.nameSuggestion).length;
+        const nc = it.stops.filter((s) => s.nameConflict && s.nameConflict.length).length;
         return `<div class="fld"><label>站圆预置</label><span style="flex:1" class="preset-line">
           <button class="mini primary" id="lfImportStops" title="按站圆圆心的弧长投影 t 批量落站；已有站 |Δt|<0.002 跳过；撤销一次回退整批">从预置导入车站</button>
           <button class="mini primary" id="lfAdoptNames" ${ns ? '' : 'disabled'}
-            title="当前线所有空名普通站按 t 就近采纳站圆预置的建议名；已有名站与线路所跳过；错了可手动改；撤销一次回退整批">采用全部建议名</button>
-          <span style="color:var(--dim);font-size:11px">${esc(it.stationGroup)} · ${it.stops.length} 圆${ns ? ` · ${ns} 带站名建议` : ''}</span>
+            title="当前线所有空名普通站按 t 就近采纳站圆预置的建议名；已有名站与线路所跳过；同站不同名的换乘站不处理（站列表 ⚠ 标出，须逐个点选）；错了可手动改；撤销一次回退整批">采用全部建议名</button>
+          <span style="color:var(--dim);font-size:11px">${esc(it.stationGroup)} · ${it.stops.length} 圆${ns ? ` · ${ns} 带站名建议` : ''}${nc ? ` · <span title="此换乘站在不同线路被录成了不同名字，未自动填补；站列表 ⚠ 标出，点选其一或手动输入">${nc} 个同站不同名</span>` : ''}</span>
         </span></div>`;
       })()}
       <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
@@ -1865,6 +1901,12 @@
         <button class="mini ${l.meta && l.meta.archived ? '' : 'danger'}" id="lfArchive">
           ${l.meta && l.meta.archived ? '取消归档' : '归档'}</button>
       </div>`;
+  }
+
+  /** 线路显示标签（同站不同名提示用）：有名称则「名称（id）」，否则 id */
+  function lineLabelOf(lid) {
+    const l = S.lines.get(lid);
+    return l && l.name ? `${l.name}（${lid}）` : lid;
   }
 
   function renderStopList() {
@@ -1901,6 +1943,16 @@
         : '';
       // 「换」chip：该站位置来自 Trans 层换乘标（大圆=双线/药丸=多线），编组时重点核对；仅提示，编组绝不自动
       const tfm = preset && !isBlk && !isArr ? transferMarkForStop(preset, st.t) : null;
+      // 同站不同名（2026-11-22 用户裁定方案一）：此换乘标在其他线路被录成 ≥2 个名字，回填未自动填补——
+      // 空名站并列显示每个名字一个可点 chip（点哪个用哪个，复用建议 chip 的点击采用与手动输入保护）；
+      // 已命名站只给非交互提示（便于发现笔误或有意异名后手动统一）
+      const hasName = !!(st.name && st.name.trim());
+      const cfl = preset && !isBlk && !isArr ? conflictsForStop(preset, st.t) : null;
+      const cflTitle = cfl
+        ? `同站不同名：此换乘站在其他线路被录成了不同的名字——`
+          + cfl.map((c) => `「${c.name}」（${c.lines.map(lineLabelOf).join('、')}）`).join('／')
+          + `。未自动填补，${hasName ? '想统一请手动改站名' : '点哪个用哪个，也可不用、手动输入'}`
+        : '';
       const nk = nextStopKind(st.kind, { isLoop: l.loop, isEnd: i === 0 || i === l.stops.length - 1 });
       const cur = isBlk ? 'block' : isArr ? 'arrow' : null;
       return `
@@ -1912,6 +1964,9 @@
         ${sug ? `<span class="namehint stop-suggest" data-sugsid="${st.id}" data-sugname="${esc(sug.name)}"
           title="${esc(sugTitle)}">${esc(sug.name)}</span>` : ''}
         ${tfm ? `<span class="stop-trans" title="该站位置来自 Trans 层换乘标 ${esc(tfm.id)}（${tfm.kind === 'circle' ? '双线大圆' : '多线药丸'}）——此处为换乘，编组时重点核对；编组需人工完成，预置不自动建组">换</span>` : ''}
+        ${cfl && !hasName ? cfl.map((c) => `<span class="namehint stop-conflict" data-sugsid="${st.id}" data-sugname="${esc(c.name)}"
+          title="${esc(cflTitle)}">⚠ ${esc(c.name)}</span>`).join('') : ''}
+        ${cfl && hasName ? `<span class="stop-trans" title="${esc(cflTitle)}">⚠ 异名</span>` : ''}
         <input type="text" value="${st.t.toFixed(6)}" data-tedit="${st.id}"
           class="tin${tBad ? ' warn' : ''}" title="弧长位置 t∈[0,1]，可手改（如起点改 0、开线终点改 1）">
         <button class="mini kind-tgl ${cur ? 'primary' : ''}" data-kind="${st.id}"
@@ -2151,18 +2206,22 @@
     if (!l) { setStatus('没有当前线路，无法采用建议名。', true); return; }
     const preset = matchPresetForLine(l);
     if (!preset) { setStatus('当前线路没有匹配的站圆预置（预置按几何签名绑定，与 path-NN 命名无关）。', true); return; }
-    let named = 0, noSug = 0, blk = 0, arr = 0;
+    let named = 0, noSug = 0, blk = 0, arr = 0, conflictN = 0;
     const pairs = [];
     for (const st of l.stops) {
       if (st.kind === 'block') { blk++; continue; }       // 线路所可无名，不参与建议名
       if (st.kind === 'arrow') { arr++; continue; }       // 出省箭头非站点，不参与建议名
       if (st.name && st.name.trim()) { named++; continue; }
+      // 同站不同名（2026-11-22 用户裁定方案一）：多名冲突站一律跳过，须人工在站列表点选——
+      // 批量采用会替用户裁决名字，正是冲突标记要避免的
+      if (conflictsForStop(preset, st.t)) { conflictN++; continue; }
       const sug = suggestForStop(preset, st.t);
       if (sug) pairs.push([st, sug]);
       else noSug++;
     }
     if (!pairs.length) {
       setStatus(`没有可采用的建议名：${noSug} 个空名站无就近建议（|Δt|>0.002）`
+        + (conflictN ? `，${conflictN} 个换乘站同站不同名未处理（站列表 ⚠ 标出，请逐个点选或手动输入）` : '')
         + (named ? `，${named} 站已有名跳过` : '') + '。');
       return;
     }
@@ -2172,6 +2231,7 @@
     renderAll();
     setStatus(`已采用 ${pairs.length} 个建议名（空名站按 t 就近写入，可手动修改）`
       + `、跳过 ${named} 个已有名`
+      + (conflictN ? `、${conflictN} 个换乘站同站不同名（未处理，站列表 ⚠ 标出，请逐个点选或手动输入）` : '')
       + (blk ? `、${blk} 个线路所` : '')
       + (arr ? `、${arr} 个出省箭头` : '')
       + (noSug ? `、${noSug} 个空名站无就近建议（|Δt|>0.002）` : '')
@@ -2796,11 +2856,11 @@
       st.name = e.target.value;
       line.meta.updated = today();
       e.target.classList.toggle('warn', !st.name && st.kind !== 'block');
-      // 手动输入非空即移除该行挂着的建议 chip（2026-11-22 需求 2 前半）：
+      // 手动输入非空即移除该行挂着的建议/冲突 chips（2026-11-22 需求 2 前半）：
       // 站名逐键已写入数据层，但列表不重渲染、chip 会过期挂着，误点将覆盖手输名（点击处另有兜底）
       if (st.name.trim()) {
-        const chip = e.target.closest('.stop-row') && e.target.closest('.stop-row').querySelector('.stop-suggest');
-        if (chip) chip.remove();
+        const row = e.target.closest('.stop-row');
+        if (row) for (const chip of row.querySelectorAll('.namehint')) chip.remove();
       }
       // 站名不上画布（只在 title 提示里）：逐键仅更新该站 title，不全量重绘（合并圈成员留待下次全量渲染）
       const c = world.querySelector(`.stop-c[data-sid="${CSS.escape(sid)}"]`);
@@ -3490,11 +3550,10 @@
   function backfillTransfersBeforeSave() {
     if (!$('backfillTrans').checked) return;
     const pairs = [...S.lines.values()].map((l) => ({ line: l, preset: matchPresetForLine(l) }));
-    const { filled } = backfillTransferNames(pairs, S.stationPresets);
-    if (filled) {
-      renderStopList();   // 新建议 chips 立即可见
-      toast(`填补了 ${filled} 个换乘站站名空缺`);
-    }
+    const { filled, conflicts } = backfillTransferNames(pairs, S.stationPresets);
+    renderLineForm(); renderStopList();   // 建议与 ⚠ 冲突标记随预置内存变化即时反映（属性面板信息行含冲突数）
+    // 同站不同名的冲突不弹 toast 吵人（站列表 ⚠ 常驻可见），仅在有填补时顺带报数
+    if (filled) toast(`填补了 ${filled} 个换乘站站名空缺${conflicts ? `；${conflicts} 个同站不同名未填补` : ''}`);
   }
 
   // 回填开关状态：默认开（只补缺、无破坏性），用户改动持久 localStorage
@@ -3510,13 +3569,13 @@
   /** 数据载入完成后自动回填一次（2026-11-22 用户反馈：回填原先只挂在「保存工作区」上，
    *  刷新后预置从磁盘恢复原状、必须再保存一次才回来）。boot／恢复本地暂存／载入工作区
    *  三个数据就绪点各调一次：尊重开关；幂等（只填空缺，先前已填的不动）；静默（不弹
-   *  toast——boot 场景弹了也会被后续初始化状态盖掉），确有填补时刷新站列表让 chips 即现 */
+   *  toast——boot 场景弹了也会被后续初始化状态盖掉），确有填补或冲突标记时刷新站列表与属性面板 */
   function backfillTransfersOnLoad() {
     if (!$('backfillTrans').checked) return;
     if (!S.stationPresets.length) return;
     const pairs = [...S.lines.values()].map((l) => ({ line: l, preset: matchPresetForLine(l) }));
-    const { filled } = backfillTransferNames(pairs, S.stationPresets);
-    if (filled) renderStopList();
+    const { filled, conflicts } = backfillTransferNames(pairs, S.stationPresets);
+    if (filled || conflicts) { renderLineForm(); renderStopList(); }
   }
 
   $('btnSaveWorkspace').onclick = async () => {

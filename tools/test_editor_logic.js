@@ -503,6 +503,46 @@ ok(L.transferMarkForStop(null, 0.5) === null, '无预置项不崩');
   ];
   eq(L.backfillTransferNames([{ line: lineB, preset: presetA }], [mkPreset([{ t: 0.8, transfer: 'trans-002' }, { t: 0.9, transfer: 'trans-002' }])]).filled, 0, '线路所/出省箭头不收集');
 }
+// 10d) 同站不同名（2026-11-22 用户裁定方案一）：多名即冲突、不自动填补、并列供人工点选
+{
+  const mkPreset = (stops) => ({ stops });
+  const mkLineWith = (id, stops) => { const l = mkLine(false); l.id = id; l.stops = stops; return l; };
+  const pA = mkPreset([{ t: 0.5, transfer: 'trans-010' }]);
+  const pB = mkPreset([{ t: 0.52, transfer: 'trans-010' }]);
+  const lineX = mkLineWith('l0001', [{ id: 'x-s01', name: '虹桥火车站', t: 0.5 }]);
+  const lineY = mkLineWith('l0002', [{ id: 'y-s01', name: '虹桥站', t: 0.52 }]);
+  let r = L.backfillTransferNames([{ line: lineX, preset: pA }, { line: lineY, preset: pB }], [pA, pB]);
+  eq(r.filled, 0, '同站不同名：不自动填补');
+  eq(r.conflicts, 1, '冲突按换乘标去重计数');
+  ok(!pA.stops[0].nameSuggestion && !pB.stops[0].nameSuggestion, '冲突站两线预置都无建议');
+  eq(pA.stops[0].nameConflict.length, 2, '冲突名单并列两个名字');
+  eq(pA.stops[0].nameConflict.map((c) => c.name).join('/'), '虹桥火车站/虹桥站', '名单顺序＝收集顺序');
+  eq(pA.stops[0].nameConflict[0].lines.join(','), 'l0001', '名字带来源线路');
+  ok(L.suggestForStop(pA, 0.5) === null, '冲突站无建议名');
+  eq(L.conflictsForStop(pB, 0.5201).length, 2, 'conflictsForStop 就近取冲突名单');
+  ok(L.conflictsForStop(pA, 0.9) === null, '非冲突位置无冲突');
+  ok(L.conflictsForStop(null, 0.5) === null, '无预置项不崩');
+  // 同名多线不算冲突：正常回填；曾冲突的标记清除
+  const lineZ = mkLineWith('l0003', [{ id: 'z-s01', name: '虹桥火车站', t: 0.5 }]);
+  const pC = mkPreset([{ t: 0.5001, transfer: 'trans-010' }]);
+  r = L.backfillTransferNames([{ line: lineX, preset: pA }, { line: lineZ, preset: pC }], [pA, pC]);
+  eq(r.filled, 2, '同名多线不算冲突，正常回填');
+  eq(r.conflicts, 0, '无冲突');
+  ok(pA.stops[0].nameConflict === undefined, '统一后清除冲突标记');
+  eq(pA.stops[0].nameSuggestion, '虹桥火车站', '统一后按单名回填');
+  // 曾单名回填、后出现异名：撤回回填建议、改标冲突
+  r = L.backfillTransferNames([{ line: lineX, preset: pA }, { line: lineY, preset: pB }], [pA, pB]);
+  eq(r.conflicts, 1, '后出现异名即冲突');
+  ok(!pA.stops[0].nameSuggestion && !pA.stops[0].manualName, '撤回基于单名的回填建议');
+  // 冲突站若已有源图文字建议（非回填）：保留不动，但仍标冲突
+  const pD = mkPreset([{ t: 0.5, transfer: 'trans-010', nameSuggestion: '源图文字' }]);
+  r = L.backfillTransferNames([{ line: lineX, preset: pA }, { line: lineY, preset: pB }], [pA, pB, pD]);
+  eq(pD.stops[0].nameSuggestion, '源图文字', '冲突站的源图文字建议保留');
+  eq(pD.stops[0].nameConflict.length, 2, '源图建议站同样标冲突');
+  // 站名清空后不再命中：冲突标记清除
+  r = L.backfillTransferNames([{ line: mkLineWith('l0001', [{ id: 'x-s01', name: '', t: 0.5 }]), preset: pA }], [pA]);
+  ok(pA.stops[0].nameConflict === undefined, '无已命名站命中则清冲突标记');
+}
 // 11) t=1 合法（域改 [0,1] 双闭，2026-11-21）：落末位、簿记成立、不触发递增告警
 let pt = mkLine(false);
 pt.stops = [{ id: 'l0001-s01', name: 'a', t: 0.3 }];
