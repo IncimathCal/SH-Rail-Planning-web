@@ -470,6 +470,39 @@ eq(L.transferMarkForStop(itemT, 0.2), null, '非换乘站无标记');
 ok(L.transferMarkForStop(itemT, 0.9) === null, '超出 dtEps 无标记');
 ok(L.transferMarkForStop({ stops: [{ t: 0.5, nameSuggestion: 'x' }] }, 0.5) === null, '无 transfer 字段不标记');
 ok(L.transferMarkForStop(null, 0.5) === null, '无预置项不崩');
+// 10c) 换乘站名回填 backfillTransferNames（2026-11-22 需求 3：已命名「换」站 → 预置空缺建议）
+{
+  const mkPreset = (stops) => ({ stops });
+  const lineA = mkLine(false);
+  lineA.stops = [
+    { id: 'a-s01', name: '虹桥路', t: 0.5 },
+    { id: 'a-s02', name: '', t: 0.7 },
+    { id: 'a-s03', name: '某线路所', t: 0.8, kind: 'block' },
+    { id: 'a-s04', name: '某箭头', t: 0.9, kind: 'arrow' },
+  ];
+  const presetA = mkPreset([
+    { t: 0.5, transfer: 'trans-001', transferKind: 'circle' },
+    { t: 0.9, transfer: 'trans-002' },
+  ]);
+  const presetB = mkPreset([
+    { t: 0.5001, transfer: 'trans-001', transferKind: 'circle' },
+    { t: 0.6, transfer: 'trans-003', nameSuggestion: '已有建议' },
+  ]);
+  const res = L.backfillTransferNames([{ line: lineA, preset: presetA }], [presetA, presetB]);
+  eq(res.filled, 2, '命名换乘站回填到两条预置的空缺（同 trans id 多线各计一个）');
+  eq(presetA.stops[0].nameSuggestion, '虹桥路', '本线预置被回填');
+  ok(presetB.stops[0].manualName === true, '回填站带 manualName 标记');
+  eq(L.suggestForStop(presetB, 0.5001).manual, true, 'suggestForStop 透出 manual 来源');
+  ok(presetB.stops[1].nameSuggestion === '已有建议' && !presetB.stops[1].manualName, '已有建议不被覆盖');
+  ok(!presetA.stops[1].nameSuggestion, '无收集到名字的换乘标保持空缺');
+  eq(L.backfillTransferNames([{ line: lineA, preset: presetA }], [presetA, presetB]).filled, 0, '重复回填幂等（空缺已填满）');
+  const lineB = mkLine(false);
+  lineB.stops = [
+    { id: 'b-s01', name: '所', t: 0.8, kind: 'block' },
+    { id: 'b-s02', name: '箭', t: 0.9, kind: 'arrow' },
+  ];
+  eq(L.backfillTransferNames([{ line: lineB, preset: presetA }], [mkPreset([{ t: 0.8, transfer: 'trans-002' }, { t: 0.9, transfer: 'trans-002' }])]).filled, 0, '线路所/出省箭头不收集');
+}
 // 11) t=1 合法（域改 [0,1] 双闭，2026-11-21）：落末位、簿记成立、不触发递增告警
 let pt = mkLine(false);
 pt.stops = [{ id: 'l0001-s01', name: 'a', t: 0.3 }];

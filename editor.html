@@ -121,6 +121,12 @@
   /* 「换」chip：该站位置来自 Trans 层换乘标（非交互提示，区别于可点击的建议名 chip） */
   .stop-row .stop-trans { flex: none; font-size: 11px; padding: 1px 4px; border-radius: 3px;
     color: var(--dim); border: 1px solid var(--dim); cursor: help; }
+  /* 右上角静默轻提示（不打断操作、不占底部状态条；如换乘站名回填反馈） */
+  #toast { position: fixed; top: 42px; right: 12px; z-index: 99; padding: 6px 12px;
+    background: var(--panel); border: 1px solid var(--acc); border-radius: 4px;
+    font-size: 12px; color: var(--fg); opacity: 0; pointer-events: none;
+    transition: opacity .25s; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+  #toast.show { opacity: 1; }
   #lineform .preset-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 
   .stop-row { display: flex; align-items: center; gap: 4px; padding: 1px 2px; }
@@ -201,6 +207,13 @@
     </div>
   </div>
   <div class="tb-group" style="margin-left:auto">
+    <!-- 换乘站名回填开关（2026-11-22 需求 3）：勾选时每次「保存工作区」先从各线已命名的
+         「换」标识站收集站名 → 写回站圆预置的空缺建议（只填缺、不覆盖已有）——
+         下一条线「采用全部建议名」即可拿到已命名线路补充的换乘站名；不刷新页面即生效 -->
+    <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer"
+      title="保存工作区时：把各线已手动命名的换乘标站（「换」chip）站名，回填到站圆预置里还缺建议名的同类换乘站——只填空缺、绝不覆盖已有建议；改动立即生效（无需刷新），完成后右上角提示填补数量">
+      <input type="checkbox" id="backfillTrans">填补换乘站数据
+    </label>
     <button id="btnSaveWorkspace" class="primary"
       title="把 lines/*.json＋groups.json＋manifest.json 成套写入工作区文件夹（已打开则直写；未打开先选目录；均不可用则降级多文件下载）；工作区里多余的线路文件会删除并列出">保存工作区</button>
   </div>

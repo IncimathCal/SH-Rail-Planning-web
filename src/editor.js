@@ -380,14 +380,15 @@
     return added;
   }
 
-  /** 站点 t 就近取预置站名建议（|Δt| ≤ dtEps）；返回 {name, dist} 或 null。仅展示用，点选才写入。 */
+  /** 站点 t 就近取预置站名建议（|Δt| ≤ dtEps）；返回 {name, dist, manual} 或 null。仅展示用，点选才写入。
+   *  manual＝建议来自换乘站名回填（backfillTransferNames，人工命名的其他线），title 文案区别于源图就近文字。 */
   function suggestForStop(item, t, dtEps = 0.002) {
     if (!item) return null;
     let best = null;
     for (const s of item.stops || []) {
       if (!s.nameSuggestion) continue;
       const d = Math.abs(s.t - t);
-      if (d <= dtEps && (!best || d < best.d)) best = { name: s.nameSuggestion, dist: s.suggestDist, d };
+      if (d <= dtEps && (!best || d < best.d)) best = { name: s.nameSuggestion, dist: s.suggestDist, manual: !!s.manualName, d };
     }
     return best;
   }
@@ -404,6 +405,36 @@
       if (d <= dtEps && (!best || d < best.d)) best = { id: s.transfer, kind: s.transferKind, d };
     }
     return best;
+  }
+
+  /** 换乘站名回填（2026-11-22 需求 3，node 单测覆盖）：从各线**已命名**的换乘标站收集
+   *  {transId → 站名}（先到先得，同站多线应同名），写回预置里同 trans id 且**还缺建议名**的站
+   *  （只填空缺、绝不覆盖已有 nameSuggestion；manualName=true 标记人工回填来源）。
+   *  pairs = [{line, preset}]（preset 由 UI 层 matchPresetForLine 预解析）；
+   *  presets = S.stationPresets（原地修改，内存级即改即生效，不落盘）。
+   *  返回 {filled, names}：填补的预置站数、收集到的换乘站名表。 */
+  function backfillTransferNames(pairs, presets, dtEps = 0.002) {
+    const names = new Map();
+    for (const { line, preset } of pairs || []) {
+      if (!line || !preset) continue;
+      for (const st of line.stops || []) {
+        if (st.kind === 'block' || st.kind === 'arrow') continue;   // 线路所/箭头不参与
+        if (!st.name || !st.name.trim()) continue;                  // 只收已命名站
+        const m = transferMarkForStop(preset, st.t, dtEps);
+        if (m && !names.has(m.id)) names.set(m.id, st.name.trim());
+      }
+    }
+    let filled = 0;
+    for (const it of presets || []) {
+      for (const s of it.stops || []) {
+        if (s.transfer && names.has(s.transfer) && !s.nameSuggestion) {
+          s.nameSuggestion = names.get(s.transfer);
+          s.manualName = true;
+          filled++;
+        }
+      }
+    }
+    return { filled, names };
   }
 
   /** 线路按 meta.layer 分组（分类＝源图 Line 直属子图层名，用户自有图层词汇，与 sourceLayer 同性质）。
@@ -667,7 +698,7 @@
     pruneSections, migrateLineToV2, planSectionSplit, applySectionMerge, sectionSpanOf, sectionIssuesOf,
     canPlaceArrow, planGroupPillChain, nextStopKind,
     nextStopSeq, fixStatusField, lineIssues, planBulkFill,
-    planStopImport, applyStopImport, suggestForStop, transferMarkForStop,
+    planStopImport, applyStopImport, suggestForStop, transferMarkForStop, backfillTransferNames,
     layerGroupsOf, junctionStroke, planStationGroup, connValidTargets,
     normalizeLineOrder,
     calibForward, calibInverse, tpsForward, tpsInverse, poly3Forward, poly3Inverse,
@@ -1801,8 +1832,13 @@
       const isArr = st.kind === 'arrow';
       const tBad = st.t < 0 || st.t > 1 || (prev !== null && st.t <= prev) || (next !== null && st.t >= next)
         || (isArr && !(i === 0 || i === l.stops.length - 1));   // 箭头离开头尾即标红
-      // 站名建议 chip：仅普通空名站展示（源图就近文字，点选才写入；绝不自动命名；线路所/出省箭头不参与）
+      // 站名建议 chip：仅普通空名站展示（源图就近文字或人工回填的换乘站名，点选才写入；绝不自动命名；线路所/出省箭头不参与）
       const sug = preset && !isBlk && !isArr && !(st.name && st.name.trim()) ? suggestForStop(preset, st.t) : null;
+      const sugTitle = sug
+        ? (sug.manual
+            ? '人工回填的换乘站名（来自你已命名的其他线路，保存工作区时回填）——比源图文字可靠；点击采用'
+            : `源图就近文字（距站圆 ${sug.dist}pt），仅供参考、不保证正确；点击采用`)
+        : '';
       // 「换」chip：该站位置来自 Trans 层换乘标（大圆=双线/药丸=多线），编组时重点核对；仅提示，编组绝不自动
       const tfm = preset && !isBlk && !isArr ? transferMarkForStop(preset, st.t) : null;
       const nk = nextStopKind(st.kind, { isLoop: l.loop, isEnd: i === 0 || i === l.stops.length - 1 });
@@ -1814,7 +1850,7 @@
           class="${(st.name || isBlk || isArr) ? '' : 'warn'}"
           placeholder="${isBlk ? '（线路所，可无名）' : isArr ? '（出省箭头，可无名）' : '（站名）'}">
         ${sug ? `<span class="namehint stop-suggest" data-sugsid="${st.id}" data-sugname="${esc(sug.name)}"
-          title="源图就近文字（距站圆 ${sug.dist}pt），仅供参考、不保证正确；点击采用">${esc(sug.name)}</span>` : ''}
+          title="${esc(sugTitle)}">${esc(sug.name)}</span>` : ''}
         ${tfm ? `<span class="stop-trans" title="该站位置来自 Trans 层换乘标 ${esc(tfm.id)}（${tfm.kind === 'circle' ? '双线大圆' : '多线药丸'}）——此处为换乘，编组时重点核对；编组需人工完成，预置不自动建组">换</span>` : ''}
         <input type="text" value="${st.t.toFixed(6)}" data-tedit="${st.id}"
           class="tin${tBad ? ' warn' : ''}" title="弧长位置 t∈[0,1]，可手改（如起点改 0、开线终点改 1）">
@@ -1964,6 +2000,17 @@
   function setStatus(msg, isErr) {
     statusEl.textContent = msg;
     statusEl.style.color = isErr ? 'var(--err)' : 'var(--dim)';
+  }
+
+  /** 右上角静默轻提示（2026-11-22 需求 3）：不打断操作、不占底部状态条——保存过程会频繁
+   *  setStatus，回填这类「顺带完成」的反馈若走状态条会被立刻冲掉；4 秒自动淡出。 */
+  function toast(msg) {
+    let t = document.getElementById('toast');
+    if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(t._tm);
+    t._tm = setTimeout(() => t.classList.remove('show'), 4000);
   }
 
   // ---------- 线路操作 ----------
@@ -2631,8 +2678,16 @@
       const line = S.lines.get(S.activeLine);
       const st = line && line.stops.find((s) => s.id === sugEl.dataset.sugsid);
       if (st) {
+        const sugName = sugEl.dataset.sugname;
+        // 手动输入保护（2026-11-22 需求 2）：chip 只应挂在空名站上，但站名逐键写入后列表不重渲染、
+        // chip 会过期残留——此时绝不让建议覆盖手输名（想采用请先清空站名）
+        if (st.name && st.name.trim() && st.name !== sugName) {
+          sugEl.remove();
+          setStatus(`「${st.name}」为手动输入的站名，未用建议「${sugName}」覆盖——想采用建议请先清空站名。`, true);
+          return;
+        }
         snapshot();
-        st.name = sugEl.dataset.sugname;
+        st.name = sugName;
         line.meta.updated = today();
         renderAll();
         setStatus(`已采用建议站名「${st.name}」（可继续修改）。`);
@@ -2658,6 +2713,20 @@
     }
     renderWorld();
   });
+  // 站名输入框键盘切换（2026-11-22 需求 1）：↑/↓/Enter 跳上/下一站的名称框，光标置末尾；
+  // 边界不环绕，末行 Enter 收起焦点。t 输入框不受影响（数字框方向键另有用途习惯）
+  $('stopList').addEventListener('keydown', (e) => {
+    if (!e.target.dataset || e.target.dataset.ren === undefined) return;
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown' && e.key !== 'Enter') return;
+    const rows = [...$('stopList').querySelectorAll('.stop-row')];
+    const i = rows.findIndex((r) => r.contains(e.target));
+    if (i < 0) return;
+    const j = e.key === 'ArrowUp' ? i - 1 : i + 1;
+    if (j < 0 || j >= rows.length) { if (e.key === 'Enter') e.target.blur(); return; }
+    e.preventDefault();
+    const nx = rows[j].querySelector('input[data-ren]');
+    if (nx) { nx.focus(); nx.setSelectionRange(nx.value.length, nx.value.length); }
+  });
   $('stopList').addEventListener('input', (e) => {
     const sid = e.target.dataset.ren;
     if (!sid) return;
@@ -2667,6 +2736,12 @@
       st.name = e.target.value;
       line.meta.updated = today();
       e.target.classList.toggle('warn', !st.name && st.kind !== 'block');
+      // 手动输入非空即移除该行挂着的建议 chip（2026-11-22 需求 2 前半）：
+      // 站名逐键已写入数据层，但列表不重渲染、chip 会过期挂着，误点将覆盖手输名（点击处另有兜底）
+      if (st.name.trim()) {
+        const chip = e.target.closest('.stop-row') && e.target.closest('.stop-row').querySelector('.stop-suggest');
+        if (chip) chip.remove();
+      }
       // 站名不上画布（只在 title 提示里）：逐键仅更新该站 title，不全量重绘（合并圈成员留待下次全量渲染）
       const c = world.querySelector(`.stop-c[data-sid="${CSS.escape(sid)}"]`);
       if (c) {
@@ -3347,7 +3422,31 @@
       + (removed.length ? `；已删除多余线路文件 ${removed.join('、')}` : '。'));
   }
 
+  // 换乘站名回填（2026-11-22 需求 3）：勾选「填补换乘站数据」时每次保存工作区先执行——
+  // 从各线已命名的「换」标识站收集站名，写回站圆预置的空缺建议（只填缺、不覆盖已有）；
+  // 直接改 S.stationPresets 内存并重渲染站列表，**无需刷新即生效**（下一条线「采用全部建议名」立即可用）。
+  function backfillTransfersBeforeSave() {
+    if (!$('backfillTrans').checked) return;
+    const pairs = [...S.lines.values()].map((l) => ({ line: l, preset: matchPresetForLine(l) }));
+    const { filled } = backfillTransferNames(pairs, S.stationPresets);
+    if (filled) {
+      renderStopList();   // 新建议 chips 立即可见
+      toast(`填补了 ${filled} 个换乘站站名空缺`);
+    }
+  }
+
+  // 回填开关状态：默认开（只补缺、无破坏性），用户改动持久 localStorage
+  const bfEl = $('backfillTrans');
+  bfEl.checked = (localStorage.getItem('shrail.backfillTrans') || '1') === '1';
+  bfEl.addEventListener('change', () => {
+    localStorage.setItem('shrail.backfillTrans', bfEl.checked ? '1' : '0');
+    setStatus(bfEl.checked
+      ? '已开启：保存工作区时填补换乘站名空缺（只补缺、不覆盖已有建议，右上角提示数量）。'
+      : '已关闭换乘站名回填。');
+  });
+
   $('btnSaveWorkspace').onclick = async () => {
+    backfillTransfersBeforeSave();   // 需求 3：勾选时先回填换乘站名（改内存预置，即改即生效），再走原保存流程
     if (!wsHandle && window.showDirectoryPicker) {
       // 未打开工作区：先选目录（另存为语义）
       try { wsHandle = await window.showDirectoryPicker({ mode: 'readwrite' }); }
