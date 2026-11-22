@@ -387,11 +387,21 @@ def main():
             mf = load_json(mf_path)
             check_ascii_keys_and_cjk(mf, "manifest.json")
             mlines = {e.get("id"): e for e in mf.get("lines") or []}
-            if set(mlines) != set(lines):
-                err("manifest.json", f"manifest lines {sorted(mlines)} != data lines {sorted(lines)}")
+            # 归档线（编辑器「归档」）：文件保留在 lines/（meta.archived=true），不进 manifest.lines、
+            # 须列入 manifest.archived，flatten/publish 剔除。active＝未归档的线路文件——
+            # manifest 对账只比 active（此前把归档文件也算在用线，归档过的数据集必 FAIL）
+            archived_files = {lid for lid, d in lines.items()
+                              if (d.get("meta") or {}).get("archived") is True}
+            active_files = set(lines) - archived_files
+            mf_archived = {a for a in (mf.get("archived") or []) if isinstance(a, str)}
+            if set(mlines) != active_files:
+                err("manifest.json", f"manifest lines {sorted(mlines)} != active data lines {sorted(active_files)}")
             for a in mf.get("archived") or []:
-                if a in lines:
+                if a in active_files:
                     err("manifest.json", f"archived id {a} is also an active line (id reuse forbidden)")
+            for a in sorted(archived_files):
+                if a not in mf_archived:
+                    err(f"lines/{a}.json", "archived line file is not listed in manifest.json archived")
             for e in mf.get("lines") or []:
                 lid = e.get("id")
                 if lid in lines and isinstance(e.get("stops"), int):
