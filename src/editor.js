@@ -334,7 +334,7 @@
     return { pairs, total: clean.length };
   }
 
-  /** 站圆预置批量落站规划（fmt/stations-import@1；node 单测覆盖）。
+  /** 站圆预置批量落站规划（fmt/stations-import@2；node 单测覆盖）。
    *  t 域 [0,1] 双闭（2026-11-21 用户裁定：开线终点站可精确落 1；环线 t=1≡t=0 同一物理点，
    *  不设特殊拦截，物理同点重复设站由用户自律 + t 严格递增兜底）。
    *  preset stops（tools/station_extract.py 产物，t 6 位小数）逐个判定：
@@ -706,7 +706,7 @@
                              // 只存原始值，生效顺序经 normalizeLineOrder 现算（清失效 id、补缺线到末尾）；
                              // 随 manifest.lineOrder 存取，不参与编号水位（stopSeq 等不受影响）
     imports: [],             // {source, imported, paths:[{sourceLayer,color,path}]}
-    stationPresets: [],      // fmt/stations-import@1 的 items（站圆预置，只读参考数据，不进撤销/暂存）
+    stationPresets: [],      // fmt/stations-import@2 的 items（站圆预置，只读参考数据，不进撤销/暂存）
     calib: null,             // fmt/calibration@2（model:"tps"，手动标定 TPS v2；svg→经纬度）。渲染恒用现行 calibration.json
     basemap: 'off',          // 底图三态：'off'｜'osm'｜'amap'（高德，GCJ02 逐瓦片偏移；偏好存 localStorage）
     arcs: new Map(),         // lid -> SHGeom.ArcPath
@@ -994,7 +994,7 @@
         for (const h of new Set(hrefs)) {
           const obj = await get('import/' + h);
           if (obj && obj.schema === 'fmt/import@1') addImportRecord(obj);
-          else if (obj && obj.schema === 'fmt/stations-import@1') addStationPreset(obj);
+          else if (obj && obj.schema === 'fmt/stations-import@2') addStationPreset(obj);
         }
       }
     } catch (e) { /* file:// 等，忽略 */ }
@@ -1684,7 +1684,7 @@
     box.innerHTML = html;
   }
 
-  /** 线路 → 匹配的站圆预置项（fmt/stations-import@1）。
+  /** 线路 → 匹配的站圆预置项（fmt/stations-import@2）。
    *  绑定优先级：① path 字符串精确命中导入记录 → 按 sourceLayer 对名（W1 真名期）；
    *  ② 几何签名（首点/bbox/弧长，容差 0.5pt/2pt/0.5%——补 Z 等不改变几何的重导不受影响）。
    *  预置项 signature 由 tools/station_extract.py 从 import path 计算，与 path-NN 命名无关。 */
