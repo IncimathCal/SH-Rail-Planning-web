@@ -439,22 +439,23 @@
 
     map.on('move', scheduleLabels);
     map.on('resize', scheduleLabels);
-    // 2026-11-22 用户需求 2：地图画布双击线路同样触发聚焦（与左栏行双击同一 toggle
-    // 语义——再双击同线退出）。命中 'lines' 层且非「仅显示」级时 preventDefault 阻止
-    // MapLibre 原生双击缩放（聚焦跳转与缩放抢相机）；未命中/displayOnly 不拦截，保留
-    // 原生缩放。displayOnly 拦截与地图点选同源——「他省线仅显示、无交互」裁定。
-    // 2026-11-22 用户反馈（精确命中）：queryRenderedFeatures 对线层带 tile 几何 buffer，
+    // 2026-11-22 用户需求 2＋当晚交互改版：地图画布上「单击线路＝进入聚焦」（幂等——已聚焦
+    // 同线再点不动，退出走 Esc/聚焦框 ×/点其他线；归一到主线，点支线线身等效点主线）；
+    // 双击线路＝两次 click 已完成聚焦，dblclick 只做精确命中判定——命中则 preventDefault
+    // 吃掉 MapLibre 原生双击缩放（防相机抖动），未命中放行原生缩放。
+    // 精确命中（2026-11-22 用户反馈）：queryRenderedFeatures 对线层带 tile 几何 buffer，
     // 离线体较远的空白双击也命中——粗筛只拿候选，逐候选把 feature 坐标（即 source 渲染
     // 坐标）经 map.project 转屏幕像素，取「双击点到折线最小距离」；命中阈值＝当前 zoom
     // 实际线宽/2＋容差（V.lineWidthAt/V.DBLCLICK_TOL_PX，与 lineLayerDef 线宽同源）。
-    // 取阈值内屏幕距离最近的一条；全部超出＝未命中：不聚焦也不 preventDefault（放行
-    // 原生双击缩放）。displayOnly 候选直接出局（不参与最近者评选）；命中后经 toggleFocus
-    // 归一到主线（双击支线线身等效双击主线）。
+    // ⚠ map.project 返回 Point 对象 {x,y}，pointToScreenPolylineDist 约定吃数组 [x,y]——
+    // 必须转 [pt.x, pt.y] 再入参（首版直接 push Point 对象被 Array.isArray 全跳过、距离
+    // 恒 Infinity，双击线路永不命中全变原生缩放，即当晚用户报的回归）。
+    // displayOnly 候选直接出局；全部候选超阈值＝未命中：不 preventDefault（放行缩放）。
     map.on('dblclick', (e) => {
       let hits = [];
       try { hits = map.queryRenderedFeatures({ point: e.point, layers: ['lines'] }); } catch (err) { return; }
       const tol = V.lineWidthAt(map.getZoom()) / 2 + V.DBLCLICK_TOL_PX;
-      let bestId = null, bestD = Infinity;
+      let bestD = Infinity;
       for (const f of hits || []) {
         const p = f && f.properties;
         if (!p || p.lineId == null || p.lineId === '') continue;
@@ -465,24 +466,25 @@
         const screen = [];
         for (const c of coords) {
           if (!Array.isArray(c) || !Number.isFinite(c[0]) || !Number.isFinite(c[1])) continue;
-          try { screen.push(map.project(c)); } catch (err) { /* 个别点投影失败跳过，不影响整段 */ }
+          try { const pt = map.project(c); screen.push([pt.x, pt.y]); } catch (err) { /* 个别点投影失败跳过，不影响整段 */ }
         }
         const d = V.pointToScreenPolylineDist(e.point, screen);
-        if (d < bestD) { bestD = d; bestId = String(p.lineId); }
+        if (d < bestD) bestD = d;
       }
-      if (bestId == null || bestD > tol) return;   // 全部超阈值＝未命中：放行原生双击缩放
-      e.preventDefault();
-      toggleFocus(bestId);
+      if (bestD > tol) return;   // 全部超阈值＝未命中线路线体：放行原生双击缩放
+      e.preventDefault();        // 点在线体上：吃掉双击缩放防抖动（聚焦已由两次 click 完成）
     });
     for (const id of LINE_LAYER_IDS) {
       map.on('click', id, (e) => {
         const p = e.features && e.features[0] && e.features[0].properties;
         if (p && p.lineId != null && p.lineId !== '') {
-          // 「仅显示」级（他省线）点选不开线路信息面板（2026-11-22 用户裁定：仅显示，无交互）；
-          // hover 光标为层粒度技术所限保留 pointer（见文件头说明），点选无动作即无交互
+          // 「仅显示」级（他省线）点选不聚焦（2026-11-22 用户裁定：仅显示，无交互）；
+          // hover 光标为层粒度技术所限保留 pointer（见文件头说明），点选无动作即无交互。
+          // 其余线路点选＝进入聚焦（2026-11-22 晚改版：原开右上线路信息面板已删——线路
+          // 信息与导出入口收敛到下方聚焦框，见 syncFocusBox）
           const line = S.linesMap.get(String(p.lineId));
           if (line && V.lineLayerRank(line) === 'displayOnly') return;
-          openLinePanel(String(p.lineId));
+          setFocus(String(p.lineId));
         }
       });
       map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
@@ -739,7 +741,10 @@
   // 都走这里）。2026-11-22 用户需求 1：进入聚焦时相机 fitBounds 跳到该线（退出聚焦
   // 绝对不动相机——用户明令「再次双击不必跳回之前的视图」）。
   function setFocus(lineId) {
-    const id = lineId || null;
+    // 2026-11-22 晚交互改版：入口统一归一到主线（地图点选支线线身等效聚焦主线组；
+    // toggleFocus/pickEntry 原地归一由此收口，幂等——同线重复进入不动）
+    const raw = lineId || null;
+    const id = raw != null ? (S.lineGroups.mainOf.get(raw) || raw) : null;
     if (id != null) {
       const line = S.linesMap.get(id);
       if (line && V.lineLayerRank(line) === 'displayOnly') return;
@@ -820,6 +825,18 @@
     infoRow(body, '分段状态', '既有 ' + sum.segCounts.existing + ' 段 · 已批复 ' + sum.segCounts.approved + ' 段 · 远期 ' + sum.segCounts.future + ' 段');
     infoRow(body, '车站数', String(sum.stopCount));
     infoRow(body, '起讫站', V.formatTerminals(sum));
+    // 2026-11-22 晚改版：原右上线路信息面板退役，导出按钮迁到这里（.info-actions 样式
+    // 全局类直接复用）；S.focus 恒主线 id（setFocus 入口归一），导出即导主线
+    const bar = document.createElement('div');
+    bar.className = 'info-actions';
+    const bG = document.createElement('button');
+    bG.textContent = '导出 GeoJSON';
+    bG.addEventListener('click', () => exportLine(S.focus, 'geojson'));
+    const bK = document.createElement('button');
+    bK.textContent = '导出 KML';
+    bK.addEventListener('click', () => exportLine(S.focus, 'kml'));
+    bar.append(bG, bK);
+    body.appendChild(bar);
     box.hidden = false;
   }
   // 全局站名开关：隐藏时一切站名不显示（优先级最高，只影响 HTML 标签、站圈符号保留）
@@ -909,34 +926,8 @@
   function linesOfPin(pin) {
     return V.linesOfPin(pin, S.linesMap, S.lineGroups);
   }
-  function openLinePanel(lineId) {
-    // 2026-11-22 主支线合并：点合并行、点地图上主线或支线线身，开的是同一个面板——
-    // 归一到主线，标题＝线组名称，内容（别名/类别/角色/起讫站/车站数/分段状态/导出）全部
-    // 按主线 summary；支线不再有独立面板入口；导出（GeoJSON/KML）导主线
-    const grp = S.lineGroups.ofLine.get(lineId);
-    const id = grp ? grp.mainId : lineId;
-    const sum = S.summaries.get(id);
-    if (!sum) return;
-    const body = openPanel(grp ? (grp.name || sum.name || id) : (sum.name || id));
-    if (sum.aliases.length) infoRow(body, '别名', sum.aliases.join('、'));
-    infoRow(body, 'ID', sum.lineId);
-    infoRow(body, '类别', sum.layer || '未分类');
-    infoRow(body, '角色', V.ROLE_ZH[sum.role] || sum.role || '—');
-    infoRow(body, '起讫站', V.formatTerminals(sum));
-    infoRow(body, '车站数', String(sum.stopCount));
-    infoRow(body, '分段状态', '既有 ' + sum.segCounts.existing + ' 段 · 已批复 ' + sum.segCounts.approved + ' 段 · 远期 ' + sum.segCounts.future + ' 段');
-
-    const bar = document.createElement('div');
-    bar.className = 'info-actions';
-    const bG = document.createElement('button');
-    bG.textContent = '导出 GeoJSON';
-    bG.addEventListener('click', () => exportLine(id, 'geojson'));
-    const bK = document.createElement('button');
-    bK.textContent = '导出 KML';
-    bK.addEventListener('click', () => exportLine(id, 'kml'));
-    bar.append(bG, bK);
-    body.appendChild(bar);
-  }
+  //（2026-11-22 晚改版删除 openLinePanel：右上线路信息面板退役——线路点选改为直接聚焦，
+  //   信息与导出按钮收敛到下方聚焦框 syncFocusBox；本 infoPanel 容器此后仅站点面板使用）
   function openStopPanel(key) {
     const pin = S.pinByKey.get(key);
     if (!pin) return;
@@ -1026,8 +1017,7 @@
           S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 80, duration: 600, maxZoom: 13 });
         }
       } else {
-        setFocus(ent.id);
-        openLinePanel(ent.id);
+        setFocus(ent.id);   // 2026-11-22 晚改版：原另开右上线路信息面板已删，聚焦即全部
       }
     } else {
       const lb = ent.ref;
