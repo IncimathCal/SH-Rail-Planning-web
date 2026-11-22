@@ -1290,7 +1290,7 @@
       const grp = S.lineGroups.ofLine.get(S.focus);
       focusMembers = grp && Array.isArray(grp.members) && grp.members.length ? grp.members : [S.focus];
     }
-    const items = V.visibleLabels(S.dispLabels, map.getZoom(), V.LABEL_CAP,
+    const items = V.visibleLabels(S.dispLabels, map.getZoom(),
       { hideAll: !S.namesOn, dimmedSet: S.dimmed, focus: S.focus, focusMembers });
     const w = wrap.clientWidth, h = wrap.clientHeight, M = 60;   // 视口外裁剪边距
     // 站名文字随画布等比缩放（2026-11-22 用户指示「站名和站点也一样，以 z11 为界」）：

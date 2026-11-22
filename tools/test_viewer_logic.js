@@ -22,6 +22,9 @@
 // displayOnly 激活位；旧 hlMode 分支用例删除）；arrows glyph 视图用例改写为 arrowFadePlan
 //（head/tail/两端/非端点忽略/无 arrow 不进 plan/<1km clamp/平面近似总长手算对照）＋
 // arrowFadeGradient（端组合 stops、整线渐变收并、双端重叠收缩、恰衔接并段）。
+// 2026-11-22 真数据抓包（「单线站名不见了」）：删初版自设的 LABEL_CAP=800 与 cap 入参——
+// 它数整份数据的标签总数，用户 58 线真数据 1040 个标签单元一超限，普通站名在一切 zoom
+// 全灭；用例改写为纯 zoom 门槛＋千级规模全链路回归（scaleLabels）。
 // 用法：node tools/test_viewer_logic.js（纯 node，不引 jsdom/DOM/maplibre）
 
 const V = require(path_join('src', 'viewer_core.js'));
@@ -210,21 +213,33 @@ eq(V.matchEntries('人民', null).length, 0, 'null 索引不崩');
 // ---------- filterLabels（zoom 门槛层；2026-11-22 普通站门槛 12→11，组门槛 10 不动） ----------
 console.log('filterLabels:');
 ok(V.LABEL_ZOOM_STOP === 11 && V.LABEL_ZOOM_GROUP === 10, '门槛常量：普通站 11、组 10');
+ok(!('LABEL_CAP' in V) && V.filterLabels.length === 2 && V.visibleLabels.length === 3,
+  '标签总数上限已删：无 LABEL_CAP 导出，filterLabels/visibleLabels 不再收 cap 入参（2026-11-22 真数据抓包）');
 const bigLabels = [];
 for (let i = 0; i < 900; i++) bigLabels.push({ key: 's' + i, name: '站' + i, group: false });
 for (let i = 0; i < 100; i++) bigLabels.push({ key: 'g' + i, name: '组' + i, group: true });
-const smallLabels = bigLabels.slice(0, 700).concat(bigLabels.slice(900));   // 700 普通站＋100 组
-eq(V.filterLabels(bigLabels, 9, 800).length, 0, 'z9 无标签');
-eq(V.filterLabels(bigLabels, 10, 800).length, 100, 'z10 只组标签');
-eq(V.filterLabels(bigLabels, 10.9, 800).length, 100, 'z10.9 仍只组标签');
-eq(V.filterLabels(smallLabels, 11, 800).length, 800, 'z11 未超上限全部显示（门槛已降）');
-eq(V.filterLabels(smallLabels, 10.99, 800).length, 100, 'z10.99 仍只组标签（门槛边界）');
-eq(V.filterLabels(bigLabels, 11, 800).length, 100, 'z11 超上限只显示换乘组');
-eq(V.filterLabels(bigLabels, 11, 800).filter((l) => !l.group).length, 0, '超上限时普通站全滤除');
-eq(V.filterLabels(bigLabels, 11, 2000).length, 1000, '上限放大则全显');
+eq(V.filterLabels(bigLabels, 9).length, 0, 'z9 无标签');
+eq(V.filterLabels(bigLabels, 10).length, 100, 'z10 只组标签');
+eq(V.filterLabels(bigLabels, 10.9).length, 100, 'z10.9 仍只组标签');
+eq(V.filterLabels(bigLabels, 10.99).length, 100, 'z10.99 仍只组标签（门槛边界）');
+eq(V.filterLabels(bigLabels, 11).length, 1000, 'z11 全部显示——1000 个标签单元（超旧上限 800）不再砍普通站名');
+eq(V.filterLabels(bigLabels, 11).filter((l) => !l.group).length, 900, 'z11 普通站标签全在');
+eq(V.filterLabels(bigLabels, 11).filter((l) => l.group).length, 100, 'z11 换乘组标签全在');
+eq(V.filterLabels(bigLabels, 13).length, 1000, 'z13 全部显示');
 eq(V.filterLabels([], 15).length, 0, '空标签不崩');
 eq(V.filterLabels(null, 15).length, 0, 'null 不崩');
-eq(V.filterLabels(bigLabels, 11), V.filterLabels(bigLabels, 11, V.LABEL_CAP), '默认上限＝LABEL_CAP');
+// 真数据规模回归（2026-11-22 用户抓包「单线站名不见了」：58 线 1095 站＝1040 标签单元，
+// 超旧上限后普通站名在一切 zoom 全灭）：走完整链路 stopList → buildStopView → visibleLabels
+const scaleFeats = [];
+for (let ln = 0; ln < 60; ln++) {
+  for (let k = 0; k < 18; k++) scaleFeats.push(stopFeat(`l${ln}-s${k}`, `站${ln}之${k}`, `l${ln}`, `${ln}号线`, k / 18,
+    121 + k * 0.01, 31 + ln * 0.01));
+}
+const scaleLabels = V.buildStopView(V.stopList(fc(...scaleFeats))).labels;
+eq(scaleLabels.length, 1080, '规模样本：1080 个普通站标签单元（＞旧上限 800）');
+eq(V.visibleLabels(scaleLabels, 10.99, {}).length, 0, '规模样本 z10.99：无换乘组 → 无标签');
+eq(V.visibleLabels(scaleLabels, 11, {}).length, 1080, '规模样本 z11：1080 个普通站名全部显示（旧 LABEL_CAP 下为 0）');
+eq(V.visibleLabels(scaleLabels, 11, { dimmedSet: new Set(['l3']) }).length, 1062, '规模样本 z11 调光一条线：仅该线 18 站隐去');
 
 // ---------- 调光纯逻辑：linePhaseOf / lineLayerRank / computeDimmedSet / nextPhase ----------
 console.log('dim / phase:');
@@ -289,27 +304,27 @@ const vlLabels = [
   { key: 'x1', name: '无所属', group: false, lineIds: [] },          // 防御：不因调光隐藏
 ];
 const dimLB = new Set(['lb', 'lc']);
-eq(V.visibleLabels(vlLabels, 13, 800, { hideAll: true }), [], '全局站名开关隐藏 → 一切站名不显示');
-eq(V.visibleLabels(vlLabels, 13, 800, { hideAll: true, focus: 'la' }), [], '全局开关优先级最高（压过聚焦常显）');
-eq(V.visibleLabels(vlLabels, 13, 800, { dimmedSet: dimLB }).map((l) => l.key), ['s1', 'g1', 'x1'],
+eq(V.visibleLabels(vlLabels, 13, { hideAll: true }), [], '全局站名开关隐藏 → 一切站名不显示');
+eq(V.visibleLabels(vlLabels, 13, { hideAll: true, focus: 'la' }), [], '全局开关优先级最高（压过聚焦常显）');
+eq(V.visibleLabels(vlLabels, 13, { dimmedSet: dimLB }).map((l) => l.key), ['s1', 'g1', 'x1'],
   '调光线站名隐藏：乙1 隐藏、组2（全成员调光）隐藏、组1（la 未调光）保留');
-eq(V.visibleLabels(vlLabels, 13, 800, {}).map((l) => l.key), ['s1', 's2', 'g1', 'g2', 'x1'],
+eq(V.visibleLabels(vlLabels, 13, {}).map((l) => l.key), ['s1', 's2', 'g1', 'g2', 'x1'],
   '无调光无聚焦 → zoom 门槛层原样（z13 全显）');
-eq(V.visibleLabels(vlLabels, 9, 800, {}).map((l) => l.key), [], 'z9 门槛层全隐');
-eq(V.visibleLabels(vlLabels, 9, 800, { focus: 'la' }).map((l) => l.key).sort(), ['g1', 's1'],
+eq(V.visibleLabels(vlLabels, 9, {}).map((l) => l.key), [], 'z9 门槛层全隐');
+eq(V.visibleLabels(vlLabels, 9, { focus: 'la' }).map((l) => l.key).sort(), ['g1', 's1'],
   '聚焦线站名无视 zoom 门槛常显（组1 含 la 也常显）');
-eq(V.visibleLabels(vlLabels, 9, 800, { focus: 'la', dimmedSet: dimLB }).map((l) => l.key).sort(), ['g1', 's1'],
+eq(V.visibleLabels(vlLabels, 9, { focus: 'la', dimmedSet: dimLB }).map((l) => l.key).sort(), ['g1', 's1'],
   '聚焦常显优先于分期调光（聚焦优先级下 dim 维度让位——成员照显）');
-eq(V.visibleLabels(vlLabels, 13, 800, { focus: 'la' }).map((l) => l.key).sort(), ['g1', 's1'],
+eq(V.visibleLabels(vlLabels, 13, { focus: 'la' }).map((l) => l.key).sort(), ['g1', 's1'],
   '聚焦时非聚焦线站名隐藏：z13 拉近也不显示（2026-11-22 真机反馈「站名也没有隐去」）');
-eq(V.visibleLabels(vlLabels, 13, 800, { focus: 'la', dimmedSet: dimLB }).map((l) => l.key).sort(), ['g1', 's1'],
+eq(V.visibleLabels(vlLabels, 13, { focus: 'la', dimmedSet: dimLB }).map((l) => l.key).sort(), ['g1', 's1'],
   '聚焦＋分期叠加：聚焦成员照显、其余隐藏（分期隐藏维度在聚焦时整体让位）；x1 无所属线跟随隐藏');
-eq(V.visibleLabels(vlLabels, 9, 800, { focus: 'lb', dimmedSet: dimLB }).map((l) => l.key).sort(), ['g1', 'g2', 's2'],
+eq(V.visibleLabels(vlLabels, 9, { focus: 'lb', dimmedSet: dimLB }).map((l) => l.key).sort(), ['g1', 'g2', 's2'],
   '聚焦被调光线（lb）站名仍常显：s2/g2/g1（均含 lb）无视调光与 zoom，s1/x1 隐藏');
-eq(V.visibleLabels(vlLabels, 13, 800, { dimmedSet: ['lb', 'lc'] }).map((l) => l.key), ['s1', 'g1', 'x1'],
+eq(V.visibleLabels(vlLabels, 13, { dimmedSet: ['lb', 'lc'] }).map((l) => l.key), ['s1', 'g1', 'x1'],
   'dimmedSet 传数组（非 Set）也能容错');
-eq(V.visibleLabels(null, 13, 800, { focus: 'la' }), [], 'null 标签不崩');
-eq(V.visibleLabels(vlLabels, 13, 800), V.visibleLabels(vlLabels, 13, 800, {}), '缺省 state＝无约束');
+eq(V.visibleLabels(null, 13, { focus: 'la' }), [], 'null 标签不崩');
+eq(V.visibleLabels(vlLabels, 13), V.visibleLabels(vlLabels, 13, {}), '缺省 state＝无约束');
 // focusMembers（2026-11-22 真机反馈轮·主支线合并）：聚焦判定＝标签 lineIds 与聚焦组
 // 成员集有交集——支线站的站名也是聚焦线站名，须常显
 const vlLabelsG = [
@@ -318,14 +333,14 @@ const vlLabelsG = [
   { key: 'o1', name: '他线站', group: false, lineIds: ['o1'] },
   { key: 'gm', name: '主支换乘', group: true, lineIds: ['m1', 'b1', 'o1'] },
 ];
-eq(V.visibleLabels(vlLabelsG, 9, 800, { focus: 'm1', focusMembers: ['m1', 'b1'] }).map((l) => l.key).sort(),
+eq(V.visibleLabels(vlLabelsG, 9, { focus: 'm1', focusMembers: ['m1', 'b1'] }).map((l) => l.key).sort(),
   ['b1', 'gm', 's1'],
   'focusMembers：支线站 b1 常显（主支线合并——支线也是聚焦线）、他线站隐藏、组标签任一成员命中常显');
-eq(V.visibleLabels(vlLabelsG, 9, 800, { focus: 'm1' }).map((l) => l.key).sort(), ['gm', 's1'],
+eq(V.visibleLabels(vlLabelsG, 9, { focus: 'm1' }).map((l) => l.key).sort(), ['gm', 's1'],
   'focusMembers 缺省退 [focus]：仅含主线的标签常显（向后兼容）');
-eq(V.visibleLabels(vlLabelsG, 9, 800, { focus: 'm1', focusMembers: [] }).map((l) => l.key).sort(), ['gm', 's1'],
+eq(V.visibleLabels(vlLabelsG, 9, { focus: 'm1', focusMembers: [] }).map((l) => l.key).sort(), ['gm', 's1'],
   'focusMembers 空数组退 [focus]（脏输入防御）');
-eq(V.visibleLabels(vlLabelsG, 9, 800, { focus: 'm1', focusMembers: [null, ''] }).map((l) => l.key).sort(), ['gm', 's1'],
+eq(V.visibleLabels(vlLabelsG, 9, { focus: 'm1', focusMembers: [null, ''] }).map((l) => l.key).sort(), ['gm', 's1'],
   'focusMembers 全脏项过滤后空 → 退 [focus]');
 
 // ---------- connectorFadePlan（联络线渐变接入端判定，2026-11-22 用户需求 3） ----------
@@ -470,10 +485,10 @@ eq([...V.computeDimmedSet(mixTP, {})], [], '默认态不调光');
 // 下游兼容：聚焦线标签常显逻辑不变（2026-11-22 真机反馈轮后非聚焦线标签聚焦时一律隐藏
 //——站名维度由 visibleLabels 承接白罩的「罩住」语义，非聚焦线不再随 dimmedSet 收窄而显示）
 const veilDim = V.computeDimmedSet(mixTP, { focus: 'la' });
-eq(V.visibleLabels(vlLabels, 9, 800, { focus: 'la', dimmedSet: veilDim }).map((l) => l.key).sort(),
+eq(V.visibleLabels(vlLabels, 9, { focus: 'la', dimmedSet: veilDim }).map((l) => l.key).sort(),
   ['g1', 's1'],
   '聚焦下 z9 标签＝聚焦成员常显照旧＋其余隐藏');
-eq(V.visibleLabels(vlLabels, 11, 800, { focus: 'la', dimmedSet: veilDim }).map((l) => l.key).sort(),
+eq(V.visibleLabels(vlLabels, 11, { focus: 'la', dimmedSet: veilDim }).map((l) => l.key).sort(),
   ['g1', 's1'],
   '聚焦下 z11 其余标签隐藏（2026-11-22 真机反馈轮改写——原「全都不动全显」的站名侧语义收回）');
 

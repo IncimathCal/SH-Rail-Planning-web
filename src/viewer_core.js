@@ -35,6 +35,9 @@
 // 2026-11-22 真机反馈改版：visibleLabels 恢复聚焦隐藏维度——聚焦时非聚焦线站名一律
 // 隐藏、聚焦组成员（新入参 focusMembers 传成员线 id 数组，缺省退 [focus]）标签常显且
 // 无视分期调光与 zoom 门槛（与渲染层站圈/药丸移罩下＋罩上复制配套，图形侧见 viewer.js）。
+// 2026-11-22 真数据抓包（「单线站名不见了」）：删初版自设的 LABEL_CAP=800 与 cap 入参——
+// 它数整份数据的标签总数而非同屏数，用户 58 线真数据 1040 个标签单元一超限，普通站名
+// 就在一切 zoom 永不显示，与用户规则「普通站名 z≥11 显示」冲突；分级回归纯 zoom 门槛。
 
 (function (G) {
   'use strict';
@@ -60,8 +63,12 @@
   // 「仅显示」级类别（2026-11-22 用户裁定：他省线）——列表双击不聚焦、地图点选不开面板、
   // 一切调光场合（分期非「无」档/任何聚焦）恒在半透明侧（即便期次恰好匹配）
   const DISPLAY_ONLY_LAYERS = ['他省'];
-  const LABEL_CAP = 800;        // 标签数量上限：超过则只显示换乘组标签（防低 zoom 糊屏）
-  const LABEL_ZOOM_GROUP = 10;  // 换乘组标签最低 zoom（不动）
+  // 标签只按 zoom 门槛分级，**不设标签总数上限**。2026-11-22 删除初版自设的 LABEL_CAP=800
+  //（「整份数据标签数超上限则只显示换乘组」）：它数的是整份数据而非同屏数——用户真数据
+  // 1095 站＝1040 个标签单元，一超上限普通站名就在一切 zoom 永不显示（真机抓包
+  //「单线站名不见了」），与用户规则「普通站名 z≥11 显示」直接冲突；低 zoom 的防糊屏
+  // 本就由下面两个门槛承担，同屏数量由渲染层视口裁剪约束。
+  const LABEL_ZOOM_GROUP = 10;  // 换乘组标签最低 zoom（用户裁定，不动）
   const LABEL_ZOOM_STOP = 11;   // 普通站标签最低 zoom（2026-11-22 用户指示 12→11）
   // 尺寸随缩放等比变化（2026-11-22 用户两次裁定：初次线性缩小案被推翻，改「等比缩＋向上封顶」）：
   // z≥SIZE_ZOOM_HOLD 各尺寸维持基准值（拉近不再变粗——封顶）；z<11 按 2^(z−11) 持续等比缩小
@@ -740,12 +747,12 @@
   }
 
   // ---------- 标签分级（zoom 门槛层；上层优先级见 visibleLabels） ----------
-  // z≥11 显示全部（超上限只显示换乘组）；z≥10 只显示换乘组；更低不显示。
+  // z≥11 显示全部；z≥10 只显示换乘组；更低不显示。
   //（普通站门槛 2026-11-22 由 12 降为 11，用户指定；组门槛 10 不动）
-  function filterLabels(labels, zoom, cap) {
+  // 2026-11-22 删 cap 入参与 LABEL_CAP（见常量区注）：数据量再大也不砍普通站名。
+  function filterLabels(labels, zoom) {
     const arr = Array.isArray(labels) ? labels : [];
-    const c = Number.isFinite(cap) && cap > 0 ? cap : LABEL_CAP;
-    if (zoom >= LABEL_ZOOM_STOP) return arr.length <= c ? arr : arr.filter((l) => l && l.group);
+    if (zoom >= LABEL_ZOOM_STOP) return arr;
     if (zoom >= LABEL_ZOOM_GROUP) return arr.filter((l) => l && l.group);
     return [];
   }
@@ -757,7 +764,7 @@
   //                        站名也是聚焦线站名，须常显；缺省/空/全脏退 [focus]）}。
   // 2026-11-22 真机反馈改版（用户「站名也没有隐去」）：聚焦时非聚焦线的站名一律隐藏
   //（恢复旧调光模式的待遇——白罩只罩图形，站名维度由本函数承接）；聚焦组成员的标签
-  // 常显且无视分期调光与 zoom 门槛（不占 LABEL_CAP）。非聚焦时维持既有两级：调光隐藏
+  // 常显且无视分期调光与 zoom 门槛。非聚焦时维持既有两级：调光隐藏
   //（组标签全部成员线被调光才隐藏，任一成员未调光则显示；无所属线信息的标签防御性
   // 不因调光隐藏）→ zoom 门槛。
   function labelHasFocus(l, members) {
@@ -771,7 +778,7 @@
     for (const id of ids) if (!dimSet.has(id)) return true;    // 任一成员线未调光 → 显示
     return false;                                              // 全部成员线被调光 → 隐藏
   }
-  function visibleLabels(labels, zoom, cap, state) {
+  function visibleLabels(labels, zoom, state) {
     const st = state || {};
     if (st.hideAll) return [];
     const dimSet = st.dimmedSet instanceof Set ? st.dimmedSet
@@ -787,7 +794,7 @@
       // 其余隐藏，分期隐藏维度在聚焦时整体让位），其余标签一律隐藏
       return arr.filter((l) => labelHasFocus(l, members));
     }
-    return filterLabels(arr.filter((l) => labelShownUnderDim(l, dimSet)), zoom, cap);
+    return filterLabels(arr.filter((l) => labelShownUnderDim(l, dimSet)), zoom);
   }
 
   // ---------- 调光纯逻辑（2026-11-22 改版：分期四档＋聚焦双模式，任一条件调光即调光） ----------
@@ -1084,7 +1091,7 @@
   const Core = {
     DIM_OPACITY, SEG_STATUS_RANK, DEFAULT_LINE_COLOR, GROUP_TYPE_ZH, ROLE_ZH, SEG_STATUS_ZH,
     PHASE_CYCLE, PHASE_LABEL_ZH, HIDDEN_LIST_LAYERS, DISPLAY_ONLY_LAYERS,
-    LABEL_CAP, LABEL_ZOOM_GROUP, LABEL_ZOOM_STOP,
+    LABEL_ZOOM_GROUP, LABEL_ZOOM_STOP,
     SIZE_ZOOM_MIN, SIZE_ZOOM_HOLD, SIZE_SCALE_EXP, labelScale,
     UNNAMED_STOP_ZH, stopDisplayName, formatTerminals,
     xmlEscape, normalizeHex, hexToKmlColor,
