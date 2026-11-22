@@ -4,7 +4,6 @@
   "name": "联络线（样例）",
   "groupId": null,
   "role": "connector",
-  "color": "#888888",
   "loop": false,
   "path": "M 320 100 C 350 60 370 40 400 20",
   "connects": ["l0001", "l0002"],

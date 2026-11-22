@@ -66,13 +66,15 @@
       border: 1px solid var(--panel-border); border-radius: 6px; outline: none;
     }
     #searchInput:focus { border-color: var(--accent); }
-    /* 顶栏三按钮共用样式（2026-11-22 改版）：分期四档循环 / 全局站名开关 / 测试阶段底图 */
-    #btnPhase, #btnNames, #btnBasemap {
+    /* 顶栏按钮共用样式（2026-11-22 改版）：分期四档循环 / 全局站名开关 / 测试阶段底图 /
+       高亮方式切换（2026-11-22 需求 3）+ 白罩不透明度档位（2026-11-22 追加） */
+    #btnPhase, #btnNames, #btnBasemap, #btnHl, #btnVeil {
       flex: none; padding: 6px 10px; cursor: pointer; white-space: nowrap;
       background: #0d0f13; color: var(--text);
       border: 1px solid var(--panel-border); border-radius: 6px;
     }
-    #btnPhase:hover, #btnNames:hover, #btnBasemap:hover { border-color: var(--accent); color: #fff; }
+    #btnPhase:hover, #btnNames:hover, #btnBasemap:hover,
+    #btnHl:hover, #btnVeil:hover { border-color: var(--accent); color: #fff; }
     #searchDrop {
       position: absolute; top: calc(100% + 4px); left: 0; right: 0;
       margin: 0; padding: 4px 0; list-style: none;
@@ -263,6 +265,15 @@
          高德为 GCJ02，仅显示坐标做偏移对齐，数据与导出仍为 WGS84。状态不持久化。 -->
     <button id="btnBasemap" type="button"
       title="测试阶段功能（正式上线可能移除）：底图三态 无→OSM→高德 循环，仅显示对位参考；默认无底图＝零外部资源、零网络请求；高德（GCJ02）仅显示坐标做偏移对齐，数据与导出仍为 WGS84。瓦片 100% 不透明＋40% 白色遮罩（2026-11-22 定值）。">底图：无</button>
+    <!-- 高亮方式切换（2026-11-22 用户需求 3，短期对比开关、定案后整个删除）：遮罩＝聚焦时
+         全都不动、高亮线路与其他线路之间隔一层白色半透明遮罩；调光＝旧行为（聚焦线正常、
+         其他线路半透明并隐站名）。不持久化。 -->
+    <button id="btnHl" type="button"
+      title="高亮方式循环（对比用，定案后删除）：遮罩＝聚焦时全都不动，在高亮线路和其他线路之间隔一层白色半透明遮罩（聚焦重画于罩上、聚焦绑定的联络线渐变高亮于罩上）；调光＝旧行为（聚焦线正常显示，其他线路半透明并隐站名）。分期调光与他省线恒调光两种模式下均维持不变。">高亮：遮罩</button>
+    <!-- 白罩不透明度五档循环（2026-11-22 用户追加：30%→40%→50%→60%→70% 循环，默认 50%
+         居中好对比；用户目验定值后删档位只留定值）。仅「高亮：遮罩」模式下有视觉效果。 -->
+    <button id="btnVeil" type="button"
+      title="聚焦白罩不透明度五档循环（对比用，定值后删除）：30% → 40% → 50% → 60% → 70% → 30%，默认 50%。仅「高亮：遮罩」模式下生效。">遮罩：50%</button>
   </header>
 
   <aside id="linePanel">

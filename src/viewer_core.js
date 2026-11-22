@@ -14,6 +14,13 @@
 // 普通站标签门槛 12→11、z<11 尺寸线性缩小（zoomInterp/scaledSize）、左栏类别过滤常量。
 // 2026-11-22 增：联络线渐变接入端判定（connectorFadePlan——聚焦线绑定的联络线沿线渐变
 // 透明，connects 无顺序语义、方向按几何最近端判；normalizeLines 同步保留 connects 字段）。
+// 2026-11-22 增（用户需求 2「取消联络线颜色属性」）：connectorBlendPlan——有效联络线的
+// 双端渐变取色（head/tailColor＝首/末端各自最近的目标线色，connects≥3 每端各取最近、
+// 有效目标 <2 不出条目＝渲染层深灰兜底）；stopList/pinOfStop 保留 stroke 字段（flatten
+// 产出的联络线站圈描边色＝最近端目标线色）。
+// 2026-11-22 增（用户需求 3「白罩高亮」）：computeDimmedSet 增可选 hlMode——'veil' 时
+// 聚焦不再贡献 dim（「全都不动」，高亮由渲染层白罩＋聚焦重画层呈现）；分期与他省线
+// 恒调光照旧；缺省＝'dim' 旧行为完全不变。
 // 2026-11-22 增（用户裁定·主支线合并）：一条线路的主线与支线在查看器眼中恒为一条线——
 // buildLineGroups 双向并集归并（line.groupId 指向 ＋ 组记录 members；无 main 组防御不合并）、
 // 列表合并行（layerGroups 增收 lineGroups——主线行显示名改组名、支线不出独立行）、组级
@@ -263,6 +270,10 @@
         groupId: p.groupId != null && p.groupId !== '' ? String(p.groupId) : null,
         groupType: Object.prototype.hasOwnProperty.call(GROUP_TYPE_ZH, p.groupType) ? p.groupType : null,
         kind: typeof p.kind === 'string' && p.kind ? p.kind : 'stop',
+        // 联络线站的描边色（2026-11-22 用户需求 2：flatten 产出＝最近端目标线色，
+        // 仅 connector 线的站携带；其余站 null——渲染层退线色）。中转字段不参与
+        // 任何几何/组归并逻辑
+        stroke: typeof p.stroke === 'string' && p.stroke ? p.stroke : null,
         lon, lat,
       });
     }
@@ -405,6 +416,9 @@
       kind: 'stop', key: s.sid, name: s.name, lineId: s.lineId,
       lineNames: s.lineName ? [s.lineName] : [], groupType: groupType || null,
       groupId: s.groupId || null,   // 出闸组/药丸组成员各自成圈，但保留组号供「组内车站」查询
+      // 联络线站描边色透传（stopList 保留字段，见其注；组 pin 不携带——组符号
+      // 描边另有 junction 角色优先级色/黑边规则，不与联络线站圈规则混流）
+      stroke: s.stroke || null,
       big: false, lon: s.lon, lat: s.lat,
     });
     for (const s of singles) {
@@ -583,6 +597,82 @@
     return plan;
   }
 
+  // ---------- 联络线双端渐变取色（2026-11-22 用户需求 2：取消联络线颜色属性） ----------
+  // connectorBlendPlan(linesMap)：找 linesMap 中全部「有效」联络线，返回
+  // [{lineId, headColor, tailColor}]——head/tailColor＝该线拼接折线首/末端各自
+  // 最近的「有效目标线」的 color（linesMap 的 line.color 已含 flatten 的组色合并，
+  // 直接用；两端可为同一条线，此时双色相等＝自然退化为单色）。
+  // 有效联络线判定：connects≥2 且其中 ≥2 个 id 存在于 linesMap 且这些目标线有
+  // 有效坐标（<2 条有效目标＝信息未填写完全，查看器兜底深灰、不出渐变层）。
+  // connects≥3 时每端各自取最近一条（2026-11-22 授权裁定：其余忽略——现实联络
+  // 线 connects 恒为 2，≥3 属防御位，不做三色及以上的复杂渐变）。
+  // 几何与 connectorFadePlan 同手法：segments 按 segIndex 拼接折线取首末点（只看
+  // 首末点——联络线中途设站不影响本判定）、planarOf 平面近似（共享参考纬度＝首末
+  // 两点纬度均值）、逐项防御（坏坐标过滤、自身无坐标直接跳过不出条目——head/tail
+  // 色无从挂，与 fadePlan 的兜底 0 不同）。
+  function connectorBlendPlan(linesMap) {
+    const out = [];
+    if (!(linesMap instanceof Map)) return out;
+    // 有效坐标缓存（lineId → 点数组；目标线可能被多条联络线共用，惰性算一次）
+    const ptsCache = new Map();
+    const validPtsOf = (line) => {
+      if (ptsCache.has(line.lineId)) return ptsCache.get(line.lineId);
+      const pts = [];
+      for (const seg of (line && line.segments) || []) {
+        for (const pt of (seg && seg.coords) || []) {
+          if (Array.isArray(pt) && Number.isFinite(pt[0]) && Number.isFinite(pt[1])) pts.push(pt);
+        }
+      }
+      ptsCache.set(line.lineId, pts);
+      return pts;
+    };
+    for (const line of linesMap.values()) {
+      if (!line || line.lineId == null) continue;
+      const conn = Array.isArray(line.connects) ? line.connects.map(String) : [];
+      if (conn.length < 2) continue;
+      const targets = [];   // 有效目标线（去重、存在且有坐标）
+      const seen = new Set();
+      for (const cid of conn) {
+        if (seen.has(cid)) continue;
+        seen.add(cid);
+        const t = linesMap.get(cid);
+        if (!t) continue;
+        const pts = validPtsOf(t);
+        if (!pts.length) continue;
+        targets.push({ line: t, pts });
+      }
+      if (targets.length < 2) continue;   // 有效目标 <2 → 无效（兜底深灰由渲染层处理）
+      // 本线拼接折线首末点（normalizeLines 已保证 segments 按 segIndex 升序）
+      let head = null, tail = null;
+      for (const seg of line.segments || []) {
+        for (const pt of (seg && seg.coords) || []) {
+          if (!Array.isArray(pt) || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
+          if (head == null) head = pt;
+          tail = pt;
+        }
+      }
+      if (head == null || tail == null) continue;   // 自身无坐标 → 不出条目（防御）
+      const lat0 = (head[1] + tail[1]) / 2;        // 共享参考纬度（同比较内同一常数）
+      const [hx, hy] = planarOf(head[0], head[1], lat0);
+      const [tx, ty] = planarOf(tail[0], tail[1], lat0);
+      const nearestColor = (ax, ay) => {
+        let bestColor = null, best = Infinity;
+        for (const t of targets) {
+          let d = Infinity;
+          for (const pt of t.pts) {
+            const [px, py] = planarOf(pt[0], pt[1], lat0);
+            const dd = (ax - px) * (ax - px) + (ay - py) * (ay - py);
+            if (dd < d) d = dd;
+          }
+          if (d < best) { best = d; bestColor = t.line.color; }
+        }
+        return bestColor || DEFAULT_LINE_COLOR;   // 脏色兜底（normalizeLines 实际已兜）
+      };
+      out.push({ lineId: String(line.lineId), headColor: nearestColor(hx, hy), tailColor: nearestColor(tx, ty) });
+    }
+    return out;
+  }
+
   // ---------- 搜索匹配 ----------
   // 条目：{type:'line', id, text, aliases, ref} / {type:'stop', id, text, ref}。
   // 命中：主名或别名（大小写不敏感）前缀(rank0) > 包含(rank1)；线路优先于站；再按名称本地序。
@@ -673,7 +763,8 @@
   }
 
   // 调光线集：state＝{ phase: 'none'|'existing'|'approved'|'future', focus: lineId|null,
-  //                   lineGroups: buildLineGroups 产物（可选，缺省＝逐线旧行为） }。
+  //                   lineGroups: buildLineGroups 产物（可选，缺省＝逐线旧行为）,
+  //                   hlMode: 'veil'|'dim'（可选，缺省＝'dim' 旧行为完全不变） }。
   // 分期非「无」档：期次不匹配的线调光；聚焦：非聚焦线调光；两者叠加取并集（任一命中即调光）。
   // 「仅显示」级（displayOnly）线在任何调光场合（phase 或 focus 任一激活）恒入调光集——
   // 即便期次恰好匹配（2026-11-22 用户裁定）。默认态（无分期＋无聚焦）不调光，displayOnly 正常显示。
@@ -682,11 +773,17 @@
   //（主线＋支线都不调光）。S.focus 恒为主线 id（胶水层 toggleFocus 已归一），但此处对
   // 直传支线 id 亦按其组豁免（防御）。无 main 的组不经 lineGroups 进入（buildLineGroups
   // 已滤），组员照旧逐线判定。
+  // 2026-11-22 高亮改版（hlMode，用户裁定）：'veil'＝白罩遮罩高亮——「全都不动，
+  // 在高亮线路和其他线路之间隔一层白色半透明遮罩」，此时聚焦不再贡献 dim（非聚焦
+  // 线不调光、不隐站名，高亮由渲染层的白罩＋聚焦重画层呈现）；分期调光（其余半透明
+  // ＋隐站名）与他省线恒调光是既有独立裁定，两种模式下都维持 opacity 行为不变
+  //（veil 下 displayOnly 照旧入集）。'dim'＝旧「聚焦半透明其他」行为（缺省）。
   function computeDimmedSet(linesMap, state) {
     const dim = new Set();
     const st = state || {};
     const phase = st.phase && st.phase !== 'none' ? st.phase : null;
     const focus = st.focus != null && st.focus !== '' ? String(st.focus) : null;
+    const veil = st.hlMode === 'veil';   // 缺省＝false＝旧 dim 行为完全不变
     if (!phase && !focus) return dim;
     const lines = linesMap instanceof Map ? [...linesMap.values()]
       : (Array.isArray(linesMap) ? linesMap : []);
@@ -702,7 +799,8 @@
       const ref = grp ? (getById(grp.mainId) || line) : line;     // 组判定基准线＝主线
       if (lineLayerRank(ref) === 'displayOnly') { dim.add(id); continue; }
       if (phase && linePhaseOf(ref) !== phase) dim.add(id);   // 两条件独立叠加（并集）
-      if (focus && id !== focus && !(focusGrp && focusGrp.members.indexOf(id) >= 0)) dim.add(id);
+      // veil 模式下聚焦不贡献 dim（高亮由白罩＋重画层呈现，「全都不动」）
+      if (focus && !veil && id !== focus && !(focusGrp && focusGrp.members.indexOf(id) >= 0)) dim.add(id);
     }
     return dim;
   }
@@ -953,6 +1051,7 @@
     normalizeLines, lineBboxOf, stopList, buildStopView, buildArrowViews,
     planGroupPillChain, planarOf, lineSummaries, layerGroups, visibleListGroups,
     linePhaseOf, lineLayerRank, computeDimmedSet, nextPhase, connectorFadePlan,
+    connectorBlendPlan,
     zoomInterp, scaledSize, LINE_WIDTH_PX, DBLCLICK_TOL_PX, lineWidthAt,
     pointToScreenPolylineDist,
     buildLineGroups, lineSearchEntries, lineLabelOf, linesOfPin,

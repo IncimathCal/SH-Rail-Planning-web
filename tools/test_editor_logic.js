@@ -3,7 +3,8 @@
 // stopSeq 水位、status 修正、lineIssues、批量命名、站圆预置批量落站（planStopImport/applyStopImport/suggestForStop）、
 // 出省箭头（kind:'arrow' 落位/编组/命名/校验）、多线换乘药丸串法（planGroupPillChain 确定性）、
 // 线路显示顺序（normalizeLineOrder：缺省回退/序列化补全/新建追加/失效清理/删除移除）、
-// 站类型循环切换（nextStopKind：三种位置 × 各起点）、站数<2 缺 status 载入兜底（2026-11-22）。
+// 站类型循环切换（nextStopKind：三种位置 × 各起点）、站数<2 缺 status 载入兜底（2026-11-22）、
+// 联络线有效目标判定（connValidTargets：2026-11-22 取消颜色属性改由所联络两线决定）。
 // 用法：node tools/test_editor_logic.js
 
 const L = require(path_join('src', 'editor.js'));
@@ -513,6 +514,25 @@ eq(L.junctionStroke([{ role: 'main', color: '' }, { role: 'branch', color: '#B' 
 eq(L.junctionStroke([{ role: 'main' }]), '#000', '成员无 color 退默认黑');
 eq(L.junctionStroke([]), '#000', '空成员退默认黑');
 eq(L.junctionStroke(null), '#000', 'null 不崩');
+
+// ---------- 联络线有效目标判定 connValidTargets（2026-11-22：取消颜色属性，颜色由所联络两线决定） ----------
+console.log('connValidTargets:');
+const RES_OK = (id) => ({ lid: id, color: '#' + id, ap: { tag: id } });   // 模拟 resolve 命中 {lid,color,ap}
+eq(L.connValidTargets({ role: 'connector', connects: ['l0001', 'l0002'] }, RES_OK).map((t) => t.lid),
+  ['l0001', 'l0002'], '两有效目标：保持 connects 书写序');
+eq(L.connValidTargets({ role: 'connector', connects: ['l0001'] }, RES_OK), [], '仅 1 目标＝信息未填写完全，判无效');
+eq(L.connValidTargets({ role: 'connector', connects: ['l0001', 'l0009'] },
+  (id) => (id === 'l0001' ? RES_OK(id) : null)), [], '目标线不存在（resolve null）＝无效');
+eq(L.connValidTargets({ role: 'connector', connects: ['l0001', 'l0001'] }, RES_OK), [],
+  '重复 id 去重后不足 2＝无效');
+eq(L.connValidTargets({ role: 'connector', connects: ['l0003', 'l0001', 'l0002', 'l0001'] }, RES_OK).map((t) => t.lid),
+  ['l0003', 'l0001', 'l0002'], '≥3 目标全数返回（渲染端按距两端最近各取其一）＋去重保序');
+eq(L.connValidTargets({ role: 'connector', connects: ['l01', 42, 'l02'] }, RES_OK).map((t) => t.lid),
+  ['l01', 'l02'], '非字符串 id 跳过');
+eq(L.connValidTargets({ role: 'main', connects: ['l0001', 'l0002'] }, RES_OK), [], '非 connector 恒无效');
+eq(L.connValidTargets({ role: 'connector' }, RES_OK), [], 'connects 缺失不崩');
+eq(L.connValidTargets({ role: 'connector', connects: ['l0001', 'l0002'] }), [], 'resolve 缺省＝全部不可判定→无效');
+eq(L.connValidTargets(null, RES_OK), [], 'null line 不崩');
 
 // ---------- 线路所 stop.kind:'block'（2026-11-21）：编组约束 planStationGroup ----------
 console.log('planStationGroup:');

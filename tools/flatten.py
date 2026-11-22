@@ -17,7 +17,22 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
                         2026-11-22 用户需求 3：查看器聚焦时绑定联络线
                         沿线渐变透明的方向判定用；groupId＝线组归属 id，
                         无组为空字符串保持键齐——2026-11-22 主支线合并：
-                        查看器归并判定与 index.json lineGroups 双向并集）
+                        查看器归并判定与 index.json lineGroups 双向并集。
+                        color：connector 固定 '#555555' 深灰兜底——2026-11-22
+                        用户需求 2「取消联络线颜色属性」：真实颜色由 connects
+                        两端线决定（查看器渲染为双端渐变，flatten 侧万一下游
+                        漏剔也渲染成深灰而非无色），非 connector 照旧
+                        line.color 优先、缺省兜底组色）
+  <out>/stops.geojson  设站，每 feature 一个 Point
+                        properties: sid / name / lineId / lineName / t /
+                        groupId / groupType（connector 线的站额外携带
+                        stroke＝最近端目标线色——2026-11-22 用户需求 2：
+                        站圈描边不再用线体深灰，取 connects 各目标线全部
+                        加密坐标到本站的平面最近者的取色；有效目标 <2 条
+                        时深灰兜底）；出省箭头（v1.5 kind:"arrow"，
+                        非真正站点）保留输出并额外带 kind:"arrow" 键，
+                        普通站不写该键（geo 定位与其他站同口径）；
+                        kind:"block"（线路所）整条剔除——正式网页隐藏。
   <out>/stops.geojson  设站，每 feature 一个 Point
                         properties: sid / name / lineId / lineName / t /
                         groupId / groupType；出省箭头（v1.5 kind:"arrow"，
@@ -173,8 +188,14 @@ def load_groups(data_dir):
 
 # ------------------------------------------------------------- 单线展开 --
 
-def flatten_line(line, ap, tps, group_color, stop_group):
-    """单条线路 → (分段 LineString feature 列表, 设站 Point feature 列表)。"""
+def flatten_line(line, ap, tps, group_color, stop_group, conn_target_index=None):
+    """单条线路 → (分段 LineString feature 列表, 设站 Point feature 列表)。
+
+    conn_target_index＝主流程预建的全局索引 {lid: {"pts": 画板加密坐标列表,
+    "color": 非 connector 取色口径}}，供 connector 线的站圈描边查「connects
+    指向的线」的几何与取色（2026-11-22 用户需求 2）；缺省 None＝该功能退化
+    深灰兜底（不影响其余输出）。
+    """
     lid = line.get("id")
     stops = line.get("stops") or []
     sections = line.get("sections") or []
@@ -182,13 +203,18 @@ def flatten_line(line, ap, tps, group_color, stop_group):
     n = len(stops)
     loop = bool(line.get("loop"))
     meta = line.get("meta") or {}
+    is_conn = line.get("role") == "connector"
 
     base_props = {
         "lineId": lid,
         "name": line.get("name") or "",
         "aliases": list(meta.get("aliases") or []),
-        # 线路色优先取本线，缺省兜底线组色（schema：组色成员可继承）
-        "color": line.get("color") or group_color.get(line.get("groupId")),
+        # 线路色：connector 固定 '#555555' 深灰兜底（2026-11-22 用户需求 2「取消
+        # 联络线颜色属性」——真实颜色由 connects 两端线决定，查看器渲染双端渐变、
+        # 此处兜底保证万一下游漏剔也渲染成深灰而非无色）；其余线优先取本线，
+        # 缺省兜底线组色（schema：组色成员可继承）
+        "color": "#555555" if is_conn
+        else (line.get("color") or group_color.get(line.get("groupId"))),
         "role": line.get("role"),
         "layer": meta.get("layer"),   # 无则 null
         "loop": loop,
@@ -252,6 +278,29 @@ def flatten_line(line, ap, tps, group_color, stop_group):
         })
 
     # ---- 设站（线路所 kind:"block" 整条剔除；出省箭头 kind:"arrow" 保留输出）----
+    # 联络线站圈描边色（2026-11-22 用户需求 2）：取「最近端目标线色」——对
+    # connects 中每个存在于本次数据的线，算其全部加密 arc 坐标（画板系，主流程
+    # 预建索引）到本站坐标的平面距离，取最近者的取色（取色逻辑＝非 connector
+    # 的现有口径：line.color or 组色）。有效目标线 <2 条（或本线 connects<2）
+    # → 深灰兜底 '#555555'（与线体兜底一致——「信息未填写完全时显示深灰色」）。
+    # 本站坐标用 t 处画板点（point_at）：geo 权威覆盖的站也按此近似——stroke
+    # 只是视觉建议层，TPS 画板→经纬度非线性对「哪条线更近」的判定几乎无影响
+    #（geo 覆盖本身极罕见）。
+    def conn_stop_stroke(t_val):
+        connects = [c for c in (line.get("connects") or []) if isinstance(c, str)]
+        targets = [conn_target_index[c] for c in connects
+                   if conn_target_index and c in conn_target_index]
+        if len(connects) < 2 or len(targets) < 2:
+            return "#555555"
+        px, py = ap.point_at(t_val)
+        best, best_d = None, None
+        for tgt in targets:
+            for tx, ty in tgt["pts"]:
+                d = (px - tx) ** 2 + (py - ty) ** 2
+                if best_d is None or d < best_d:
+                    best_d, best = d, tgt
+        return (best or {}).get("color") or "#555555"
+
     stop_feats = []
     for st in stops:
         if st.get("kind") == "block":
@@ -274,6 +323,9 @@ def flatten_line(line, ap, tps, group_color, stop_group):
         # 出省箭头（v1.5，非真正站点）：仅 arrow 写 kind 键，普通站无该键
         if st.get("kind") == "arrow":
             props["kind"] = "arrow"
+        # 联络线站圈描边＝最近端目标线色（仅 connector 线的站携带，见上注）
+        if is_conn:
+            props["stroke"] = conn_stop_stroke(st["t"])
         stop_feats.append({
             "type": "Feature",
             "properties": props,
@@ -354,13 +406,36 @@ def main():
         loaded.sort(key=lambda it: rank.get(it[1].get("id"), n_rank))
 
     emitted_order = []   # 实际输出线的 id 顺序（index.json 内容）
-    for lf, line in loaded:
+
+    # 第一遍：解析全部线路几何＋预建联络线目标索引（2026-11-22 用户需求 2）。
+    # flatten_line 是逐线函数，而 connector 的站圈描边判定需查 connects 指向的
+    # 线的全量几何与取色——故先统一解析（arc 复用第二遍），再二次遍历产出。
+    # 索引取色口径＝非 connector 的现有逻辑（line.color or 组色，缺省深灰兜底）；
+    # connector 线的 color 已在 schema 层禁写，若 connects 误指联络线，其索引色
+    # 自然落组色或深灰，不炸。
+    def parse_arc(line):
         # 空白规范化：svg_parse 的词法把空格误当命令字符（真实 AI 导出 d 串为
         # 压缩格式无空格，仅手写样张含空格），此处统一换成逗号——SVG path 语法
         # 中空白与逗号同为分隔符，语义等价且与 src/geom.js（忽略空白）口径一致
         d_norm = re.sub(r"\s+", ",", line["path"].strip())
-        arc = path_from_d(d_norm)                # 解析+压平+弧长参数化（复用 svg_parse）
-        lf_, sf_ = flatten_line(line, arc, tps, group_color, stop_group)
+        return path_from_d(d_norm)               # 解析+压平+弧长参数化（复用 svg_parse）
+
+    arc_by_id = {}
+    conn_target_index = {}
+    for lf, line in loaded:
+        lid = line.get("id")
+        arc = parse_arc(line)
+        arc_by_id[lid] = arc
+        conn_target_index[lid] = {
+            "pts": arc.pts,   # 画板系加密坐标（压平产物，站描边最近端判定用）
+            "color": line.get("color") or group_color.get(line.get("groupId"))
+            or "#555555",
+        }
+
+    for lf, line in loaded:
+        arc = arc_by_id[line.get("id")]
+        lf_, sf_ = flatten_line(line, arc, tps, group_color, stop_group,
+                                conn_target_index)
         line_feats += lf_
         stop_feats += sf_
         emitted_order.append(line.get("id"))

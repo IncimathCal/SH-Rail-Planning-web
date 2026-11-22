@@ -446,6 +446,26 @@
     return bestColor || '#000';
   }
 
+  /** 联络线有效目标判定（2026-11-22 用户裁定：联络线取消颜色属性，颜色由所联络的两条线决定）。
+   *  line.role==='connector' 且 connects 数组去重后 ≥2 个 id 经 resolve(id) 能取到可判定目标
+   *  （编辑器侧约定 resolve 返回 {lid,color,ap}：线存在于 S.lines、有 color、arcOf 几何可解析；
+   *  查看器侧可按同规则类比注入）——不足 2 条即「信息未填写完全」，判无效（渲染端兜底深灰
+   *  CONNECTOR_FALLBACK）。返回有效目标数组（保持 connects 书写序、去重）；connects ≥3 时
+   *  全数返回、由渲染端按「距本线首/末端最近」各取其一着色，其余忽略（用户裁定）。
+   *  非 connector 或 connects 非数组一律 []。 */
+  function connValidTargets(line, resolve) {
+    if (!line || line.role !== 'connector' || !Array.isArray(line.connects)) return [];
+    const seen = new Set();
+    const out = [];
+    for (const id of line.connects) {
+      if (typeof id !== 'string' || seen.has(id)) continue;
+      seen.add(id);
+      const t = resolve ? resolve(id) : null;
+      if (t) out.push(t);
+    }
+    return out.length >= 2 ? out : [];
+  }
+
   /** 建组类型判定（拉框/点选攒组共用；node 单测覆盖）。
    *  kinds＝候选成员的 stop.kind 列表（'block'＝线路所，'arrow'＝出省箭头，其余/null＝普通车站）：
    *  含出省箭头 → 一律拒绝（ok:false, reason:'arrow'——箭头不是站点，不可编组，全箭头也不行）；
@@ -634,7 +654,7 @@
     canPlaceArrow, planGroupPillChain, nextStopKind,
     nextStopSeq, fixStatusField, lineIssues, planBulkFill,
     planStopImport, applyStopImport, suggestForStop,
-    layerGroupsOf, junctionStroke, planStationGroup,
+    layerGroupsOf, junctionStroke, planStationGroup, connValidTargets,
     normalizeLineOrder,
     calibForward, calibInverse, tpsForward, tpsInverse, poly3Forward, poly3Inverse,
     lonToTileX, latToTileY, tileXToLon, tileYToLat };
@@ -1157,6 +1177,31 @@
     return 'M' + pts.map((p) => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join('L');
   }
 
+  // ---------- 联络线取色（2026-11-22 用户裁定：取消颜色属性，颜色由所联络的两条线决定） ----------
+  /** 信息未填写完全（有效目标不足 2 条等）时的联络线兜底深灰（用户 2026-11-22 裁定） */
+  const CONNECTOR_FALLBACK = '#555555';
+  /** 目标线几何采样点数（端色/站圈取「最近目标线」判定的均匀 t 采样，见 connNearestTarget） */
+  const CONN_SAMPLE_N = 200;
+
+  /** 点到各有效目标线几何的最近者（联络线渐变两端取色与设站取色共用）。
+   *  目标几何判定从简：沿 t 均匀采样 CONN_SAMPLE_N 点比距离平方（单调，免开方）——
+   *  采样近似对编辑器工具界面足够（不做精确投影），84 线全量规模下成本亦可控。
+   *  targets 元素约定 {lid,color,ap}（见 connValidTargets）；targets 空→null。 */
+  function connNearestTarget(targets, pt) {
+    let best = null, bd = Infinity;
+    for (const tgt of targets || []) {
+      let d = Infinity;
+      for (let k = 0; k <= CONN_SAMPLE_N; k++) {
+        const q = tgt.ap.pointAt(k / CONN_SAMPLE_N);
+        const dx = q[0] - pt[0], dy = q[1] - pt[1];
+        const dd = dx * dx + dy * dy;
+        if (dd < d) d = dd;
+      }
+      if (d < bd) { bd = d; best = tgt; }
+    }
+    return best;
+  }
+
   /** 站圈 <title> 提示文本（渲染与改名/拖站局部更新共用，保持一致） */
   function stopTitle(line, st, idx, grp) {
     const isBlk = st.kind === 'block';
@@ -1175,6 +1220,29 @@
     if (!basemapG) basemapG = el('g', { id: 'basemap' });
     world.insertBefore(basemapG, world.firstChild);
     scheduleBasemap();
+    // 联络线渐变容器 <defs>：随上方 world.textContent='' 每次重绘整体清理重建（防泄漏与
+    // 悬空引用；与 basemapG 的跨渲染保留不同——渐变无瓦片闪烁顾虑，重建成本可忽略）
+    const gradDefs = el('defs', { id: 'conn-grads' }, world);
+    // 联络线有效目标索引（lid -> connValidTargets 结果[{lid,color,ap}]）：每次重绘现算，
+    // 目标线被删/改色即时生效、无缓存阻碍（S.lines 实时判定；arcOf 缓存已随删线清理）
+    const connTgtsOf = new Map();
+    for (const [cid, cline] of S.lines) {
+      if (cline.role !== 'connector') continue;
+      const tg = connValidTargets(cline, (id) => {
+        const tl = S.lines.get(id);
+        const tap = tl && tl.color ? arcOf(id) : null;
+        return tap ? { lid: id, color: tl.color, ap: tap } : null;
+      });
+      if (tg.length) connTgtsOf.set(cid, tg);
+    }
+    /** 任意线路在指定画板点的设站取色：非联络线→line.color（原行为）；联络线有效→
+     *  距该点最近的目标线色；无效（信息未填写完全）→深灰兜底。站圈/线路所/出省箭头、
+     *  接轨站合并圈成员色统一走这里 */
+    const connColorAt = (line, pt) => {
+      if (line.role !== 'connector') return line.color;
+      const tg = connTgtsOf.get(line.id);
+      return tg ? connNearestTarget(tg, pt).color : CONNECTOR_FALLBACK;
+    };
     const scale = S.view ? Math.max(svg.clientWidth, 1) / S.view.w : 1;
     const rStop = 5.5 / scale, ringR = 8.5 / scale, hintR = 12 / scale;
 
@@ -1220,7 +1288,30 @@
       const ap = arcOf(lid);
       if (!ap) continue;
       const gLine = el('g', { class: 'svg-line' }, world);
-      gLine.style.stroke = line.color;
+      // 联络线线身取色（2026-11-22 用户裁定：取消颜色属性，颜色由所联络的两条线决定）：
+      // 有效时 stroke＝SVG linearGradient——两端各取「距本线首/末端最近的 connects 目标线色」
+      // 作 stop，gradientUnits=userSpaceOnUse 沿贝塞尔起讫连线渐变（线性近似「沿曲线填充」，
+      // 编辑器工具界面足够；查看器为 MapLibre 另行实现）。段 path/.line-base 自身无 stroke
+      // （CSS 只设宽度/透明度/虚线，已逐一确认），全靠此处 gLine.style.stroke 继承上色；
+      // 无效（信息未填写完全：目标不足 2 条等）→深灰兜底。有 groupId 的联络线仍走本规则
+      // （防御：编辑器线身渲染不消费组色，组逻辑不改联络线颜色）。
+      const connTgts = connTgtsOf.get(lid);
+      if (line.role === 'connector' && connTgts) {
+        const p0 = ap.pointAt(0), p1 = ap.pointAt(1);
+        const g0 = connNearestTarget(connTgts, p0), g1 = connNearestTarget(connTgts, p1);
+        if (Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) < 1e-6) {
+          gLine.style.stroke = g0.color;   // 首末重合（闭合 path 极端情形）：零向量渐变未定义，退化单色
+        } else {
+          // connects ≥3：两端各取最近目标、其余忽略（用户裁定，见 connValidTargets 注释）
+          const grad = el('linearGradient', { id: `grad-${lid}`, gradientUnits: 'userSpaceOnUse',
+            x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1] }, gradDefs);
+          el('stop', { offset: '0', 'stop-color': g0.color }, grad);
+          el('stop', { offset: '1', 'stop-color': g1.color }, grad);
+          gLine.style.stroke = `url(#grad-${lid})`;
+        }
+      } else {
+        gLine.style.stroke = line.role === 'connector' ? CONNECTOR_FALLBACK : line.color;
+      }
       gLine.dataset.lid = lid;
       const active = lid === S.activeLine;
 
@@ -1288,9 +1379,10 @@
           const dstr = `M${(x + dx * tipL).toFixed(2)},${(y + dy * tipL).toFixed(2)}`
             + `L${(x - dx * tipL + px * halfW).toFixed(2)},${(y - dy * tipL + py * halfW).toFixed(2)}`
             + `L${(x - dx * tipL - px * halfW).toFixed(2)},${(y - dy * tipL - py * halfW).toFixed(2)}Z`;
-          // 复用 .stop-c 类获得指针/命中/拖动交互；fill/stroke 走内联样式盖过类默认白底
+          // 复用 .stop-c 类获得指针/命中/拖动交互；fill/stroke 走内联样式盖过类默认白底。
+          // fill 走 connColorAt：联络线箭头取「该点最近目标线色」（无效深灰），白描边不动
           const tri = el('path', { d: dstr, class: 'stop-c stop-arrow' + (isPend ? ' pend' : '') }, gLine);
-          tri.style.fill = isPend ? 'var(--warn)' : line.color;
+          tri.style.fill = isPend ? 'var(--warn)' : connColorAt(line, [x, y]);
           tri.style.stroke = '#fff';
           tri.style.strokeWidth = (1.2 / scale) + 'px';
           tri.dataset.lid = lid; tri.dataset.sid = st.id;
@@ -1298,8 +1390,10 @@
           tt.textContent = stopTitle(line, st, idx, grp);
           return;
         }
+        // 描边宽 2026-11-22 用户裁定整体 ×0.6（原 2→1.2；线路所虚线圆同元素自动跟随）；
+        // 描边色走 connColorAt：联络线站圈取「该站最近目标线色」（无效深灰）、出闸组黑边优先不变
         const c = el('circle', { cx: x, cy: y, r: rStop, class: 'stop-c' + (isPend ? ' pend' : ''),
-          stroke: oos ? '#000' : line.color, 'stroke-width': 2 / scale }, gLine);
+          stroke: oos ? '#000' : connColorAt(line, [x, y]), 'stroke-width': 1.2 / scale }, gLine);
         if (isBlk) c.setAttribute('stroke-dasharray', `${3 / scale} ${3 / scale}`);   // 屏幕恒定虚线（同 hint-ring 3 3 习惯）
         c.dataset.lid = lid; c.dataset.sid = st.id;
         const t = el('title', {}, c);
@@ -1317,7 +1411,8 @@
     // （mergedHidden），药丸即换乘标识——点选/提示/待编组交互挂药丸面层；恰好 2 线维持大圈不变。
     // 接轨站（junction，支线/联络线接轨用）：尺寸与普通设站圆一致（不做换乘大圈）、
     // 不画黑边（黑边是换乘语义），描边色按成员线角色优先级 main > standalone > branch > connector
-    // 取（junctionStroke；取不到成员线颜色退 '#000'）；fill 仍白底。就近提示/点选/编组交互复用既有机制。
+    // 取（junctionStroke；取不到成员线颜色退 '#000'；联络线成员先换「该站最近目标线色」，2026-11-22）；
+    // fill 仍白底。就近提示/点选/编组交互复用既有机制。
     // 出闸组/junction 组渲染不涉及药丸。
     for (const g of stationGroups) {
       if (g.type !== 'same-station' && g.type !== 'junction') continue;
@@ -1339,7 +1434,7 @@
         const dstr = 'M' + chain.map((k) => `${pts[k][0].toFixed(2)},${pts[k][1].toFixed(2)}`).join('L');
         const anyPendP = g.stops.some((sid) => S.pending.includes(sid));
         const thick = (7.5 * 2) / scale;      // ＝双线大圈直径（2×7.5），视觉等宽
-        const border = 2.2 / scale;           // ＝双线大圈黑边宽
+        const border = 2.2 / scale;           // 黑边宽维持 2.2（2026-11-22 站圈描边整体 ×0.6 裁定下药丸黑边不动，视觉独立）
         el('path', { d: dstr, class: 'grp-pill-under', fill: 'none', stroke: '#000',
           'stroke-width': thick + 2 * border, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, pillG);
         const pill = el('path', { d: dstr, class: 'grp-pill', fill: 'none',
@@ -1368,12 +1463,17 @@
       const anyPend = g.stops.some((sid) => S.pending.includes(sid));
       const isJunc = g.type === 'junction';
       const anyBlk = isJunc && members.some((m) => m.st.kind === 'block');   // 组内含线路所→虚线（属性可见）
+      // 描边宽 2026-11-22 用户裁定整体 ×0.6（junction 2→1.2、双线大圈黑边 2.2→1.32）；
+      // junction 成员色：联络线成员经 connColorAt 换「该站最近目标线色」（无效深灰）后再入
+      // 角色优先级比较——混合组本就轮不到联络线色，全联络线接轨组自然取到目标线色
       const c = el('circle', { cx: px, cy: py, r: isJunc ? rStop : 7.5 / scale,
         class: 'stop-merge' + (anyPend ? ' pend' : ''),
         stroke: isJunc
-          ? junctionStroke(members.map((m) => ({ role: m.line.role, color: m.line.color })))
+          ? junctionStroke(members.map((m) => ({ role: m.line.role,
+              color: m.line.role === 'connector'
+                ? connColorAt(m.line, m.ap.pointAt(m.st.t)) : m.line.color })))
           : '#000',
-        'stroke-width': (isJunc ? 2 : 2.2) / scale }, world);
+        'stroke-width': (isJunc ? 1.2 : 1.32) / scale }, world);
       if (anyBlk) c.setAttribute('stroke-dasharray', `${3 / scale} ${3 / scale}`);
       c.dataset.grp = g.id;
       const t = el('title', {}, c);
@@ -1533,12 +1633,33 @@
       lineListUi.set(key, page);
       html += `<div class="ll-group" data-llkey="${esc(key)}">`;
       html += `<div class="layer-head"><span>${esc(grp.layer || '未分类')}</span><span>${grp.lines.length}</span></div>`;
-      html += grp.lines.slice((page - 1) * LINE_PAGE_SIZE, page * LINE_PAGE_SIZE).map((l) => `
+      html += grp.lines.slice((page - 1) * LINE_PAGE_SIZE, page * LINE_PAGE_SIZE).map((l) => {
+        // 联络线色块（2026-11-22 用户裁定：颜色属性已取消、派生自 connects 两端）——
+        // 有效＝两端目标线色横向小渐变（端色判定与线身同一套 connNearestTarget）；
+        // 无效（信息未填写完全）＝深灰兜底，与线身/站圈视觉一致
+        let chipBg = esc(l.color);
+        if (l.role === 'connector') {
+          const tg = connValidTargets(l, (id) => {
+            const tl = S.lines.get(id);
+            const tap = tl && tl.color ? arcOf(id) : null;
+            return tap ? { lid: id, color: tl.color, ap: tap } : null;
+          });
+          const ap = tg.length ? arcOf(l.id) : null;
+          if (tg.length && ap) {
+            const c0 = connNearestTarget(tg, ap.pointAt(0)).color;
+            const c1 = connNearestTarget(tg, ap.pointAt(1)).color;
+            chipBg = `linear-gradient(90deg, ${c0}, ${c1})`;
+          } else {
+            chipBg = CONNECTOR_FALLBACK;
+          }
+        }
+        return `
         <div class="line-row ${l.id === S.activeLine ? 'active' : ''}" data-lid="${l.id}">
-          <span class="chip" style="background:${esc(l.color)}"></span>
+          <span class="chip" style="background:${chipBg}"></span>
           <span class="nm">${esc(l.name)} ${l.meta && l.meta.archived ? '<span class="badge arch">归档</span>' : ''}</span>
           <span class="id">${l.id} · ${l.stops.length}站</span>
-        </div>`).join('');
+        </div>`;
+      }).join('');
       if (pages > 1) html += `<div class="ll-foot">
         <button class="mini" data-llpg="prev" ${page <= 1 ? 'disabled' : ''}>上一页</button>
         <span>${page} / ${pages} 页</span>
@@ -1605,7 +1726,9 @@
     box.innerHTML = `
       <div class="fld"><label>id</label><input type="text" value="${l.id}" disabled></div>
       <div class="fld"><label>名称</label><input type="text" id="lfName" value="${esc(l.name)}"></div>
-      <div class="fld"><label>颜色</label><input type="color" id="lfColor" value="${esc(l.color)}"></div>
+      <!-- 联络线隐藏颜色输入（2026-11-22 用户裁定：颜色属性取消、派生自 connects 两端，
+           手填会被 validate 拒）；角色切换处（lfRole change）同步显隐 -->
+      <div class="fld" id="lfColorRow" style="display:${l.role === 'connector' ? 'none' : 'flex'}"><label>颜色</label><input type="color" id="lfColor" value="${esc(l.color || '#888888')}"></div>
       <div class="fld"><label>环线</label><input type="checkbox" id="lfLoop" ${l.loop ? 'checked' : ''}
         style="flex:1"><span style="color:var(--dim);font-size:11px">（path 闭合）</span></div>
       <div class="fld"><label>角色</label><select id="lfRole" style="flex:1">
@@ -2723,6 +2846,7 @@
         }
         $('lfGroupRow').style.display = (l.role === 'main' || l.role === 'branch') ? 'flex' : 'none';
         $('lfConnRow').style.display = l.role === 'connector' ? 'flex' : 'none';
+        $('lfColorRow').style.display = l.role === 'connector' ? 'none' : 'flex';
         break;
       }
       case 'lfGroup':
@@ -2744,7 +2868,8 @@
     if (touched) {
       l.meta.updated = today(); autosave();
       const fld = e.target.id;
-      scheduleFormRender(fld === 'lfColor' || fld === 'lfLoop' || fld === 'lfRole');
+      // lfConnects 需重绘世界：connects 改动即时切换联络线渐变/深灰（2026-11-22 联络线取色改版）
+      scheduleFormRender(fld === 'lfColor' || fld === 'lfLoop' || fld === 'lfRole' || fld === 'lfConnects');
     }
   });
   $('lineform').addEventListener('click', (e) => {

@@ -46,6 +46,16 @@
 // 命中以屏幕像素距离为准（候选坐标逐点 map.project → VIEWER_CORE.pointToScreenPolylineDist，
 // 阈值＝lineWidthAt(zoom)/2＋DBLCLICK_TOL_PX），只有直接点到线体描边上才聚焦并
 // preventDefault，全部超阈值＝未命中放行原生双击缩放。
+// 2026-11-22 四项改版（用户需求）：①站圈描边宽度 ×0.6（2→1.2、黑边 2.2→1.32，药丸
+// 黑边不动）；②取消联络线颜色属性——颜色由 connects 两端线决定：有效联络线常驻
+//「双端渐变层」（blend 形态，conn-blend-*，head/tailColor＝VIEWER_CORE.connectorBlendPlan
+// 首末端最近目标线色；信息不全 flatten/plan 双侧深灰兜底），站圈描边取 flatten 产出的
+// stroke（最近端目标线色）；聚焦高亮的渐变方式不变但基色改取聚焦线色；③高亮方式改版：
+// 默认 veil＝「全都不动，高亮线路和其他线路之间隔一层白色半透明遮罩」（白罩层 focus-veil
+// ＋聚焦重画层 focus-copy，重建统一走 rebuildConnLayers；顶栏「高亮」按钮可切回旧 dim
+// 调光——短期对比开关，定案后删）＋白罩不透明度五档循环（30%~70%，定值后删档位）；
+// 分期调光与他省线恒调光是既有独立裁定、两种模式下维持不变；④健壮性（connectorBlendPlan
+// 逐项防御、computeDimmedSet veil 模式，单测覆盖 tools/test_viewer_logic.js）。
 // 与编辑器完全独立：不加载 editor.js 的任何代码。中文标签走 HTML 叠加（架构方案 §6 备案路线）。
 
 (function (G) {
@@ -79,13 +89,27 @@
     basemapPending: false,        // 样式未就绪时点击的补应用标记（目标态恒存 S.basemap）
     styleReady: false,            // map 'load' 已触发（样式只建一次，就绪后 addSource/addLayer 恒可用）
     panelCollapsed: false,        // 线路面板收起态（2026-11-22 用户需求；会话内不持久化，刷新回展开——与底图三态等 UI 态同策）
+    // 2026-11-22 高亮方式改版（用户需求 3）：'veil'＝白罩遮罩高亮（默认）——聚焦时
+    // 全都不动，在高亮线路与其他线路之间隔一层白色半透明遮罩（白罩层 focus-veil ＋
+    // 聚焦重画层 focus-copy，见 rebuildConnLayers）；'dim'＝旧「聚焦半透明其他」。
+    // 开关为短期对比用（顶栏按钮循环切换，不持久化），用户定案后整个开关删除。
+    hlMode: 'veil',
+    // 白罩不透明度档位（2026-11-22 用户追加：30%~70% 每 10% 一档共 5 档循环，默认
+    // 0.5 居中好对比；顶栏「遮罩：N%」按钮切换，用户目验定值后删档位只留定值）
+    veilOpacity: 0.5,
+    // 2026-11-22 用户需求 2「取消联络线颜色属性」：blendPlan＝connectorBlendPlan 结果
+    //（boot 算一次，常驻不随聚焦变）；blendSet＝有效联络线 lineId 集（基础层剔除、
+    // 渐变层接管——联络线颜色由 connects 两端线的双端渐变决定）。
+    blendPlan: [],
+    blendSet: new Set(),
     // 2026-11-22 用户需求 3：联络线渐变高亮——fadeSet＝当前聚焦的绑定联络线 lineId 集
-    //（renderLinesFC 据此跳过基础线层 feature，防半透明底线垫在渐变尾端底下透出）；
-    // fadeConnPlan＝connectorFadePlan 缓存（rebuildConnFade 复用，避免重复几何判定）；
-    // connFadeLayerIds＝已加的动态渐变层 id（conn-fade-<lineId>，退出聚焦时移除）。
+    //（基础层跳 feature，防半透明底线垫在渐变尾端底下透出）；fadeConnPlan＝
+    // connectorFadePlan 缓存（rebuildConnLayers 复用，避免重复几何判定）；
+    // connLayerIds＝已加的动态层 id（联络线渐变层 conn-blend-/conn-fade-<lineId> ＋
+    // 白罩 focus-veil ＋ 聚焦重画 focus-copy，全删全建，见 rebuildConnLayers）。
     fadeSet: new Set(),
     fadeConnPlan: [],
-    connFadeLayerIds: [],
+    connLayerIds: [],
   };
 
   // ---------- 通用 ----------
@@ -159,17 +183,28 @@
   // 渲染同帧一致；与 WGS84 差数百米，全图 fit 无感）。导出走权威结构，不经此处。
   // 2026-11-22 改版：特征带 dim 位（S.dimmed 调光线集），各图层 paint 据此半透明
   //（分期四档/聚焦两模式共用；调光状态下重设 source 即刷新）。
-  // 2026-11-22 用户需求 3：fadeSet 中的联络线不再产出 'lines' 层 feature——渐变图层
-  // 接管其显示后，半透明底线会垫在渐变尾端底下透出，违反「另一端 alpha 0」；
-  // 但 S.dispBbox 记账照旧（只跳 feature 不跳 bbox——fitBounds/搜索定位不受影响）。
+  // 2026-11-22 用户需求 3＋2：基础线层跳 feature 规则汇总（bbox 记账照旧——只跳
+  // feature 不跳线，fitBounds/搜索定位不受影响）：
+  //   ① fadeSet（聚焦绑定联络线）——渐变高亮层接管，半透明底线会垫在渐变尾端底下
+  //      透出，违反「另一端 alpha 0」；
+  //   ② blendSet（有效联络线，常驻）——双端渐变层接管（颜色由 connects 两端线决定）；
+  //   ③ veil＋聚焦时的聚焦组成员——focus-copy 重画层接管（画在白罩之上，维持原色
+  //      不被罩压白；dim 模式聚焦线留基础层不动＝现状）。
+  function veilFocusSkipSet() {
+    if (S.hlMode !== 'veil' || S.focus == null) return null;
+    const grp = S.lineGroups.ofLine.get(S.focus);
+    return new Set(grp ? grp.members : [S.focus]);
+  }
   function renderLinesFC() {
     S.dispBbox = new Map();
     const dc = S.dispCoord;
+    const veilSkip = veilFocusSkipSet();
     const features = [];
     for (const line of S.linesMap.values()) {
       let bb = null;
       const dim = S.dimmed.has(line.lineId) ? 1 : 0;
-      const fade = S.fadeSet.has(line.lineId);
+      const skip = S.fadeSet.has(line.lineId) || S.blendSet.has(line.lineId)
+        || (veilSkip != null && veilSkip.has(line.lineId));
       for (const seg of line.segments) {
         const coords = [];
         for (const pt of seg.coords) {
@@ -179,7 +214,7 @@
           bb = mergeBbox(bb, [p[0], p[1], p[0], p[1]]);
         }
         if (coords.length < 2) continue;
-        if (fade) continue;   // 渐变联络线不进基础线层（bbox 已记账，见上注）
+        if (skip) continue;   // 渐变/重画层接管的线不进基础线层（bbox 已记账，见上注）
         features.push({
           type: 'Feature',
           geometry: { type: 'LineString', coordinates: coords },
@@ -212,9 +247,10 @@
     return ids.every((id) => S.dimmed.has(id)) ? 1 : 0;
   }
   function renderStopsFC() {
-    // pin → circle：白填充；描边＝无组站取线色、同站组/出闸成员黑边（换乘语义）、
-    // junction 组取成员线角色优先级色；big（同站大圈）与 dark（黑边加粗）为渲染开关位。
-    // 坐标过 S.dispCoord（同 renderLinesFC，显示侧变换）。
+    // pin → circle：白填充；描边＝无组站取线色（联络线站优先 pin.stroke＝最近端
+    // 目标线色——2026-11-22 用户需求 2，flatten 产出经 stopList/pinOfStop 透传）、
+    // 同站组/出闸成员黑边（换乘语义）、junction 组取成员线角色优先级色；big（同站
+    // 大圈）与 dark（黑边加粗）为渲染开关位。坐标过 S.dispCoord（同 renderLinesFC）。
     S.dispStopsBbox = null;
     const dc = S.dispCoord;
     const features = [];
@@ -224,7 +260,7 @@
       else if (pin.kind === 'group' || pin.groupType === 'out-of-station') { stroke = '#000000'; dark = 1; }
       else {
         const line = S.linesMap.get(pin.lineId);
-        stroke = line ? line.color : '#999999';
+        stroke = pin.stroke || (line ? line.color : '#999999');
       }
       const p = dc(pin.lon, pin.lat);
       S.dispStopsBbox = mergeBbox(S.dispStopsBbox, [p[0], p[1], p[0], p[1]]);
@@ -284,7 +320,8 @@
   // ---------- 地图 ----------
   // 画布视觉参数＝编辑器同值常量（2026-11-22 用户裁定：查看器风格未定前复用编辑器画布）：
   // 线宽 7px 圆帽、药丸厚度 15（＝2×大圈半径 7.5）＋黑边 2.2、箭头 icon-size 1.0（glyph 24px
-  // 画布 ≈ 编辑器 18×12 三角）、站圈 5.5/大圈 7.5/描边 2、黑边 2.2。
+  // 画布 ≈ 编辑器 18×12 三角）、站圈 5.5/大圈 7.5、描边 2→1.2、黑边 2.2→1.32
+  //（2026-11-22 用户裁定：站圈描边宽度 ×0.6；药丸黑边不动）。
   // 2026-11-22 改版①⑦：渲染不再区分期次——单一线层、纯色实线、统一不透明（默认 dim=0 → 1.0；
   // 调光表达式恒挂，dim 位由渲染特征携带）；三档透明与远期虚线删除，无需按 segStatus 拆层。
   // 尺寸随缩放等比（2026-11-22 二次裁定「等比缩＋向上封顶」）：z≥11 恒基准（拉近不变粗）、
@@ -344,8 +381,9 @@
     },
     paint: { 'icon-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1] },
   };
-  // 站圈层：按 big/dark 拆三层、各层尺寸全常量（编辑器同值：普通站圈 r5.5/描边2、出闸组成员
-  // r5.5/黑边2.2、换乘大圈 r7.5/黑边2.2——.stop-c/.stop-merge）。2026-11-22 修复：此前用
+  // 站圈层：按 big/dark 拆三层、各层尺寸全常量（编辑器同值：普通站圈 r5.5、出闸组成员
+  // r5.5、换乘大圈 r7.5——.stop-c/.stop-merge；描边宽 2026-11-22 用户裁定 ×0.6：
+  // 描边 2→1.2、黑边 2.2→1.32，见 STOP_LAYER_DEFS）。2026-11-22 修复：此前用
   // ['case'] 档位值作 zoom 插值 stops（数据驱动×zoom 复合表达式），真机目验两轮「线缩圆不缩」
   //（线层同助手常量 stops 正常）——拆层后每层 stops 全常量、与已验证的线宽层同一机制。
   // filter 三层互斥全覆盖：big⇒黑边大圈（same-station ≤2 线合并，dark 恒 1）、
@@ -355,9 +393,11 @@
   // big/dark 是数字——'!' 数字判类型错，所在层被 MapLibre 静默弃载（c07360d「站圆全没」
   // 根因：药丸/线/箭头层无 filter 照常渲染，三个站圈层全弃；错误只进 console 不上画面）。
   const STOP_LAYER_DEFS = [
-    { id: 'stops', filter: ['all', ['==', ['get', 'big'], 0], ['==', ['get', 'dark'], 0]], radius: 5.5, strokeW: 2 },
-    { id: 'stops-dark', filter: ['all', ['==', ['get', 'big'], 0], ['==', ['get', 'dark'], 1]], radius: 5.5, strokeW: 2.2 },
-    { id: 'stops-big', filter: ['==', ['get', 'big'], 1], radius: 7.5, strokeW: 2.2 },
+    // 描边宽 2026-11-22 用户裁定 ×0.6：2→1.2、黑边 2.2→1.32（仅站圈三层；药丸
+    // 黑边 pills-outer 19.4 不动）
+    { id: 'stops', filter: ['all', ['==', ['get', 'big'], 0], ['==', ['get', 'dark'], 0]], radius: 5.5, strokeW: 1.2 },
+    { id: 'stops-dark', filter: ['all', ['==', ['get', 'big'], 0], ['==', ['get', 'dark'], 1]], radius: 5.5, strokeW: 1.32 },
+    { id: 'stops-big', filter: ['==', ['get', 'big'], 1], radius: 7.5, strokeW: 1.32 },
   ];
   function stopLayerDef(d) {
     return {
@@ -413,9 +453,22 @@
           pills: { type: 'geojson', data: renderPillsFC() },
           arrows: { type: 'geojson', data: renderArrowsFC() },
           // 联络线渐变 source（2026-11-22 用户需求 3）：lineMetrics:true 是 line-gradient
-          // 的前置要求；初始空 FC，聚焦时由 rebuildConnFade 动态填数＋逐线加层。
-          // 渐变图层不进初始 layers——聚焦才建（见 rebuildConnFade）。
+          // 的前置要求；初始空 FC，聚焦时由 rebuildConnLayers 动态填数＋逐线加层。
+          // 渐变图层不进初始 layers——按需才建（见 rebuildConnLayers）。
           'conn-fade': { type: 'geojson', lineMetrics: true, data: { type: 'FeatureCollection', features: [] } },
+          // 白罩高亮 source（2026-11-22 用户需求 3）：focus-veil＝全世界矩形 Polygon
+          //（数据常量——任何平移不出界；层动态建删，非聚焦态不建）；focus-copy＝聚焦
+          // 重画层 source（初始空 FC，veil＋聚焦时填聚焦组成员特征）。层均不进初始 layers。
+          'focus-veil': {
+            type: 'geojson',
+            data: {
+              type: 'Feature', properties: {},
+              geometry: { type: 'Polygon', coordinates: [[
+                [-180, -85], [-180, 85], [180, 85], [180, -85], [-180, -85],
+              ]] },
+            },
+          },
+          'focus-copy': { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
         },
         layers: [
           { id: 'bg', type: 'background', paint: { 'background-color': '#ffffff' } },   // 2026-11-22 三批：黑板→白板
@@ -477,6 +530,9 @@
       if (S.basemapPending) { S.basemapPending = false; applyBasemapToMap(); }
       // 同理补应用提前切换的分期/聚焦调光（目标态恒存 S.phase/S.focus）
       if (S.dimPending) { S.dimPending = false; applyDimState(); }
+      // 常驻 blend 层首次建立（联络线双端渐变不依赖聚焦——两条 pending 路径各自
+      // 已调过 rebuildConnLayers，此处幂等重跑一次兜底，全删全建无副作用）
+      rebuildConnLayers();
       fitAll(); scheduleLabels();
       console.info('viewer map loaded: layers=' + (map.getStyle().layers || []).length
         + ', center=' + JSON.stringify(map.getCenter()) + ', zoom=' + map.getZoom().toFixed(2)
@@ -569,7 +625,7 @@
     if (S.map.getSource('stops')) S.map.getSource('stops').setData(renderStopsFC());
     if (S.map.getSource('pills')) S.map.getSource('pills').setData(renderPillsFC());
     if (S.map.getSource('arrows')) S.map.getSource('arrows').setData(renderArrowsFC());
-    rebuildConnFade();   // 渐变特征坐标必须同帧过 S.dispCoord（2026-11-22 用户需求 3）
+    rebuildConnLayers();   // 渐变/重画特征坐标必须同帧过 S.dispCoord（2026-11-22 用户需求 3）
     scheduleLabels();
   }
   // 目标态恒存 S.basemap（按钮文案/署名即时跟随）；样式未就绪（buildMap 前/样式加载中）只置
@@ -590,8 +646,10 @@
   // 模式），on('load') 后补应用，点击不丢失。
   function applyDimState() {
     // 2026-11-22 主支线合并：调光组级（lineGroups 传入——期次/仅显示级以主线为准，
-    // 聚焦豁免组全体成员；S.focus 恒为主线 id，见 toggleFocus 归一）
-    S.dimmed = V.computeDimmedSet(S.linesMap, { phase: S.phase, focus: S.focus, lineGroups: S.lineGroups });
+    // 聚焦豁免组全体成员；S.focus 恒为主线 id，见 toggleFocus 归一）。
+    // 2026-11-22 高亮改版：hlMode 传入（'veil'＝聚焦不贡献 dim，缺省 'dim' 旧行为）
+    S.dimmed = V.computeDimmedSet(S.linesMap,
+      { phase: S.phase, focus: S.focus, lineGroups: S.lineGroups, hlMode: S.hlMode });
     updateFadeSet();   // fadeSet 须在 renderLinesFC 之前就绪（基础层跳 feature 依赖它）
     if (!S.map || !(S.styleReady || S.map.isStyleLoaded())) { S.dimPending = true; return; }
     S.dimPending = false;
@@ -599,88 +657,195 @@
     if (S.map.getSource('stops')) S.map.getSource('stops').setData(renderStopsFC());
     if (S.map.getSource('pills')) S.map.getSource('pills').setData(renderPillsFC());
     if (S.map.getSource('arrows')) S.map.getSource('arrows').setData(renderArrowsFC());
-    rebuildConnFade();
+    rebuildConnLayers();   // 联络线渐变层＋白罩＋聚焦重画层（全删全建）
     scheduleLabels();
   }
-  // ---------- 联络线渐变高亮（2026-11-22 用户需求 3：聚焦线的绑定联络线沿线渐变透明） ----------
-  // 聚焦线 L 时，connects 含 L 的每条联络线渲染为：接 L 的一端不透明 → 沿线贝塞尔插值
-  // 降低透明度 → 另一端 alpha 0。技术约束：MapLibre 的 line-gradient 不能数据驱动
-  //（不能引用 feature 属性），且要求 source 开 lineMetrics:true、feature 为单条
-  // LineString——故共享一个 source（'conn-fade'）、每条绑定联络线动态 addLayer 一个层，
-  // 各自 line-gradient 用常量色（该线颜色）从 alpha1 渐到 alpha0，并以 filter
-  // ['==',['get','lineId'],…] 只渲染自己的 feature（层间互不串色）。几何方向靠坐标序
-  // 定向：拼接时 attachEnd===1 就反转坐标数组，保证梯度恒为「首端(接入端)不透明 →
-  // 末端 0」。渐变层不绑任何点击/hover（联络线本体的点选开面板走 'lines' 层——被
-  // fadeSet 排除后渐变层上点不到就算了，可接受）。
+  // ---------- 联络线渐变层＋白罩高亮（2026-11-22 用户需求 2＋3） ----------
+  // 技术约束（MapLibre，血泪教训）：line-gradient 不能数据驱动（不能引用 feature
+  // 属性）、要求 source 开 lineMetrics:true、feature 为单条 LineString——故全部联络
+  // 线渐变共享一个 source（'conn-fade'）、每条线动态 addLayer 一个层，各自
+  // line-gradient 用常量色插值，并以 filter ['==',['get','lineId'],…] 只渲染自己的
+  // feature（层间互不串色）。
+  // 两种形态、同一层族按态切 paint（rebuildConnLayers 全删全建）：
+  //   · blend 形态（常驻，非聚焦或未被聚焦绑定）：line-gradient＝headColor→tailColor
+  //     双端渐变（connectorBlendPlan 取色——颜色由 connects 两端线决定，全不透明），
+  //     挂 line-opacity 的 dim case（feature 带 dim 位——联络线也受分期调光与他省
+  //     规则；veil 模式下非聚焦线不进 dimmed＝不调光，自然全不透明）。坐标不反转
+  //    （headColor 即拼接折线首端色）。
+  //   · fade 形态（聚焦绑定，connects 含聚焦线）：「聚焦线色→透明」沿线渐变（基色
+  //     ＝聚焦线在 linesMap 的 color——2026-11-22 用户需求 2 改：不再用联络线自身色），
+  //     attachEnd===1 时 reverse 坐标保证「首端＝接入聚焦线的一端」，高亮态不挂 dim。
+  // 渐变层不绑任何点击/hover（联络线本体的点选开面板走 'lines' 层——被剔除后渐变
+  // 层上点不到就算了，可接受，与既有裁定一致）。
   // fadeSet 重算（纯数据，不碰地图）：必须在任何 renderLinesFC 之前执行——基础线层
-  // 跳 feature 依赖它。plan 缓存进 S.fadeConnPlan 供 rebuildConnFade 复用。
+  // 跳 feature 依赖它。plan 缓存进 S.fadeConnPlan 供 rebuildConnLayers 复用。
   function updateFadeSet() {
     const plan = S.focus != null ? V.connectorFadePlan(S.linesMap, S.focus) : [];
     S.fadeConnPlan = plan;
     S.fadeSet = new Set(plan.map((it) => it.lineId));
   }
   const EMPTY_CONN_FC = { type: 'FeatureCollection', features: [] };
-  // 渐变层定义：line-cap/line-join 是 layout 属性（⚠ 放 paint 会整个 style 拒载全黑——
-  // 本项目踩过的坑）；线宽与线层同宽同缩放（V.zoomInterp(V.scaledSize(7),7)）。
-  function connFadeLayerDef(layerId, lineId, color) {
-    const hex = V.normalizeHex(color) || '#888888';
-    const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+  // 拼接 LineString 坐标（segments 按 segIndex 拼接 → 过滤有限坐标 → 逐点过
+  // S.dispCoord 显示变换——与四 source 同帧，底图切换 gaode 下渐变坐标才不漂）；
+  // 不足 2 点返回 null（全无效坐标的线本就不进基础层，这里同样不进渐变）
+  function connCoords(line, reverse) {
+    const dc = S.dispCoord;
+    const coords = [];
+    for (const seg of line.segments) {   // normalizeLines 已保证按 segIndex 升序
+      for (const pt of seg.coords) {
+        if (!pt || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
+        coords.push(dc(pt[0], pt[1]));
+      }
+    }
+    if (coords.length < 2) return null;
+    if (reverse) coords.reverse();   // fade 形态方向定向：恒「首端＝接入聚焦线的一端」
+    return coords;
+  }
+  // 渐变层公共骨架：line-cap/line-join 是 layout 属性（⚠ 放 paint 会整个 style 拒载
+  // 全黑——本项目踩过的坑）；线宽与线层同宽同缩放（V.zoomInterp(V.scaledSize(7),7)）。
+  function connLayerSkeleton(layerId, lineId) {
     return {
       id: layerId, type: 'line', source: 'conn-fade',
       filter: ['==', ['get', 'lineId'], lineId],
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
-        'line-gradient': ['interpolate', ['linear'], ['line-progress'],
-          0, 'rgba(' + r + ',' + g + ',' + b + ',1)',
-          1, 'rgba(' + r + ',' + g + ',' + b + ',0)'],
         'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX), V.LINE_WIDTH_PX),
       },
     };
   }
-  // 重建渐变层：先移除旧动态层（getLayer 判断）；无聚焦或 plan 空 → fadeSet 清空、
-  // source 置空 FC；否则逐条产出拼接 LineString（segments 按 segIndex 拼接 → 过滤
-  // 有限坐标 → 逐点过 S.dispCoord 显示变换——与四 source 同帧，底图切换 gaode 下渐变
-  // 坐标才不漂）并 addLayer（插在 'pills-outer' 之前＝紧挨线层之上、药丸之下）。
-  // 挂接点：applyDimState 与 applyBasemapToMap 末尾（调光与底图切换都重设 source 坐标）；
-  // 样式未就绪的 pending 路径由既有 dimPending/basemapPending 补应用机制自然覆盖。
-  function rebuildConnFade() {
-    const map = S.map;
-    if (!map) return;
-    for (const id of S.connFadeLayerIds) {
-      if (map.getLayer(id)) map.removeLayer(id);
-    }
-    S.connFadeLayerIds = [];
-    const src = map.getSource('conn-fade');
-    const plan = S.fadeConnPlan || [];
-    if (!plan.length) {
-      if (src) src.setData(EMPTY_CONN_FC);
-      return;
-    }
+  // blend 形态层定义：双端渐变全不透明（hex 直用，不带 alpha）＋dim case
+  function connBlendLayerDef(layerId, lineId, headColor, tailColor) {
+    const def = connLayerSkeleton(layerId, lineId);
+    def.paint['line-gradient'] = ['interpolate', ['linear'], ['line-progress'],
+      0, V.normalizeHex(headColor) || '#555555',
+      1, V.normalizeHex(tailColor) || '#555555'];
+    def.paint['line-opacity'] = ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1];
+    return def;
+  }
+  // fade 形态层定义：聚焦线色 → alpha 0（rgba 串插值）
+  function connFadeLayerDef(layerId, lineId, color) {
+    const hex = V.normalizeHex(color) || '#888888';
+    const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+    const def = connLayerSkeleton(layerId, lineId);
+    def.paint['line-gradient'] = ['interpolate', ['linear'], ['line-progress'],
+      0, 'rgba(' + r + ',' + g + ',' + b + ',1)',
+      1, 'rgba(' + r + ',' + g + ',' + b + ',0)'];
+    return def;
+  }
+  // ---------- 白罩高亮（veil 模式，2026-11-22 用户需求 3） ----------
+  // 裁定（用户原话要点）：高亮方式由「不变高亮线路半透明其他」改为「全都不动，在
+  // 高亮线路和其他线路之间隔一层白色半透明遮罩」。白罩只管聚焦高亮的呈现；分期
+  // 调光（其余半透明＋隐站名）与他省线恒调光是既有独立裁定，两种模式下都维持
+  // opacity 行为不变。fill-opacity＝S.veilOpacity（用户指定的对比档位 30%~70%，
+  // 顶栏按钮循环，定值后删档位只留定值）。聚焦显示/退出撤除＝层随 rebuildConnLayers
+  // 全删全建（存在即显示，等价 visibility 切换）。
+  function focusVeilLayerDef() {
+    return {
+      id: 'focus-veil', type: 'fill', source: 'focus-veil',
+      paint: { 'fill-color': '#ffffff', 'fill-opacity': S.veilOpacity },
+    };
+  }
+  // 聚焦重画层：layout/paint 与基础线层一致（含 dim case——聚焦线若属分期未选中
+  // 仍随分期半透明）；特征＝聚焦组全体成员（renderFocusCopyFC），画在白罩之上＝
+  // 维持原色不被罩压白。dim 模式无此层（聚焦线留基础层不 dim——现状）。
+  function focusCopyLayerDef() {
+    const def = lineLayerDef();
+    def.id = 'focus-copy';
+    def.source = 'focus-copy';
+    return def;
+  }
+  // 聚焦重画特征：聚焦组成员的渲染特征（renderLinesFC 同款构造＋dim 位）；blend/fade
+  // 成员跳过（渐变层接管——防御：联络线被录进线组的罕见形态，避免双层重复画）。
+  // 坐标过 S.dispCoord（底图切换 gaode 同帧）。
+  function renderFocusCopyFC() {
+    const grp = S.lineGroups.ofLine.get(S.focus);
+    const members = grp ? grp.members : [S.focus];
     const dc = S.dispCoord;
-    const feats = [];
-    for (const it of plan) {
-      const line = S.linesMap.get(it.lineId);
+    const features = [];
+    for (const lid of members) {
+      const line = S.linesMap.get(lid);
       if (!line) continue;
-      const coords = [];
-      for (const seg of line.segments) {   // normalizeLines 已保证按 segIndex 升序
+      if (S.blendSet.has(lid) || S.fadeSet.has(lid)) continue;
+      const dim = S.dimmed.has(lid) ? 1 : 0;
+      for (const seg of line.segments) {
+        const coords = [];
         for (const pt of seg.coords) {
           if (!pt || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
-          coords.push(dc(pt[0], pt[1]));
+          const p = dc(pt[0], pt[1]);
+          coords.push(p);
         }
+        if (coords.length < 2) continue;
+        features.push({
+          type: 'Feature',
+          geometry: { type: 'LineString', coordinates: coords },
+          properties: { lineId: line.lineId, name: line.name, color: line.color, segStatus: seg.segStatus, segIndex: seg.segIndex, dim },
+        });
       }
-      if (coords.length < 2) continue;   // 全无效坐标的线本就不进基础层，这里同样不进渐变
-      if (it.attachEnd === 1) coords.reverse();   // 方向定向：恒「首端＝接入聚焦线的一端」
+    }
+    return { type: 'FeatureCollection', features };
+  }
+  // ---------- 动态层统一重建（全删全建） ----------
+  // 挂接点：applyDimState 与 applyBasemapToMap 末尾（调光/聚焦/高亮模式/遮罩档位与
+  // 底图切换都重设 source 坐标）；样式未就绪的 pending 路径由既有
+  // dimPending/basemapPending 补应用机制自然覆盖。
+  // 层序总排布（自下而上，全部动态层统一插在 'pills-outer' 之前、按添加顺序自然
+  // 叠放——addLayer(before) 紧贴其下，后加者在上）：
+  //   lines 基础层 → 联络线渐变层（非高亮的 blend 形态）→ focus-veil 白罩 →
+  //   focus-copy 聚焦重画 → 高亮联络线渐变层（fade 形态）→ pills/arrows/stops/站名
+  //  （全部不动、天然在罩上）。dim 模式或非聚焦：无白罩无重画层，blend 层位置与
+  //  现状（紧挨线层之上、药丸之下）完全一致。
+  function rebuildConnLayers() {
+    const map = S.map;
+    if (!map) return;
+    for (const id of S.connLayerIds) {
+      if (map.getLayer(id)) map.removeLayer(id);
+    }
+    S.connLayerIds = [];
+    const src = map.getSource('conn-fade');
+    const feats = [];
+    const addDyn = (def) => {
+      map.addLayer(def, map.getLayer('pills-outer') ? 'pills-outer' : undefined);
+      S.connLayerIds.push(def.id);
+    };
+    // ① blend 形态联络线层（有效联络线中未被当前聚焦绑定的；聚焦绑定的走 fade
+    //    形态插到白罩之上，故先跳过）
+    const fadeIds = new Set((S.fadeConnPlan || []).map((it) => it.lineId));
+    for (const it of S.blendPlan || []) {
+      if (fadeIds.has(it.lineId)) continue;
+      const line = S.linesMap.get(it.lineId);
+      if (!line) continue;
+      const coords = connCoords(line, false);
+      if (!coords) continue;
       feats.push({
         type: 'Feature',
         geometry: { type: 'LineString', coordinates: coords },
-        properties: { lineId: line.lineId, color: line.color },
+        properties: { lineId: line.lineId, dim: S.dimmed.has(line.lineId) ? 1 : 0 },
       });
-      const layerId = 'conn-fade-' + line.lineId;
-      const before = map.getLayer('pills-outer') ? 'pills-outer' : undefined;
-      map.addLayer(connFadeLayerDef(layerId, line.lineId, line.color), before);
-      S.connFadeLayerIds.push(layerId);
+      addDyn(connBlendLayerDef('conn-blend-' + line.lineId, line.lineId, it.headColor, it.tailColor));
     }
-    if (src) src.setData({ type: 'FeatureCollection', features: feats });
+    // ② 白罩＋聚焦重画层（仅 veil＋聚焦）
+    if (S.hlMode === 'veil' && S.focus != null) {
+      addDyn(focusVeilLayerDef());
+      const copySrc = map.getSource('focus-copy');
+      if (copySrc) copySrc.setData(renderFocusCopyFC());
+      addDyn(focusCopyLayerDef());
+    }
+    // ③ fade 形态联络线层（聚焦绑定：聚焦线色→透明；插在白罩/重画层之上＝
+    //    渐变高亮不被罩压白；dim 模式＝紧挨线层之上，与旧版位置一致）
+    const focusColor = (S.linesMap.get(S.focus) || {}).color;
+    for (const it of S.fadeConnPlan || []) {
+      const line = S.linesMap.get(it.lineId);
+      if (!line) continue;
+      const coords = connCoords(line, it.attachEnd === 1);
+      if (!coords) continue;
+      feats.push({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: coords },
+        properties: { lineId: line.lineId, dim: 0 },   // 高亮态不挂 dim
+      });
+      addDyn(connFadeLayerDef('conn-fade-' + line.lineId, line.lineId, focusColor));
+    }
+    if (src) src.setData(feats.length ? { type: 'FeatureCollection', features: feats } : EMPTY_CONN_FC);
   }
 
   // 分期四档循环：无 → 既有 → 已批复 → 远期 → 无（「无」＝全部正常显示）
@@ -692,6 +857,30 @@
     S.phase = mode;
     syncPhaseUI();
     applyDimState();
+  }
+  // ---------- 高亮方式切换＋白罩不透明度档位（2026-11-22 用户需求 3＋追加，均为
+  // 短期对比工具：用户直观看效果后定案，定案后整个开关/档位删除，不持久化） ----------
+  // 「高亮」按钮：veil（白罩遮罩高亮，默认）⇄ dim（旧「聚焦半透明其他」）循环；
+  // 「遮罩」按钮：30% → 40% → 50% → 60% → 70% → 30% 循环（默认 0.5 居中好对比），
+  // 仅 veil 模式生效（dim 模式下点了只记账、无视觉变化——两按钮独立，不做联动禁用）。
+  // 切档实现＝applyDimState → rebuildConnLayers 全删全建顺带换 fill-opacity。
+  const VEIL_OPACITY_STEPS = [0.3, 0.4, 0.5, 0.6, 0.7];
+  function syncHlUI() {
+    const b = $('btnHl');
+    if (b) b.textContent = '高亮：' + (S.hlMode === 'veil' ? '遮罩' : '调光');
+    const v = $('btnVeil');
+    if (v) v.textContent = '遮罩：' + Math.round(S.veilOpacity * 100) + '%';
+  }
+  function setHlMode(mode) {
+    S.hlMode = mode;
+    syncHlUI();
+    applyDimState();   // dim 集重算＋动态层重建（veil 聚焦时建白罩/重画层）
+  }
+  function cycleVeilOpacity() {
+    const i = VEIL_OPACITY_STEPS.indexOf(S.veilOpacity);
+    S.veilOpacity = VEIL_OPACITY_STEPS[((i < 0 ? 2 : i) + 1) % VEIL_OPACITY_STEPS.length];
+    syncHlUI();
+    applyDimState();   // 白罩层重建即换 fill-opacity（非聚焦态无白罩层，仅记账）
   }
   // 聚焦：双击列表行/双击地图线路切换（再双击同一对象退出、双击别的线切换）、Esc 退出；
   // 「仅显示」级（他省线）不可聚焦——setFocus 入口统一拦截（列表双击/地图双击/搜索选中
@@ -1092,9 +1281,14 @@
     $('btnBasemap').addEventListener('click', () => {
       setBasemap(S.basemap === 'off' ? 'osm' : (S.basemap === 'osm' ? 'gaode' : 'off'));
     });
+    // 高亮方式循环（2026-11-22 用户需求 3：遮罩⇄调光，短期对比用，定案后删）
+    // ＋白罩不透明度五档循环（2026-11-22 用户追加：30%~70% 每 10% 一档）
+    $('btnHl').addEventListener('click', () => setHlMode(S.hlMode === 'veil' ? 'dim' : 'veil'));
+    $('btnVeil').addEventListener('click', cycleVeilOpacity);
     syncPhaseUI();     // 与 S.phase 初始态（'none'）对齐：按钮文案「分期：无」
     syncNamesUI();     // 与 S.namesOn 初始态（true）对齐：按钮文案「站名：显示」
     syncBasemapUI();   // 与 S.basemap 初始态（'off'）对齐：按钮文案「底图：无」、署名隐藏
+    syncHlUI();        // 与初始态对齐：「高亮：遮罩」「遮罩：50%」
     $('infoClose').addEventListener('click', () => { $('infoPanel').hidden = true; });
     // 线路面板收起/展开（2026-11-22 用户需求）：面板头按钮收起、左缘药丸展开
     $('linePanelCollapse').addEventListener('click', () => setLinePanelCollapsed(true));
@@ -1143,6 +1337,10 @@
       return;
     }
     S.summaries = V.lineSummaries(S.linesMap, S.stops);
+    // 联络线双端渐变取色（2026-11-22 用户需求 2：颜色由 connects 两端线决定）——
+    // 数据加载后算一次、常驻不随聚焦变（blendSet 供 renderLinesFC 基础层剔除）
+    S.blendPlan = V.connectorBlendPlan(S.linesMap);
+    S.blendSet = new Set(S.blendPlan.map((it) => it.lineId));
     S.view = V.buildStopView(S.stops);
     S.dispLabels = S.view.labels;   // WGS84 直通（仅进 map.project 定位）
     S.pinByKey = new Map(S.view.pins.map((p) => [p.key, p]));

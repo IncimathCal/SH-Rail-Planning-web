@@ -257,8 +257,14 @@ def main():
         elif connects != []:
             err(fname, f"non-connector line must have empty connects, got {connects!r}")
 
-        # 规则 7：color
-        if not RE_COLOR.match(d.get("color") or ""):
+        # 规则 7：color（2026-11-22 用户裁定：联络线取消颜色属性——颜色由 connects
+        # 两端线决定：查看器渲染为双端渐变，信息不全时深灰兜底；flatten 侧输出色
+        # 固定 #555555、站圈描边取最近端目标线色）。connector 带 color 即报错
+        #（缺失或空串均合法）；非 connector 仍必填 #RRGGBB
+        if role == "connector":
+            if d.get("color"):
+                err(fname, "connector must not define color (color is derived from connects)")
+        elif not RE_COLOR.match(d.get("color") or ""):
             err(fname, f"bad color: {d.get('color')!r} (want #RRGGBB)")
 
         # 规则 6：path

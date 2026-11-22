@@ -12,6 +12,11 @@
 // 合并行/lineSearchEntries＋terms 合并命中/computeDimmedSet 组级调光/lineLabelOf·
 // linesOfPin 站牌组名）；地图双击线路精确命中（lineWidthAt 与线宽表达式同源求值/
 // pointToScreenPolylineDist 点到折线最小屏幕距离——描边内外、段外端点距、多段最小、空防御）。
+// 2026-11-22 四项改版增：联络线双端渐变取色（connectorBlendPlan：2 线方向判定/
+// connects<2/目标不存在/≥3 每端各最近/两端同线/目标或自身无坐标防御/多段拼接——
+// 中途设站不影响 plan，其端到端抽查在 flatten 侧）、computeDimmedSet veil 模式
+//（聚焦不贡献 dim、分期与他省照旧、dim 缺省回归、组级、visibleLabels 下游兼容）、
+// stopList/pinOfStop 的 stroke 透传（联络线站圈描边＝最近端目标线色）。
 // 用法：node tools/test_viewer_logic.js（纯 node，不引 jsdom/DOM/maplibre）
 
 const V = require(path_join('src', 'viewer_core.js'));
@@ -350,6 +355,120 @@ const lmF6 = V.normalizeLines(fc(
 eq(lmF6.get('fd').connects, ['fn'], 'connects 非字符串项被过滤');
 eq(V.connectorFadePlan(lmF6, 'fn'), [{ lineId: 'fd', attachEnd: 1 }], '脏 connects 过滤后仍命中（fd 末端(9,8)近 fn 末端(1,1)）');
 
+// ---------- connectorBlendPlan（联络线双端渐变取色，2026-11-22 用户需求 2） ----------
+// ⚝ 联络线中途设站不影响 blend/fade plan：normalizeLines 无站概念、plan 只看
+// segments 拼接折线的首末点——设站（stops）在数据链上只影响 flatten 分段切分与站表，
+// 从不进入本函数输入（中途设站的端到端抽查在 flatten 侧验证，见 源资产/测试数据 l0008/l0010）。
+console.log('connectorBlendPlan:');
+eq(V.connectorBlendPlan(lmF), [{ lineId: 'fc', headColor: '#ff0000', tailColor: '#0000ff' }],
+  '2 线正常方向判定：fc 首端近 fa（红）、末端近 fb（蓝）');
+eq(V.connectorBlendPlan(null), [], 'linesMap 非 Map → []');
+// connects<2 → 无效（不出条目）
+const lmB1 = V.normalizeLines(fc(
+  lineFeat('fa', 0, 'existing', [[0, 0], [0, 3]], { color: '#ff0000' }),
+  lineFeat('fb', 0, 'existing', [[10, 0], [10, 3]], { color: '#0000ff' }),
+  lineFeat('fc', 0, 'existing', [[0, 1.5], [10, 1.5]], { connects: ['fa'] }),
+));
+eq(V.connectorBlendPlan(lmB1), [], 'connects<2 → 无效');
+// connects 2 条但 1 条不存在于 linesMap → 有效目标仅 1 → 无效
+const lmB2 = V.normalizeLines(fc(
+  lineFeat('fa', 0, 'existing', [[0, 0], [0, 3]], { color: '#ff0000' }),
+  lineFeat('fc', 0, 'existing', [[0, 1.5], [10, 1.5]], { connects: ['fa', 'zz'] }),
+));
+eq(V.connectorBlendPlan(lmB2), [], 'connects 2 条但 1 条不存在 → 无效（信息不全深灰兜底由渲染层处理）');
+// connects≥3：每端各自取最近一条（其余忽略——授权裁定注释见函数头）
+const lmB3 = V.normalizeLines(fc(
+  lineFeat('fa', 0, 'existing', [[0, 0], [0, 3]], { color: '#ff0000' }),
+  lineFeat('fb', 0, 'existing', [[10, 0], [10, 3]], { color: '#0000ff' }),
+  lineFeat('fg', 0, 'existing', [[20, 0], [20, 3]], { color: '#00ff00' }),
+  lineFeat('fc', 0, 'existing', [[0, 1.5], [20, 1.5]], { connects: ['fa', 'fb', 'fg'] }),
+));
+eq(V.connectorBlendPlan(lmB3), [{ lineId: 'fc', headColor: '#ff0000', tailColor: '#00ff00' }],
+  'connects≥3 每端各取最近（中间的 fb 两端都不取）');
+// 两端同线 → 双色相等（自然退化为单色）
+const lmB4 = V.normalizeLines(fc(
+  lineFeat('fa', 0, 'existing', [[0, 0], [0, 3]], { color: '#ff0000' }),
+  lineFeat('fb', 0, 'existing', [[100, 0], [100, 3]], { color: '#0000ff' }),
+  lineFeat('fc', 0, 'existing', [[0, 1.5], [5, 1.5], [0, 2.5]], { connects: ['fa', 'fb'] }),
+));
+eq(V.connectorBlendPlan(lmB4), [{ lineId: 'fc', headColor: '#ff0000', tailColor: '#ff0000' }],
+  '两端同线（fa）→ 双色相等');
+// 目标线无坐标防御：全部无效 → 不出；一有效一无坐标 → 有效 1 → 不出
+const noCoordFeat = (lid, connects) => ({
+  type: 'Feature', geometry: { type: 'LineString', coordinates: [[NaN, NaN], [NaN, NaN]] },
+  properties: { lineId: lid, segIndex: 0, segStatus: 'existing', connects },
+});
+const lmB5 = V.normalizeLines(fc(
+  lineFeat('fa', 0, 'existing', [[0, 0], [0, 3]], { color: '#ff0000' }),
+  noCoordFeat('fb', null),
+  lineFeat('fc', 0, 'existing', [[0, 1.5], [10, 1.5]], { connects: ['fa', 'fb'] }),
+));
+eq(V.connectorBlendPlan(lmB5), [], '目标线 fb 无有效坐标 → 有效目标 1 → 不出');
+const lmB6 = V.normalizeLines(fc(
+  noCoordFeat('fa', null), noCoordFeat('fb', null),
+  lineFeat('fc', 0, 'existing', [[0, 1.5], [10, 1.5]], { connects: ['fa', 'fb'] }),
+));
+eq(V.connectorBlendPlan(lmB6), [], '目标线全部无坐标 → 不出');
+// 线自身无坐标防御 → 不出（与 fadePlan 兜底 0 不同：head/tail 色无从挂）
+const lmB7 = V.normalizeLines(fc(
+  lineFeat('fa', 0, 'existing', [[0, 0], [0, 3]], { color: '#ff0000' }),
+  lineFeat('fb', 0, 'existing', [[10, 0], [10, 3]], { color: '#0000ff' }),
+  noCoordFeat('fc', ['fa', 'fb']),
+));
+eq(V.connectorBlendPlan(lmB7), [], '联络线自身无坐标 → 不出');
+// 多段拼接：乱序 segIndex 输入按升序拼接后取首末（首端 fa 侧、末端 fb 侧）
+const lmB8 = V.normalizeLines(fc(
+  lineFeat('fa', 0, 'existing', [[0, 0], [0, 3]], { color: '#ff0000' }),
+  lineFeat('fb', 0, 'existing', [[10, 0], [10, 3]], { color: '#0000ff' }),
+  lineFeat('fc', 1, 'existing', [[5, 1.5], [10, 1.5]], { connects: ['fa', 'fb'] }),
+  lineFeat('fc', 0, 'existing', [[0, 1.5], [5, 1.5]], { connects: ['fa', 'fb'] }),
+));
+eq(V.connectorBlendPlan(lmB8), [{ lineId: 'fc', headColor: '#ff0000', tailColor: '#0000ff' }],
+  '多段乱序 segIndex 拼接后取首末（不因段序错乱翻色）');
+// 非联络线（connects 空）不出条目；connects 脏数据过滤同 normalizeLines 口径
+eq(V.connectorBlendPlan(lm).filter((it) => it.lineId !== 'lc'), [],
+  '无 connects 的线一律不出条目（lm 仅 lc 为 connector 且 connects<2 → 全空）');
+eq(V.connectorBlendPlan(lm), [], 'lm 的 lc（connects 缺失）→ 空（旧快照容错）');
+
+// ---------- computeDimmedSet veil 模式（2026-11-22 用户需求 3：白罩高亮） ----------
+console.log('computeDimmedSet veil:');
+eq([...V.computeDimmedSet(mixTP, { focus: 'la', hlMode: 'veil' })], ['tp'],
+  'veil＋聚焦：非聚焦线（lb/lc）不进 dimmed（「全都不动」），他省线照旧（既有独立裁定）');
+eq([...V.computeDimmedSet(mixTP, { phase: 'none', focus: 'la', hlMode: 'veil' })], ['tp'],
+  'veil＋聚焦（显式 phase none）：同上');
+eq([...V.computeDimmedSet(mixTP, { phase: 'existing', hlMode: 'veil' })].sort(), ['lb', 'lc', 'tp'],
+  'veil＋分期未选中照旧调光（分期是既有独立裁定，与高亮方式无关）');
+eq([...V.computeDimmedSet(mixTP, { phase: 'existing', focus: 'la', hlMode: 'veil' })].sort(), ['lb', 'lc', 'tp'],
+  'veil＋分期＋聚焦：并集只剩分期侧贡献');
+eq([...V.computeDimmedSet(mixTP, { focus: 'la', hlMode: 'dim' })].sort(), ['lb', 'lc', 'tp'],
+  '显式 dim 模式＝旧行为');
+eq([...V.computeDimmedSet(mixTP, { focus: 'la' })].sort(),
+  [...V.computeDimmedSet(mixTP, { focus: 'la', hlMode: 'dim' })].sort(),
+  '缺省 hlMode（不传）＝显式 dim（回归保护：旧调用零变化）');
+eq([...V.computeDimmedSet(mixTP, { hlMode: 'veil' })], [],
+  'veil 无分期无聚焦＝默认态不调光');
+// veil 下 visibleLabels 自然兼容：非聚焦线标签不再因调光隐藏（dimmedSet 收窄的下游效应）
+const veilDim = V.computeDimmedSet(mixTP, { focus: 'la', hlMode: 'veil' });
+eq(V.visibleLabels(vlLabels, 9, 800, { focus: 'la', dimmedSet: veilDim }).map((l) => l.key).sort(),
+  ['g1', 's1'],
+  'veil 聚焦下 z9 标签＝聚焦线常显照旧＋z9 低于组门槛全隐（调光隐藏不再参与——对照 dim 模式同 z9 也是 ["s1","g1"]，差异体现在 z≥10 普通站名不再被调光隐藏）');
+eq(V.visibleLabels(vlLabels, 11, 800, { focus: 'la', dimmedSet: veilDim }).map((l) => l.key).sort(),
+  ['g1', 'g2', 's1', 's2', 'x1'],
+  'veil 聚焦下 z11 全部标签显示（非聚焦线 s2/g2/x1 不被调光隐藏——「全都不动」；dim 模式下此景 s2/g2 会被隐藏）');
+
+// ---------- stopList/pinOfStop 的 stroke 透传（联络线站圈描边，2026-11-22 用户需求 2） ----------
+console.log('stop stroke passthrough:');
+const stStroke = V.stopList(fc(
+  stopFeat('c1', '联络甲', 'lc', '丙线', 0.5, 1, 1),
+  { type: 'Feature', geometry: { type: 'Point', coordinates: [2, 2] },
+    properties: { sid: 'c2', name: '联络乙', lineId: 'lc', lineName: '丙线', t: 0.8, groupId: null, groupType: null, stroke: '#e4002b' } },
+));
+eq(stStroke.find((s) => s.sid === 'c1').stroke, null, '普通站无 stroke 键 → null');
+eq(stStroke.find((s) => s.sid === 'c2').stroke, '#e4002b', '联络线站 stroke 保留（flatten 产出＝最近端目标线色）');
+const svStroke = V.buildStopView(stStroke);
+eq((svStroke.pins.find((p) => p.key === 'c2') || {}).stroke, '#e4002b', 'pinOfStop 透传 stroke（渲染层据此取站圈描边色）');
+eq((svStroke.pins.find((p) => p.key === 'c1') || {}).stroke, null, '普通站 pin stroke null（渲染层退线色）');
+
 // ---------- visibleListGroups（左栏类别过滤；地图照画、搜索照收） ----------
 console.log('visibleListGroups:');
 const lgrVis = V.visibleListGroups(lm, ['联络线']);
@@ -642,6 +761,9 @@ eq(V.lineLabelOf('s1', lmG, lgFull), '二号线', '无组线照旧');
 eq(V.lineLabelOf('m1', lmG, null), '一号线（又称 One）', '无线组结构照旧（旧快照兼容）');
 eq(V.lineLabelOf('zz', lmG, lgFull, '孤线'), '孤线', '孤线退 fallback');
 eq(V.linesOfPin({ kind: 'stop', lineId: 'zz', lineNames: ['孤线'] }, lmG, lgFull), ['孤线'], '孤站退 lineName');
+// veil 模式组级（2026-11-22 用户需求 3：白罩高亮——聚焦不贡献 dim，displayOnly 照旧）
+eq([...V.computeDimmedSet(lmG, { focus: 'm1', lineGroups: lgFull, hlMode: 'veil' })].sort(), ['d1', 'd2'],
+  'veil＋组级：聚焦 m1 组全体与无关线均不调光，他省组（d1/d2）照旧恒调光');
 
 // ---------- 地图双击线路精确命中（2026-11-22 用户反馈：只认直接点到线体描边） ----------
 console.log('dblclick precise hit:');
