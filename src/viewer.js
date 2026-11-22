@@ -36,6 +36,16 @@
 // VEIL_OPACITY，临时下拉控件已删）；站圈等比缩放改按 big/dark 拆三常量档位层（同轮
 // filter 曾用 '!' 吃数字被判类型错、三层静默弃载即「站圆全没」——已改显式 == 比较，教训
 // 见 STOP_LAYER_DEFS 注）。
+// 2026-11-22 主支线合并（用户裁定：主线与支线在任何情况下视为一条线）：左栏列表合并行
+//（显示名＝线组名称、色块＝主线色、归类与排序按主线、支线不出独立行）；聚焦存主线 id
+//（双击支线线身经 toggleFocus 归一到主线）、调光豁免与 fitBounds 跳转均按组全体成员；
+// 分期调光组级（期次/仅显示级以主线为准）；搜索合并条目（成员线名/别名/id 全命中主线）；
+// 信息面板/聚焦框/站牌显组名、内容与导出按主线。组信息来自 net/index.json lineGroups
+//（fmt net-index@2；@1 旧快照无组信息＝逐线独立旧行为）。
+// 2026-11-22 增（用户反馈）：地图双击线路精确命中——queryRenderedFeatures 只作粗筛拿候选，
+// 命中以屏幕像素距离为准（候选坐标逐点 map.project → VIEWER_CORE.pointToScreenPolylineDist，
+// 阈值＝lineWidthAt(zoom)/2＋DBLCLICK_TOL_PX），只有直接点到线体描边上才聚焦并
+// preventDefault，全部超阈值＝未命中放行原生双击缩放。
 // 与编辑器完全独立：不加载 editor.js 的任何代码。中文标签走 HTML 叠加（架构方案 §6 备案路线）。
 
 (function (G) {
@@ -53,6 +63,7 @@
     dispStopsBbox: null,          // 站点渲染 bbox（无线时的兜底视野）
     dispLabels: [],               // 标签列表（map.project 定位用，WGS84）
     summaries: new Map(),         // lineId → 摘要
+    lineGroups: { groups: [], ofLine: new Map(), mainOf: new Map() },  // 线组归并（主支线合并；boot 填充，缺省空结构＝逐线独立）
     pinByKey: new Map(),
     phase: 'none',                // 分期四档：'none'|'existing'|'approved'|'future'（默认无＝全部正常）
     focus: null,                  // 聚焦线路 lineId（null＝未聚焦；双击左栏行切换、Esc 退出）
@@ -86,8 +97,10 @@
   }
   // 数据目录候选（相对路径，docs/ 项目页部署不破）：'net'＝发布快照位（publish 产物），
   // 'build/net'＝本地 flatten 默认输出位。stops 缺失按零站容错（只看线网也成立）；
-  // lines 在所有候选位都取不到才算加载失败。index.json（线路自定义显示序，编辑器排序面板
-  // → manifest.lineOrder → flatten 产出）缺失按「无自定义序」容错——旧快照/旧 flatten 产物照常工作。
+  // lines 在所有候选位都取不到才算加载失败。index.json（线路自定义显示序＋线组索引，编辑器
+  // 排序面板 → manifest.lineOrder → flatten 产出）缺失按「无自定义序/无线组」容错——旧快照/
+  // 旧 flatten 产物照常工作。fmt 严格校验（有校验故随 flatten 升版）：@2＝含 lineGroups
+  //（主支线合并）；@1＝仅 lineOrder（旧快照，无组信息＝逐线独立显示）。两版都收 lineOrder。
   const NET_BASES = ['net', 'build/net'];
   async function fetchNetFiles() {
     let lastErr = null;
@@ -102,14 +115,15 @@
       } catch (e) {
         console.warn('提示：' + base + '/stops.geojson 缺失，按零站处理（' + (e && e.message) + '）');
       }
-      let indexOrder = null;
+      let indexOrder = null, lineGroups = null;
       try {
         const idx = await fetchJSON(base + '/index.json');
-        if (idx && idx.fmt === 'net-index@1' && Array.isArray(idx.lineOrder)) {
-          indexOrder = idx.lineOrder.map(String);
+        if (idx && (idx.fmt === 'net-index@2' || idx.fmt === 'net-index@1')) {
+          if (Array.isArray(idx.lineOrder)) indexOrder = idx.lineOrder.map(String);
+          if (idx.fmt === 'net-index@2' && Array.isArray(idx.lineGroups)) lineGroups = idx.lineGroups;
         }
-      } catch (e) { /* 无 index.json＝无自定义序，容错直通 */ }
-      return { linesFC, stopsFC, base, indexOrder };
+      } catch (e) { /* 无 index.json＝无自定义序/无线组，容错直通 */ }
+      return { linesFC, stopsFC, base, indexOrder, lineGroups };
     }
     throw lastErr || new Error('net/lines.geojson 与 build/net/lines.geojson 均不可用');
   }
@@ -288,7 +302,9 @@
       paint: {
         'line-color': ['get', 'color'],
         'line-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
-        'line-width': V.zoomInterp(V.scaledSize(7), 7),
+        // 2026-11-22 双击精确命中：线宽基准常量收敛到 V.LINE_WIDTH_PX（与 V.lineWidthAt
+        // 同一数值源，防两处漂移——胶水层命中阈值按它算）
+        'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX), V.LINE_WIDTH_PX),
       },
     };
   }
@@ -427,15 +443,36 @@
     // 语义——再双击同线退出）。命中 'lines' 层且非「仅显示」级时 preventDefault 阻止
     // MapLibre 原生双击缩放（聚焦跳转与缩放抢相机）；未命中/displayOnly 不拦截，保留
     // 原生缩放。displayOnly 拦截与地图点选同源——「他省线仅显示、无交互」裁定。
+    // 2026-11-22 用户反馈（精确命中）：queryRenderedFeatures 对线层带 tile 几何 buffer，
+    // 离线体较远的空白双击也命中——粗筛只拿候选，逐候选把 feature 坐标（即 source 渲染
+    // 坐标）经 map.project 转屏幕像素，取「双击点到折线最小距离」；命中阈值＝当前 zoom
+    // 实际线宽/2＋容差（V.lineWidthAt/V.DBLCLICK_TOL_PX，与 lineLayerDef 线宽同源）。
+    // 取阈值内屏幕距离最近的一条；全部超出＝未命中：不聚焦也不 preventDefault（放行
+    // 原生双击缩放）。displayOnly 候选直接出局（不参与最近者评选）；命中后经 toggleFocus
+    // 归一到主线（双击支线线身等效双击主线）。
     map.on('dblclick', (e) => {
       let hits = [];
       try { hits = map.queryRenderedFeatures({ point: e.point, layers: ['lines'] }); } catch (err) { return; }
-      const p = hits && hits[0] && hits[0].properties;
-      if (!p || p.lineId == null || p.lineId === '') return;
-      const line = S.linesMap.get(String(p.lineId));
-      if (line && V.lineLayerRank(line) === 'displayOnly') return;
+      const tol = V.lineWidthAt(map.getZoom()) / 2 + V.DBLCLICK_TOL_PX;
+      let bestId = null, bestD = Infinity;
+      for (const f of hits || []) {
+        const p = f && f.properties;
+        if (!p || p.lineId == null || p.lineId === '') continue;
+        const line = S.linesMap.get(String(p.lineId));
+        if (line && V.lineLayerRank(line) === 'displayOnly') continue;
+        let coords = [];
+        try { coords = (f.geometry && f.geometry.coordinates) || []; } catch (err) { continue; }
+        const screen = [];
+        for (const c of coords) {
+          if (!Array.isArray(c) || !Number.isFinite(c[0]) || !Number.isFinite(c[1])) continue;
+          try { screen.push(map.project(c)); } catch (err) { /* 个别点投影失败跳过，不影响整段 */ }
+        }
+        const d = V.pointToScreenPolylineDist(e.point, screen);
+        if (d < bestD) { bestD = d; bestId = String(p.lineId); }
+      }
+      if (bestId == null || bestD > tol) return;   // 全部超阈值＝未命中：放行原生双击缩放
       e.preventDefault();
-      toggleFocus(String(p.lineId));
+      toggleFocus(bestId);
     });
     for (const id of LINE_LAYER_IDS) {
       map.on('click', id, (e) => {
@@ -593,7 +630,9 @@
   // 叠加不冲突——坐标变换与 dim 位各管各的）。样式未就绪时只置 pending 标记（同底图三态
   // 模式），on('load') 后补应用，点击不丢失。
   function applyDimState() {
-    S.dimmed = V.computeDimmedSet(S.linesMap, { phase: S.phase, focus: S.focus });
+    // 2026-11-22 主支线合并：调光组级（lineGroups 传入——期次/仅显示级以主线为准，
+    // 聚焦豁免组全体成员；S.focus 恒为主线 id，见 toggleFocus 归一）
+    S.dimmed = V.computeDimmedSet(S.linesMap, { phase: S.phase, focus: S.focus, lineGroups: S.lineGroups });
     updateFadeSet();   // fadeSet 须在 renderLinesFC 之前就绪（基础层跳 feature 依赖它）
     if (!S.map || !(S.styleReady || S.map.isStyleLoaded())) { S.dimPending = true; return; }
     S.dimPending = false;
@@ -635,7 +674,7 @@
         'line-gradient': ['interpolate', ['linear'], ['line-progress'],
           0, 'rgba(' + r + ',' + g + ',' + b + ',1)',
           1, 'rgba(' + r + ',' + g + ',' + b + ',0)'],
-        'line-width': V.zoomInterp(V.scaledSize(7), 7),
+        'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX), V.LINE_WIDTH_PX),
       },
     };
   }
@@ -713,8 +752,16 @@
   }
   // 2026-11-22 用户需求 1：聚焦线相机跳转——fitBounds 到该线渲染 bbox（S.dispBbox 与
   // 渲染特征同帧，gaode 底图下也正确）；bbox 不存在时静默不跳。maxZoom 13 与搜索定位同档。
+  // 2026-11-22 主支线合并：bbox＝组全体成员渲染 bbox 联合（支线也是这条线的一部分）；
+  // 单成员缺 bbox 跳过，全体缺失 → null 静默不跳（保留原行为）。
   function fitFocusLine(id) {
-    const bb = S.dispBbox.get(id);
+    const grp = S.lineGroups.ofLine.get(id);
+    let bb = null;
+    if (grp) {
+      for (const m of grp.members) bb = mergeBbox(bb, S.dispBbox.get(m));
+    } else {
+      bb = S.dispBbox.get(id);
+    }
     if (!bb || !S.map) return;
     S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]],
       { padding: focusPadding(), duration: 600, maxZoom: 13 });
@@ -743,7 +790,13 @@
     const right = panelVisible(ip) ? ip.getBoundingClientRect().width + GAP : FALLBACK;
     return { top, bottom, left, right };
   }
-  function toggleFocus(lineId) { setFocus(S.focus === lineId ? null : lineId); }
+  // 2026-11-22 主支线合并：双击支线线身等效双击主线——入口先归一到主线 id 再 toggle
+  //（列表行已合并为主线行，支线 id 实际来源＝地图线身双击；pickEntry 走 setFocus 的
+  // 条目 id 本就是主线）。
+  function toggleFocus(lineId) {
+    const main = S.lineGroups.mainOf.get(lineId) || lineId;
+    setFocus(S.focus === main ? null : main);
+  }
   function clearFocus() { if (S.focus != null) setFocus(null); }
   // 列表行聚焦态高亮（行上 .focused 类）
   function syncFocusRows() {
@@ -757,7 +810,10 @@
     if (!box) return;
     const sum = S.focus != null ? S.summaries.get(S.focus) : null;
     if (!sum) { box.hidden = true; return; }
-    $('focusTitle').textContent = sum.name || sum.lineId;
+    // 2026-11-22 主支线合并：标题＝线组名称（S.focus＝主线 id；组名缺失时 buildLineGroups
+    // 已退主线名）；内容照旧按主线 summary（其余以主线为准）
+    const grp = S.lineGroups.ofLine.get(S.focus);
+    $('focusTitle').textContent = grp ? grp.name : (sum.name || sum.lineId);
     const body = $('focusBody');
     body.textContent = '';
     infoRow(body, '类别', sum.layer || '未分类');
@@ -784,7 +840,7 @@
   function buildLineList() {
     const host = $('lineList');
     host.textContent = '';
-    const groups = V.visibleListGroups(S.linesMap, V.HIDDEN_LIST_LAYERS, S.lineOrder);
+    const groups = V.visibleListGroups(S.linesMap, V.HIDDEN_LIST_LAYERS, S.lineOrder, S.lineGroups);
     if (!groups.length) {
       const tip = document.createElement('div');
       tip.className = 'panel-tip';
@@ -848,27 +904,20 @@
     r.append(key, val);
     body.appendChild(r);
   }
-  // 线路显示名（信息面板/hover 用）：名（又称 …）；线不在 linesMap（孤站）退 lineName/ID 原文
-  function lineLabelOf(lineId, fallback) {
-    const l = lineId != null ? S.linesMap.get(lineId) : null;
-    if (!l) return fallback || (lineId != null ? String(lineId) : '');
-    let s = l.name || l.lineId;
-    if (l.aliases.length) s += '（又称 ' + l.aliases.join('、') + '）';
-    return s;
-  }
-  // pin 的所属线路显示列表：组 pin 用成员线 lineIds；单站 pin 用本线（孤站退 lineName）
+  // pin 的所属线路显示列表：纯逻辑在 VIEWER_CORE.linesOfPin（2026-11-22 主支线合并——
+  // 有效组成员一律显示组名、别名随主线、组 pin 去重），此处只喂本页权威结构与线组归并结果
   function linesOfPin(pin) {
-    if (pin.kind === 'group') {
-      const out = (pin.lineIds || []).map((lid) => lineLabelOf(lid, '')).filter(Boolean);
-      return out.length ? out : (pin.lineNames || []);
-    }
-    const s = lineLabelOf(pin.lineId, (pin.lineNames && pin.lineNames[0]) || '');
-    return s ? [s] : [];
+    return V.linesOfPin(pin, S.linesMap, S.lineGroups);
   }
   function openLinePanel(lineId) {
-    const sum = S.summaries.get(lineId);
+    // 2026-11-22 主支线合并：点合并行、点地图上主线或支线线身，开的是同一个面板——
+    // 归一到主线，标题＝线组名称，内容（别名/类别/角色/起讫站/车站数/分段状态/导出）全部
+    // 按主线 summary；支线不再有独立面板入口；导出（GeoJSON/KML）导主线
+    const grp = S.lineGroups.ofLine.get(lineId);
+    const id = grp ? grp.mainId : lineId;
+    const sum = S.summaries.get(id);
     if (!sum) return;
-    const body = openPanel(sum.name || lineId);
+    const body = openPanel(grp ? (grp.name || sum.name || id) : (sum.name || id));
     if (sum.aliases.length) infoRow(body, '别名', sum.aliases.join('、'));
     infoRow(body, 'ID', sum.lineId);
     infoRow(body, '类别', sum.layer || '未分类');
@@ -881,10 +930,10 @@
     bar.className = 'info-actions';
     const bG = document.createElement('button');
     bG.textContent = '导出 GeoJSON';
-    bG.addEventListener('click', () => exportLine(lineId, 'geojson'));
+    bG.addEventListener('click', () => exportLine(id, 'geojson'));
     const bK = document.createElement('button');
     bK.textContent = '导出 KML';
-    bK.addEventListener('click', () => exportLine(lineId, 'kml'));
+    bK.addEventListener('click', () => exportLine(id, 'kml'));
     bar.append(bG, bK);
     body.appendChild(bar);
   }
@@ -921,10 +970,13 @@
 
   // ---------- 搜索 ----------
   function buildSearchIndex() {
-    const ents = [];
-    for (const sum of S.summaries.values()) {
-      ents.push({ type: 'line', id: sum.lineId, text: sum.name || sum.lineId, aliases: sum.aliases, ref: sum });
-    }
+    // 2026-11-22 主支线合并：线路条目走 core 合并逻辑（有效组一个条目：text＝组名、
+    // 主线与支线的 name＋aliases＋id 全部作为搜索词命中同一条目；支线无独立条目），
+    // ref 回填主线 summary（displayOnly 定位兜底用）；车站条目照旧
+    const ents = V.lineSearchEntries(S.linesMap, S.lineGroups).map((e) => {
+      e.ref = S.summaries.get(e.id) || null;
+      return e;
+    });
     for (const lb of S.dispLabels) {
       ents.push({ type: 'stop', id: lb.key, text: lb.name, aliases: [], ref: lb });
     }
@@ -1135,6 +1187,9 @@
     S.linesMap = V.normalizeLines(net.linesFC);
     S.stops = V.stopList(net.stopsFC);
     S.lineOrder = net.indexOrder || null;   // 线路列表自定义显示序（无则组内 id 升序）
+    // 主支线线组归并（2026-11-22 用户裁定）：net/index.json lineGroups × line.groupId
+    // 双向并集；无组信息（旧快照 @1）＝空结构，一切逐线独立＝旧行为
+    S.lineGroups = V.buildLineGroups(S.linesMap, net.lineGroups || []);
     if (!S.linesMap.size && !S.stops.length) {
       showCenter('暂无数据', '已读取 ' + net.base + '/，但其中没有可显示的线路或车站。'
         + '请确认编辑器已录入数据，并重新运行 flatten（或 publish）。');

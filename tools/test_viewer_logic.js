@@ -8,6 +8,10 @@
 // 改版后纯色实线统一不透明）、颜色与转义工具、药丸链序（planGroupPillChain）、出省箭头
 //（kind:'arrow'）、手造输入链路（arrow＋3 线 same 组）、GCJ02 显示变换（与 src/geom.js
 // 逐点对拍守卫——防两份副本漂移；makeDispCoord 三态）。
+// 2026-11-22 增：主支线合并（buildLineGroups 双向并集归属/无 main 组不合并/layerGroups
+// 合并行/lineSearchEntries＋terms 合并命中/computeDimmedSet 组级调光/lineLabelOf·
+// linesOfPin 站牌组名）；地图双击线路精确命中（lineWidthAt 与线宽表达式同源求值/
+// pointToScreenPolylineDist 点到折线最小屏幕距离——描边内外、段外端点距、多段最小、空防御）。
 // 用法：node tools/test_viewer_logic.js（纯 node，不引 jsdom/DOM/maplibre）
 
 const V = require(path_join('src', 'viewer_core.js'));
@@ -541,6 +545,132 @@ ok(Math.abs(svP.arrows[0].angleDeg - 90) < 1e-9, 'arx 东向 90°（邻站＝x1�
 eq(svP.labels.filter((l) => l.group).map((l) => l.key), ['g:g9'], '药丸组合并为一个组标签');
 const sumP = V.lineSummaries(V.normalizeLines(pillFC), stP);
 eq(sumP.get('lx').stopCount, 1, 'lx 站数不含 arrow（药丸成员照常计数）');
+
+// ---------- 主支线合并（2026-11-22 用户裁定：主线与支线在查看器眼中恒为一条线） ----------
+console.log('line groups merge:');
+const mgFC = fc(
+  lineFeat('m1', 0, 'existing', [[0, 0], [1, 0]], { name: '一号线', aliases: ['One'], color: '#e40012', role: 'main', layer: '市区线', groupId: 'lgA' }),
+  lineFeat('b1', 0, 'future', [[1, 0], [2, 1]], { name: '一号线支线', aliases: ['支', '分歧段'], color: '#999999', role: 'branch', layer: '市区线', groupId: 'lgA' }),
+  lineFeat('s1', 0, 'approved', [[5, 5], [6, 5]], { name: '二号线', color: '#00a651', role: 'standalone' }),   // 无组独立线
+  lineFeat('x1', 0, 'future', [[9, 9], [9, 8]], { name: '空组员甲', role: 'standalone', groupId: 'lgB' }),  // 无 main 组组员
+  lineFeat('x2', 0, 'future', [[9, 8], [9, 7]], { name: '空组员乙', role: 'branch', groupId: 'lgB' }),
+  lineFeat('m2', 0, 'approved', [[20, 0], [21, 0]], { name: '三号线主线', color: '#0000ff', role: 'main', layer: '市域线' }),        // 仅 members 声明方向（无 groupId）
+  lineFeat('b2', 0, 'approved', [[21, 0], [22, 1]], { name: '三号线支线', color: '#123456', role: 'branch', layer: '市域线' }),
+  lineFeat('d1', 0, 'existing', [[30, 0], [31, 0]], { name: '他省甲', color: '#888888', role: 'main', layer: '他省', groupId: 'lgD' }),  // displayOnly 入组（防御用例）
+  lineFeat('d2', 0, 'future', [[31, 0], [32, 1]], { name: '他省乙', color: '#ff00ff', role: 'branch', layer: '市区线', groupId: 'lgD' }),
+);
+const lmG = V.normalizeLines(mgFC);
+eq(lmG.get('m1').groupId, 'lgA', 'normalizeLines 保留 groupId');
+eq(lmG.get('s1').groupId, '', '无组线 groupId 空串（flatten 键齐口径）');
+// buildLineGroups：双向并集归属（lgA 空成员表仅靠 groupId / lgC 声明式 members）
+const lgFull = V.buildLineGroups(lmG, [
+  { id: 'lgA', name: '一号线', members: [] },
+  { id: 'lgB', name: '坏组', members: ['x1', 'x2'] },
+  { id: 'lgC', name: '三号线', members: ['m2', 'b2', 'ghost'] },   // ghost＝不在输出的成员（防御）
+  { id: 'lgD', name: '他省组', members: [] },
+]);
+eq(lgFull.groups.map((g) => g.id), ['lgA', 'lgC', 'lgD'], '有效组＝lgA/lgC/lgD（lgB 无 main 成员不合并）');
+eq(lgFull.groups[0].members, ['m1', 'b1'], 'lgA 空成员表＋groupId 指向 → 双向并集 [m1,b1]');
+eq(lgFull.groups[0].mainId, 'm1', 'lgA 主线＝m1');
+eq(lgFull.groups[1].members, ['m2', 'b2'], 'lgC 声明 members 生效（ghost 不在 linesMap 被滤）');
+eq(lgFull.groups[2].mainId, 'd1', 'lgD 主线＝d1（displayOnly 线入组同规则）');
+eq(lgFull.mainOf.get('b1'), 'm1', 'mainOf：支线→主线');
+eq(lgFull.mainOf.get('d2'), 'd1', 'mainOf：他省组支线→主线');
+ok(!lgFull.ofLine.has('x1') && !lgFull.mainOf.has('x2'), '无 main 组组员不归并（照旧独立显示）');
+ok(!lgFull.mainOf.has('m1'), '主线自身不进 mainOf');
+eq(lgFull.groups[1].name, '三号线', '组名取记录名');
+const lgNoname = V.buildLineGroups(lmG, [{ id: 'lgA', name: '', members: ['m1', 'b1'] }]);
+eq(lgNoname.groups[0].name, '一号线', '组名缺失退主线名（不擅自造名）');
+eq(V.buildLineGroups(lmG, null).groups, [], 'null lineGroups＝空结构（net-index@1 旧快照兼容）');
+ok(V.buildLineGroups(lmG, null).mainOf instanceof Map && V.buildLineGroups(lmG, null).ofLine instanceof Map,
+  '空结构仍带 ofLine/mainOf Map（胶水层免判空）');
+eq(V.buildLineGroups(null, [{ id: 'lgA', members: ['m1'] }]).groups, [], 'null linesMap 不崩返回空');
+// 列表合并行：名＝组名、色块＝主线色、归类与排序按主线、支线不出独立行
+const lgrM = V.layerGroups(lmG, null, lgFull);
+const rowsM = [].concat(...lgrM.map((g) => g.lines));
+eq(rowsM.map((l) => l.lineId).sort(), ['d1', 'm1', 'm2', 's1', 'x1', 'x2'], '支线不出独立行（b1/b2/d2 无行）、主线照出');
+const m1row = rowsM.find((l) => l.lineId === 'm1');
+eq(m1row.name, '一号线', '合并行显示名＝线组名称');
+eq(m1row.color, '#e40012', '合并行色块＝主线色（非支线色 #999999）');
+eq(m1row.layer, '市区线', '合并行归类＝主线类别');
+eq(rowsM.find((l) => l.lineId === 'm2').name, '三号线', '声明式组主线行名＝组名');
+eq(lgrM.map((g) => g.layer), ['市区线', '市域线', '他省', null], '分组与组序按主线类别（中文序、未分类最后）');
+eq(V.layerGroups(lmG, ['s1'], lgFull).map((g) => g.layer), [null, '市区线', '市域线', '他省'],
+  '排序按行集：支线 b1 列入 lineOrder 也不占位（s1 序生效置顶未分类）');
+eq(V.layerGroups(lmG, null).length, V.layerGroups(lmG, null, null).length, '不传 lineGroups＝旧行为（向后兼容）');
+eq(V.visibleListGroups(lmG, [], null, lgFull).length, 4, 'visibleListGroups 透传 lineGroups');
+// 组级调光：期次态以主线为准、组全体同调同不调；聚焦豁免＝组全体成员
+eq([...V.computeDimmedSet(lmG, { phase: 'existing', lineGroups: lgFull })].sort(),
+  ['b2', 'd1', 'd2', 'm2', 's1', 'x1', 'x2'],
+  '分期「既有」组级：lgA 组（主线 existing）全体不调光——b1 自身 future 也豁免；无 main 组组员照旧逐线');
+eq([...V.computeDimmedSet(lmG, { phase: 'future', lineGroups: lgFull })].sort(),
+  ['b1', 'b2', 'd1', 'd2', 'm1', 'm2', 's1'],
+  '分期「远期」组级：组全体同调（b1 自身 future 但随主线 existing 一起被调光；x1/x2 恰 future 不调）');
+eq([...V.computeDimmedSet(lmG, { focus: 'm1', lineGroups: lgFull })].sort(),
+  ['b2', 'd1', 'd2', 'm2', 's1', 'x1', 'x2'],
+  '聚焦主线 m1：组全体（m1＋b1）豁免调光，其余调光（d 组随主线 displayOnly 恒调光）');
+eq([...V.computeDimmedSet(lmG, { focus: 'b1', lineGroups: lgFull })].sort(),
+  ['b2', 'd1', 'd2', 'm2', 's1', 'x1', 'x2'],
+  '防御：focus 直传支线 id 也按其组豁免（胶水层归一前的兜底）');
+eq([...V.computeDimmedSet(lmG, { phase: 'existing', focus: 'm2', lineGroups: lgFull })].sort(),
+  ['b1', 'b2', 'd1', 'd2', 'm1', 'm2', 's1', 'x1', 'x2'],
+  '叠加：分期既有＋聚焦 m2——全线并集（m2 期次不匹配照样被调光；lgA 组期次虽匹配但不在聚焦组，按聚焦调光）');
+eq([...V.computeDimmedSet(lmG, { phase: 'existing' })].sort(),
+  ['b1', 'b2', 'd1', 'd2', 'm2', 's1', 'x1', 'x2'],
+  '不传 lineGroups＝逐线旧行为（b1 future 被调光——与组级路径对照）');
+// 搜索合并命中：主线与支线的 name＋aliases＋id 全部命中同一合并条目（显示名＝组名）
+const entsG = V.lineSearchEntries(lmG, lgFull);
+eq(entsG.map((e) => e.id).sort(), ['d1', 'm1', 'm2', 's1', 'x1', 'x2'], '条目集＝各有效组主线＋无组线（支线不单独出条目）');
+const entA = entsG.find((e) => e.id === 'm1');
+ok(entA && entA.text === '一号线', '合并条目 text＝组名');
+eq(entA.aliases, ['一号线', 'One', '一号线支线', '支', '分歧段'], '主线与支线的 name＋aliases 全入 aliases（去重保序）');
+eq(entA.terms, ['m1', 'b1'], '成员线 id 全入 terms（可命中不进副行）');
+eq(entsG.find((e) => e.id === 's1').aliases, [], '无组线条目照旧');
+eq(V.matchEntries('一号线支', entsG).map((e) => e.id), ['m1'], '支线名前缀命中合并条目');
+eq(V.matchEntries('分歧段', entsG).map((e) => e.id), ['m1'], '支线别名命中合并条目');
+eq(V.matchEntries('b1', entsG).map((e) => e.id), ['m1'], '支线 id（terms）命中合并条目');
+eq(V.matchEntries('m1', entsG).map((e) => e.id), ['m1'], '主线 id（terms）命中合并条目');
+eq(V.lineSearchEntries(lmG, null).length, 9, '无组信息＝逐线条目（9 条旧行为）');
+// 站牌显示组名（linesOfPin/lineLabelOf：组成员一律显组名，主/支线去重）
+eq(V.linesOfPin({ kind: 'group', lineIds: ['m1', 'b1', 's1'], lineNames: ['一号线', '一号线支线', '二号线'] }, lmG, lgFull),
+  ['一号线（又称 One）', '二号线'], '组 pin 所属线路：主/支线同显组名并去重，别名随主线');
+eq(V.linesOfPin({ kind: 'stop', lineId: 'b2', lineNames: ['三号线支线'] }, lmG, lgFull),
+  ['三号线'], '单站 pin：支线显示组名');
+eq(V.lineLabelOf('m2', lmG, lgFull), '三号线', '主线名≠组名时也显示组名');
+eq(V.lineLabelOf('m1', lmG, lgFull), '一号线（又称 One）', '主线名恰为组名则不变（别名照挂）');
+eq(V.lineLabelOf('s1', lmG, lgFull), '二号线', '无组线照旧');
+eq(V.lineLabelOf('m1', lmG, null), '一号线（又称 One）', '无线组结构照旧（旧快照兼容）');
+eq(V.lineLabelOf('zz', lmG, lgFull, '孤线'), '孤线', '孤线退 fallback');
+eq(V.linesOfPin({ kind: 'stop', lineId: 'zz', lineNames: ['孤线'] }, lmG, lgFull), ['孤线'], '孤站退 lineName');
+
+// ---------- 地图双击线路精确命中（2026-11-22 用户反馈：只认直接点到线体描边） ----------
+console.log('dblclick precise hit:');
+ok(V.LINE_WIDTH_PX === 7, '线宽基准常量＝7（lineLayerDef/connFadeLayerDef 同源引用，数值唯一源）');
+ok(V.DBLCLICK_TOL_PX === 2, '双击命中容差常量＝2px（占位可调）');
+eq(V.lineWidthAt(11), 7, 'lineWidthAt(z≥11)＝基准线宽（向上封顶）');
+eq(V.lineWidthAt(13), 7, 'lineWidthAt(13) 封顶 7');
+eq(V.lineWidthAt(5), V.scaledSize(7), 'lineWidthAt(z≤5)＝低端锚 scaledSize(7)（同两位小数舍入）');
+eq(V.lineWidthAt(3), 0.11, 'lineWidthAt(3) 低端 clamp 0.11');
+ok(Math.abs(V.lineWidthAt(8) - (0.11 + (Math.sqrt(2) - 1) * (7 - 0.11))) < 1e-9,
+  'lineWidthAt(8)＝exponential 插值同式（lo+(2^t−1)×(hi−lo)，与 MapLibre 求值一致）');
+ok(V.lineWidthAt('abc') === 7 && V.lineWidthAt(null) === 7, '异常输入退基准值（防御）');
+const hitSeg = [[0, 0], [100, 0]];
+eq(V.pointToScreenPolylineDist({ x: 50, y: 0 }, hitSeg), 0, '点在线上 → 0');
+eq(V.pointToScreenPolylineDist({ x: 50, y: 3 }, hitSeg), 3, '垂距＝点到线段垂直距离');
+eq(V.pointToScreenPolylineDist({ x: 150, y: 0 }, hitSeg), 50, '垂足在段延长线外 → 取端点距离');
+eq(V.pointToScreenPolylineDist({ x: -30, y: 40 }, hitSeg), 50, '起点外侧 → 端点距（30-40-50 勾股）');
+eq(V.pointToScreenPolylineDist({ x: 50, y: 4 }, [[0, 0], [100, 0], [100, 100]]), 4, '多段折线取全段最小');
+eq(V.pointToScreenPolylineDist({ x: 60, y: 2 }, [[0, 10], [200, 10], [200, 100], [60, 3]]), 1,
+  '多候选段取最近（末段端点距 1 ＜ 首段垂距 8）');
+eq(V.pointToScreenPolylineDist({ x: 5, y: 5 }, [[3, 4]]), Math.hypot(2, 1), '单点退化＝点距');
+ok(V.pointToScreenPolylineDist({ x: 5, y: 5 }, []) === Infinity, '空坐标 → Infinity（必然不命中）');
+eq(V.pointToScreenPolylineDist({ x: 5, y: 5 }, [[NaN, 1], [1, 5]]), 4, '坏点跳过（剩单有效点 → 点距）');
+ok(V.pointToScreenPolylineDist(null, hitSeg) === Infinity, '非法 point → Infinity（防御）');
+// 命中阈值组合（胶水层同式 tol＝lineWidthAt(z)/2＋DBLCLICK_TOL_PX）
+const tolAt = (z) => V.lineWidthAt(z) / 2 + V.DBLCLICK_TOL_PX;
+ok(V.pointToScreenPolylineDist({ x: 50, y: 3 }, hitSeg) <= tolAt(11), '描边内（距 3 ≤ 7/2+2＝5.5px）判定命中');
+ok(V.pointToScreenPolylineDist({ x: 50, y: 6 }, hitSeg) > tolAt(11), '描边外（距 6 ＞ 5.5px）不命中');
+ok(V.pointToScreenPolylineDist({ x: 50, y: 2 }, hitSeg) <= tolAt(9), '拉远（z9 线宽≈4.16）命中带收窄仍含 2px');
 
 // ---------- GCJ02 显示变换（测试阶段底图·高德对齐；与 src/geom.js 对拍守卫防副本漂移） ----------
 console.log('gcj02 / makeDispCoord:');
