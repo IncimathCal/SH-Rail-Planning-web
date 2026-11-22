@@ -727,6 +727,10 @@
   };
   const today = () => new Date().toISOString().slice(0, 10);
   const LS_KEY = 'shrail.editor.v1';
+  // 导入记录单键（2026-11-22 性能拆分）：imports 含全量 path 字符串 ≈0.5MB 且极少变化，
+  // 与线路编辑共键会让每次暂存都同步重写整块 localStorage（打字停顿即卡）——拆出后仅
+  // imports 实际变化（拖入/导入新源）时才写一次；boot 从 import/ 磁盘扫到的记录不置脏
+  const LS_IMPS_KEY = LS_KEY + '.imports';
 
   // ---------- 状态 ----------
   const S = {
@@ -794,10 +798,13 @@
   }
 
   // ---------- 撤销（快照式） ----------
+  // 快照不含 imports（2026-11-22 性能修正）：imports 只经 addImportRecord 变更且不参与撤销，
+  // 全量导入 path 字符串 ≈0.5MB，逐次 stringify 进 100 层撤销栈曾致录入规模上升后明显卡顿；
+  // undo 因此恒保留当前 S.imports（与旧快照行为等价——快照里的 imports 从未被真正改过）
   function snapshot() {
     const s = JSON.stringify({
       lines: [...S.lines.values()],
-      groups: S.groups, imports: S.imports, lineOrder: S.lineOrder,
+      groups: S.groups, lineOrder: S.lineOrder,
     });
     if (S.undo.length && S.undo[S.undo.length - 1] === s) return;   // 与栈顶相同不压栈（防空转膨胀）
     S.undo.push(s);
@@ -810,7 +817,8 @@
     // 快照可能是升级前的 @1 数据：还原后重跑迁移（幂等），防旧格式流入渲染/保存
     for (const l of d.lines) migrateLineToV2(l);
     S.lines = new Map(d.lines.map((l) => [l.id, l]));
-    S.groups = d.groups; S.imports = d.imports;
+    S.groups = d.groups;
+    // imports 不随快照回滚（见 snapshot 注释）；旧版快照含 imports 键亦忽略
     S.lineOrder = Array.isArray(d.lineOrder) ? d.lineOrder : null;   // 旧快照无此键＝null（回退 id 升序）
     S.arcs = new Map();
     if (S.selImport && !S.imports.some((im) => im.source === S.selImport.source)) S.selImport = null;
@@ -822,6 +830,7 @@
   // ---------- localStorage 暂存 ----------
   let lsTimer = null;
   let lsFailed = false;   // 最近一次暂存是否失败（beforeunload 拦截与告警依据）
+  let importsDirty = false;   // imports 变化标（addImportRecord 置位；boot 磁盘扫描后清位免整块重写）
   function autosave() {
     clearTimeout(lsTimer);
     lsTimer = setTimeout(() => {
@@ -829,9 +838,13 @@
         localStorage.setItem(LS_KEY, JSON.stringify({
           savedAt: Date.now(),
           lines: [...S.lines.values()],
-          groups: S.groups, imports: S.imports, activeLine: S.activeLine,
+          groups: S.groups, activeLine: S.activeLine,
           lineOrder: S.lineOrder,
         }));
+        if (importsDirty) {   // 导入记录仅在变化时写自己的键（见 LS_IMPS_KEY 注释）
+          localStorage.setItem(LS_IMPS_KEY, JSON.stringify(S.imports));
+          importsDirty = false;
+        }
         lsFailed = false;
       } catch (e) {
         lsFailed = true;
@@ -843,6 +856,10 @@
     let snap = null;
     try { snap = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch (e) { /* 忽略 */ }
     if (!snap || !snap.lines || !snap.lines.length) return;
+    // 导入记录暂存拆键后单读（见 LS_IMPS_KEY）；旧版单键暂存里仍带 imports，缺新键时兜底
+    let snapImports = null;
+    try { snapImports = JSON.parse(localStorage.getItem(LS_IMPS_KEY) || 'null'); } catch (e) { /* 忽略 */ }
+    if (!Array.isArray(snapImports)) snapImports = snap.imports || [];
     $('bannerTime').textContent = new Date(snap.savedAt).toLocaleString();
     $('banner').classList.add('show');
     $('btnRestore').onclick = () => {
@@ -858,14 +875,16 @@
       if (Array.isArray(snap.lineOrder)) S.lineOrder = snap.lineOrder;
       // 导入记录：同名来源以刚从 import/ 磁盘载入的为准（可能比暂存新），其余保留暂存里的
       const diskSources = new Set(S.imports.map((i) => i.source));
-      S.imports = (snap.imports || []).filter((i) => !diskSources.has(i.source)).concat(S.imports);
+      S.imports = snapImports.filter((i) => !diskSources.has(i.source)).concat(S.imports);
       S.activeLine = snap.activeLine && S.lines.has(snap.activeLine) ? snap.activeLine : null;
       $('banner').classList.remove('show');
       syncCountersWithLoaded(); renderAll();
+      backfillTransfersOnLoad();   // 数据就绪：自动回填（免得刷新后还要再保存一次，见其注释）
       setStatus('已恢复本地暂存。' + (notes.length ? ' ' + notes.join('；') + '。' : ''));
     };
     $('btnDiscard').onclick = () => {
       localStorage.removeItem(LS_KEY);
+      localStorage.removeItem(LS_IMPS_KEY);   // 导入记录暂存一并丢弃（与旧单键行为一致）
       $('banner').classList.remove('show');
     };
   }
@@ -879,6 +898,7 @@
     // 同源重复载入：替换
     S.imports = S.imports.filter((i) => i.source !== rec.source);
     S.imports.push(rec);
+    importsDirty = true;   // 导入记录低频大对象：标记后由 autosave 择机单键写回（见 LS_IMPS_KEY）
   }
 
   /** 线路对象载入统一入口的迁移环节：@1（segments 为状态字符串数组）→@2 分段实体，
@@ -1028,6 +1048,7 @@
           else if (obj && obj.schema === 'fmt/stations-import@2') addStationPreset(obj);
         }
       }
+      importsDirty = false;   // 磁盘扫描到的记录无需暂存备份（恢复时同名以磁盘为准），免整块重写
     } catch (e) { /* file:// 等，忽略 */ }
   }
 
@@ -1101,6 +1122,20 @@
     if (!m) return [0, 0];
     const w = pt.matrixTransform(m.inverse());
     return [w.x, w.y];
+  }
+
+  // ---------- 未建线导入 path 持久组（renderWorld 分层，2026-11-22 性能） ----------
+  // 灰色虚线＋命中线 ≈百来个复杂 path 元素，曾随每次 renderWorld 全量重建（31 线规模起肉眼卡顿）；
+  // 照 basemapG 思路跨渲染保留，仅当导入集（S.imports 引用）、已绑定 path 集或选中态真正变化时重建。
+  // 选中高亮不重建：renderWorld 里遍历切 class（~百元素，微秒级）
+  let rawG = null;            // <g> 持久节点
+  let rawGImpRef = null;      // 上次重建时的 S.imports 引用（addImportRecord 每次换新数组）
+  let rawGBound = null;       // 上次重建时的已绑定 path Set
+  function samePathSet(a, b) {
+    if (a === b) return true;
+    if (!a || !b || a.size !== b.size) return false;
+    for (const p of a) if (!b.has(p)) return false;
+    return true;
   }
 
   // ---------- 底图瓦片垫层（三态：关 / OSM / 高德；仅本地对位参考；需标定 fmt/calibration@2） ----------
@@ -1217,9 +1252,20 @@
 
   // ---------- 渲染 ----------
   function segPathString(ap, t1, t2) {
-    const pts = ap.polylineBetween(t1, t2);
-    if (!pts.length) return '';
-    return 'M' + pts.map((p) => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join('L');
+    // 段 path 字符串 memo（2026-11-22 性能）：挂弧对象上，随 arcOf 缓存失效（S.arcs
+    // 清理/重建）整体丢弃，无悬挂顾虑；容量护栏防拖站/改站产生海量旧 t 组合（全清重填
+    // 成本≈一次重绘的段计算，可接受）
+    let c = ap._segStr;
+    if (!c) c = ap._segStr = new Map();
+    const key = t1 + '|' + t2;
+    let s = c.get(key);
+    if (s === undefined) {
+      const pts = ap.polylineBetween(t1, t2);
+      s = pts.length ? 'M' + pts.map((p) => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join('L') : '';
+      if (c.size > 512) c.clear();
+      c.set(key, s);
+    }
+    return s;
   }
 
   // ---------- 联络线取色（2026-11-22 用户裁定：取消颜色属性，颜色由所联络的两条线决定） ----------
@@ -1259,11 +1305,14 @@
   }
 
   function renderWorld() {
-    // 底图组跨渲染持久保留（否则打字等高频重绘会反复清空瓦片造成闪烁）
+    // 底图组跨渲染持久保留（否则打字等高频重绘会反复清空瓦片造成闪烁）；
+    // 未建线导入组同理保留（性能，见 rawG 声明处注释）
     if (basemapG && basemapG.parentNode === world) world.removeChild(basemapG);
+    if (rawG && rawG.parentNode === world) world.removeChild(rawG);
     world.textContent = '';
     if (!basemapG) basemapG = el('g', { id: 'basemap' });
     world.insertBefore(basemapG, world.firstChild);
+    if (rawG) world.insertBefore(rawG, basemapG.nextSibling);
     scheduleBasemap();
     // 联络线渐变容器 <defs>：随上方 world.textContent='' 每次重绘整体清理重建（防泄漏与
     // 悬空引用；与 basemapG 的跨渲染保留不同——渐变无瓦片闪烁顾虑，重建成本可忽略）
@@ -1310,22 +1359,33 @@
     }
 
     // 未建线的导入 path（灰色虚线；2026-11-21 halo 方案用户否决回退，灰 #666→#999 提亮）
-    // ＋透明加宽命中线；选中态（S.selImport 命中）虚线改强调色加粗
+    // ＋透明加宽命中线；选中态（S.selImport 命中）虚线改强调色加粗。
+    // 持久组 rawG：导入集/绑定集真正变化才重建（性能，见 rawG 声明处注释）——选中态不重建、
+    // 仅在下方遍历切 class
     const boundPaths = new Set([...S.lines.values()].map((l) => l.path));
-    for (const imp of S.imports) {
-      for (const p of imp.paths) {
-        if (boundPaths.has(p.path)) continue;
-        const sel = S.selImport && S.selImport.source === imp.source
-          && S.selImport.sourceLayer === p.sourceLayer;
-        const path = el('path', { d: p.path, class: 'svg-line line-raw' + (sel ? ' sel' : ''),
-          stroke: '#999', 'vector-effect': 'non-scaling-stroke' }, world);
-        path.dataset.impSource = imp.source;
-        path.dataset.impLayer = p.sourceLayer;
-        const hit = el('path', { d: p.path, class: 'svg-line line-raw-hit',
-          'vector-effect': 'non-scaling-stroke' }, world);
-        hit.dataset.impSource = imp.source;
-        hit.dataset.impLayer = p.sourceLayer;
+    if (!rawG || rawGImpRef !== S.imports || !samePathSet(rawGBound, boundPaths)) {
+      rawG = el('g', { id: 'imports-raw' });
+      for (const imp of S.imports) {
+        for (const p of imp.paths) {
+          if (boundPaths.has(p.path)) continue;
+          const path = el('path', { d: p.path, class: 'svg-line line-raw',
+            stroke: '#999', 'vector-effect': 'non-scaling-stroke' }, rawG);
+          path.dataset.impSource = imp.source;
+          path.dataset.impLayer = p.sourceLayer;
+          const hit = el('path', { d: p.path, class: 'svg-line line-raw-hit',
+            'vector-effect': 'non-scaling-stroke' }, rawG);
+          hit.dataset.impSource = imp.source;
+          hit.dataset.impLayer = p.sourceLayer;
+        }
       }
+      rawGImpRef = S.imports;
+      rawGBound = boundPaths;
+      world.insertBefore(rawG, basemapG.nextSibling);   // 渲染顺序：底图之上、线路之下
+    }
+    const selSrc = S.selImport && S.selImport.source, selLyr = S.selImport && S.selImport.sourceLayer;
+    for (const node of rawG.children) {
+      if (node.classList.contains('line-raw-hit')) continue;   // 命中线不带选中态
+      node.classList.toggle('sel', !!selSrc && node.dataset.impSource === selSrc && node.dataset.impLayer === selLyr);
     }
 
     // 线路
@@ -2292,7 +2352,7 @@
       drag = { type: 'stop', lid, sid, moved: false,
         el: world.querySelector(`.stop-c[data-sid="${CSS.escape(sid)}"]`),
         ring: world.querySelector('.stop-ring'),
-        pre: JSON.stringify({ lines: [...S.lines.values()], groups: S.groups, imports: S.imports, lineOrder: S.lineOrder }) };
+        pre: JSON.stringify({ lines: [...S.lines.values()], groups: S.groups, lineOrder: S.lineOrder }) };   // 不含 imports（同 snapshot 性能修正）
       svg.setPointerCapture(e.pointerId);
       regCanvasDbl(`stop:${sid}`, () => locateStopInList(sid, lid));   // 双击站圈：左栏定位
       return;
@@ -3253,6 +3313,7 @@
     S.selStop = null; S.pending = [];
     syncCountersWithLoaded();
     renderAll();
+    backfillTransfersOnLoad();   // 数据就绪：自动回填（工作区线路名 → 预置空缺建议）
     syncBasemapButton();
     $('btnBasemap').classList.toggle('primary', S.basemap !== 'off' && !!S.calib);
     setStatus(`已载入工作区（${label}）：线路 ${lineFiles.size} 条`
@@ -3320,6 +3381,7 @@
     if (!confirm('新建空工作区：将清空本地暂存（线路/组/导入记录）与线/组编号水位，测试数据不保留，页面随即刷新。\n确定继续？')) return;
     clearTimeout(lsTimer);                    // 防清空后 400ms 防抖又把暂存写回
     localStorage.removeItem(LS_KEY);           // 主暂存 shrail.editor.v1
+    localStorage.removeItem(LS_IMPS_KEY);      // 导入记录暂存（拆键后单独清理）
     localStorage.removeItem('shrail.counters'); // 线/组编号水位
     localStorage.removeItem('shrail.calib');   // 旧标定偏好键（切换功能已移除，兼容清理无害）
     location.reload();
@@ -3441,9 +3503,21 @@
   bfEl.addEventListener('change', () => {
     localStorage.setItem('shrail.backfillTrans', bfEl.checked ? '1' : '0');
     setStatus(bfEl.checked
-      ? '已开启：保存工作区时填补换乘站名空缺（只补缺、不覆盖已有建议，右上角提示数量）。'
+      ? '已开启：载入数据与保存工作区时填补换乘站名空缺（只补缺、不覆盖已有建议，右上角提示数量）。'
       : '已关闭换乘站名回填。');
   });
+
+  /** 数据载入完成后自动回填一次（2026-11-22 用户反馈：回填原先只挂在「保存工作区」上，
+   *  刷新后预置从磁盘恢复原状、必须再保存一次才回来）。boot／恢复本地暂存／载入工作区
+   *  三个数据就绪点各调一次：尊重开关；幂等（只填空缺，先前已填的不动）；静默（不弹
+   *  toast——boot 场景弹了也会被后续初始化状态盖掉），确有填补时刷新站列表让 chips 即现 */
+  function backfillTransfersOnLoad() {
+    if (!$('backfillTrans').checked) return;
+    if (!S.stationPresets.length) return;
+    const pairs = [...S.lines.values()].map((l) => ({ line: l, preset: matchPresetForLine(l) }));
+    const { filled } = backfillTransferNames(pairs, S.stationPresets);
+    if (filled) renderStopList();
+  }
 
   $('btnSaveWorkspace').onclick = async () => {
     backfillTransfersBeforeSave();   // 需求 3：勾选时先回填换乘站名（改内存预置，即改即生效），再走原保存流程
@@ -3516,5 +3590,6 @@
     setStatus(MODE_HINT.select);
     $('canvasHint').textContent = MODE_HINT.select;
     renderAll();
+    backfillTransfersOnLoad();   // boot 数据就绪：自动回填（点「恢复暂存」后 btnRestore 内还会再跑一次，幂等）
   })();
 })(typeof globalThis !== 'undefined' ? globalThis : this);
