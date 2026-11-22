@@ -904,11 +904,16 @@
       });
       addTop(connFadeLayerDef('conn-fade-' + line.lineId, line.lineId, focusColor));
     }
-    // ④ arrow 渐隐层（出省端末段 1km；常驻不依赖聚焦）：聚焦时加罩上（渐隐段是聚焦线
-    //    一部分，不被罩压白），且在罩上符号复制层之下（线在下、符号在上——与静态区
-    //    相对序一致）；非聚焦时加罩下（blend 之上、药丸之下——与旧层序完全一致）。
-    //    联络线不出省（无 arrow 站），fade/blend/arrow 三个跳过集合在 renderLinesFC
-    //    取并集，天然容错互斥之外的脏数据。
+    // ④ arrow 渐隐层（出省端末段 1km；常驻不依赖聚焦）：**该线为聚焦组成员时**才加罩上
+    //    （渐隐段是聚焦线的一部分，不被罩压白；2026-11-22 修复：原「只要存在聚焦就上罩」
+    //    致非聚焦的 arrow 线——如沪乍线——全线浮在白罩上，用户真机抓包），且在罩上符号
+    //    复制层之下（线在下、符号在上——与静态区相对序一致）；其余（非聚焦成员/无聚焦）
+    //    加罩下（blend 之上、药丸之下——与旧层序完全一致）。联络线不出省（无 arrow 站），
+    //    fade/blend/arrow 三个跳过集合在 renderLinesFC 取并集，天然容错互斥之外的脏数据。
+    const arrowFocusIds = new Set(
+      S.focus != null
+        ? (S.lineGroups.ofLine.get(S.focus) || { members: [S.focus] }).members.map(String)
+        : []);
     for (const it of S.arrowPlan || []) {
       const line = S.linesMap.get(it.lineId);
       if (!line) continue;
@@ -921,7 +926,7 @@
         geometry: { type: 'LineString', coordinates: coords },
         properties: { lineId: line.lineId, dim: S.dimmed.has(line.lineId) ? 1 : 0 },   // 照常受分期调光与他省规则
       });
-      if (S.focus != null) addTop(def); else addLow(def);
+      if (arrowFocusIds.has(String(line.lineId))) addTop(def); else addLow(def);
     }
     // ⑤ 罩上符号复制层（2026-11-22 真机反馈轮：聚焦成员的站圈/药丸在罩上完整显示）——
     //    同 source 同尺寸、opacity 恒 1（去 dim case，对齐 focus-copy「聚焦豁免一切」
