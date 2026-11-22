@@ -144,8 +144,21 @@ def collect_line_files(data_dir):
         archived = {a if isinstance(a, str) else a.get("id")
                     for a in (mf_js.get("archived") or [])}
         for e in mf_js.get("lines") or []:
-            if e.get("id") in archived:
-                continue
+            lid = e.get("id")
+            if lid in archived:
+                # 归档表与线文件矛盾（线文件说未归档）：按未归档输出并提示，不替用户丢掉一条
+                # 明明在用的线（2026-11-22 抓包：编辑器取消归档后没从归档表摘除，l0061 被
+                # 整条剔除、查看器不见）。此时 validate 会报「archived id is also an active
+                # line」——发布通道有 validate 把门，此处只是本地预览不静默丢线。
+                try:
+                    lp = data / e["file"]
+                    live = not (json.loads(lp.read_text(encoding="utf-8")).get("meta") or {}).get("archived")
+                except (OSError, ValueError, KeyError, TypeError):
+                    live = False
+                if not live:
+                    continue
+                print(f"警告：{lid} 同时列在 manifest.lines 与 manifest.archived（线文件为未归档）"
+                      f"——按未归档输出；请在编辑器重新保存工作区（validate 会报错）")
             if e.get("file"):
                 files.append(data / e["file"])
         if not files:

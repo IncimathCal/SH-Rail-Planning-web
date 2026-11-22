@@ -586,6 +586,18 @@ eq(L.normalizeLineOrder(['l0001', 'l0002', 'l0003'], ['l0001', 'l0003']), ['l000
 eq(L.normalizeLineOrder(['l0001', 'l0001', 7, null, 'l0002'], ['l0001', 'l0002']), ['l0001', 'l0002'], '重复去重、杂物跳过');
 eq(L.normalizeLineOrder(['l0002', 'l0001', 'l0002'], ['l0001', 'l0002']), ['l0002', 'l0001'], '重复 id 只保留首次出现');
 
+// ---------- 归档线 id 表 archivedIdList（manifest.archived；2026-11-22 抓包：取消归档后仍留在表里） ----------
+console.log('archivedIdList:');
+const mkArchL = (id, archived) => ({ id, meta: { archived } });
+// 抓包复现：l0061 曾归档（旧表有它）后取消归档 → 必须从表里摘除（旧实现留着 → validate FAIL、flatten 整条剔除）
+eq(L.archivedIdList(['l0061'], [mkArchL('l0061', false), mkArchL('l0001', false)]), [], '取消归档的线从归档表摘除');
+eq(L.archivedIdList(['l0061', 'l0009'], [mkArchL('l0061', false), mkArchL('l0005', true)]), ['l0005', 'l0009'],
+  '当前归档的补入、已不在线路列表里的历史 id 保留（编号永不复用）、升序');
+eq(L.archivedIdList(undefined, [mkArchL('l0002', true), mkArchL('l0001', false)]), ['l0002'], '无旧表：仅当前归档线');
+eq(L.archivedIdList(['l0003', 7, null], []), ['l0003'], '旧表杂物跳过；无线路时旧表原样');
+eq(L.archivedIdList(['l0002', 'l0003'], [mkArchL('l0002', false), mkArchL('l0003', true)]), ['l0003'], '逐线判定：一摘一留');
+eq(L.archivedIdList([], undefined), [], 'lines 缺失不崩');
+
 // ---------- 接轨站描边色 junctionStroke（stationGroups type:'junction'；2026-11-21） ----------
 console.log('junctionStroke:');
 eq(L.junctionStroke([{ role: 'branch', color: '#A' }, { role: 'main', color: '#B' }]), '#B', 'main 胜 branch（用户明定）');

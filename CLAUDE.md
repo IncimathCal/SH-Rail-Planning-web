@@ -2,12 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 项目状态（2026-11-22）
+## 项目状态（2026-11-23）
 
 上海轨道交通远期规划图网页：编辑器（editor.html，仅本地、永不部署）＋查看器（index.html，GitHub Pages 从 /docs 发布）。**本文件夹已 git 化（分支 main，无远端）**，用户将发布为 **SH-Rail-Planning-web**。
 
 - 阶段 0 标定 / 1 规范骨架：完成（标定已定案＝手动 TPS，见下）。
-- 阶段 2 编辑器：MVP＋多轮加固＋性能治理（画布增量渲染）完成；仓库 `data/lines/` 仍为空。**录入在用户工作区 `C:\Users\18916\Documents\远期图测试` 进行**（2026-11-22 已 64 线 1125 站；只读扫描/校验可以，未经用户明示不得改动）。
+- 阶段 2 编辑器：MVP＋多轮加固＋性能治理（画布增量渲染）完成；仓库 `data/lines/` 仍为空。**录入在用户工作区 `C:\Users\18916\Documents\远期图测试` 进行**（2026-11-22 23:55 存盘 82 线 1182 站；只读扫描/校验可以，未经用户明示不得改动）。**查看器预览的数据来自工作区副本**：`python -X utf8 tools/sync_workspace.py --watch`（复制到 `build/workspace/` → flatten 到 `build/net/`，对工作区只读；存盘后约 2 秒自动同步，刷新 http://localhost:8000/index.html 即见）——用户说「看到的是旧数据」时，先核对该监视是否在跑、`build/net` 时间戳是否跟上工作区。
 - 阶段 3 查看器：MVP＋产品化＋显示规则八条改版＋白板字样改版完成，真数据目验中。
 
 **⚠ 开工前必读**：《架构方案-01-Schema与目录与阶段.md》（实施基准 v1.5）＋**《进度状态-02-阶段总览.md》**（当前全量明细：编辑器/查看器逐轮功能与裁定、标定与 .ai 提取始末、踩坑教训、待办占位——CLAUDE.md 2026-11-22 已瘦身，细节以该文档为准）；讨论史《讨论记录-01~04》。过程文档均 gitignore 仅本地。
@@ -19,7 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 查看器类别裁定：**联络线不出列表**（地图照画、搜索照收）；**他省线仅显示级**（不可聚焦、恒调光、点选无面板）。
 - 查看器站名分级（用户裁定）：换乘组 z≥10、普通站 z≥11，再拉远不显示；**不设标签总数上限**（2026-11-22 删初版自设的 LABEL_CAP=800——它数整份数据而非同屏数，用户真数据一超 800 个标签单元，单线站名就在一切缩放级别全灭，被用户抓包「单线站名不见了」）；同屏数量只由视口裁剪约束。教训：**自设的保险丝/数量阈值必须拿真数据规模过一遍；它与用户规则冲突时删保险丝，不动用户规则**。
 - 编辑器画布＝**增量渲染**（2026-11-22 性能治理）：每线 `<g>` 跨渲染持久，`lineStale` 逐字段比对「画法输入」决定是否重建；当前线／选中站／待编组是瞬态，只原地切 class、挪选中环；缩放只原地改屏幕恒定尺寸。**给线路绘制新增数据依赖时，必须同步补进 `lineStale`（或换乘组 `sig`、`syncHints` 判据）的比对项**，否则改了数据画布不更新。
-- 编辑器「归档」的线：文件留在 `lines/`（`meta.archived: true`）、须列入 `manifest.archived`、不进 `manifest.lines`；validate 对账只比未归档线，flatten/publish 剔除。
+- 编辑器「归档」的线：文件留在 `lines/`（`meta.archived: true`）、须列入 `manifest.archived`、不进 `manifest.lines`；validate 对账只比未归档线，flatten/publish 剔除。**取消归档时必须从 `manifest.archived` 摘除**（纯逻辑 `archivedIdList`；2026-11-22 抓包：取消归档后仍留在表里 → validate 报错、flatten 把这条线整条剔除、查看器不见；flatten 现对归档表与线文件矛盾按未归档输出并警告，不静默丢线）。
 - 标定：现行 `data/calibration.json`＝手动 TPS λ=1e5、38 控点（2026-11-21 用户验收定案，勿重拟合）；回滚＝calibration-autotps-backup.json / calibration-deg3-backup.json（编辑器「标定」按钮）/ git 历史。.ai 全量提取＝`tools/ai_parse.py`→`import/远期图-全量.json`（84 线，命名裁定见进度状态-02）。
 - **MapLibre 血泪教训（改样式前必看）**：运行时错误默认不上控制台——层级校验失败是「弃层不弃 style」（filter `'!'` 吃 0/1 数字曾致站圈全没，**filter 一律显式 `['==',['get','x'],0/1]`**）；`line-cap`/`line-join` 是 layout 属性，放 paint 拒载整个 style 全黑；zoom 插值 stops 保持全常量、档位差异拆层做（数据驱动×zoom 复合真机不连续求值）；无头浏览器验证**交互手感**不可靠，排查走真实浏览器控制台；但**截图与跑通逻辑可用**——此前「连 load 周期都不完成」出现在 `--virtual-time-budget` 虚拟时间下，改实时运行＋挂起请求推迟 load 事件即正常：`chrome --headless=new --user-data-dir=<临时目录> --window-size=1600,900 --dump-dom <url>`（探针页＝真实 index.html＋只读脚本：截获 `maplibregl.Map.prototype.on` 取 map 实例、`jumpTo` 逐级采样数 `.map-label`，探针跑完再放行 load 后 dump；2026-11-22 靠它前后对照定位 LABEL_CAP）。无头下 rAF 是合成 60Hz 节拍（时间戳与回调实际间隔都恒 16.66ms），**帧开销量不出来**，勿据此下性能结论。**例外——编辑器纯 SVG/DOM 层**可用本机 Chrome 无头（`chrome --headless=new --disable-gpu --user-data-dir=<临时目录> --dump-dom <file://页面>`，勿用用户默认 profile）做实测：JS＋强制样式/布局可同步量；逐帧整帧量测要 rAF 循环＋挂起连接推迟 load 事件；改动渲染前后用**差分验证**（旧实现为标准答案，同一数据同一操作序列逐步比对）＋随机操作模糊测试。帧间隔按 16.7ms 量化、软件渲染，数值只作相对比较（做法见进度状态-02「画布增量渲染」节）。
 
@@ -42,6 +42,7 @@ python -X utf8 tools/calib_manual_fit.py           # 手动标定重拟合（GE 
 python -X utf8 tools/ge_convert.py to-ge import/远期图-全量.json --out 检视.kmz   # 图→GE：线路导出 KMZ 目视核对（--layer 子串过滤）
 python -X utf8 tools/ge_convert.py from-ge 源资产/xxx.kmz --out 点位.csv          # GE→图：地标经纬度反变换为画板 x,y
 python -X utf8 tools/flatten.py --data data --out build/net            # 录入成果→GeoJSON（查看器数据源；正式发布由 publish.py 代跑）
+python -X utf8 tools/sync_workspace.py --watch --validate   # 工作区→build/workspace 副本→build/net，持续监视、存盘后自动同步（查看器预览数据源；对工作区只读；不带 --watch 为一次性；--validate 顺带跑校验并打印结论）
 python -X utf8 tools/flatten.py --data "C:/Users/18916/Documents/远期图测试" --out build/net   # 把用户当前工作区载入查看器预览（查看器 net/ 不存在时回退 build/net；工作区无 calibration.json 时自动取 data/calibration.json；归档线剔除）
 python -X utf8 tools/publish.py                                        # 发布快照：校验→flatten→白名单拷贝 docs/（冒烟：--data tools/fixtures/sample --out build/docs-test）
 node tools/test_viewer_logic.js                                        # 查看器纯逻辑单测
@@ -56,6 +57,8 @@ python -X utf8 tools/serve.py                       # 本地开发服务（仓�
 - 换乘编组**绝不按站名自动合并**。
 - **不得擅自给数据起名**（2026-11-21 用户明令）：自动化产物一律用中性编号（如 path-NN）；自动匹配出的文字（hintNames 等）只能以「建议」形式展示、人工点选采用，绝不直接写入 name 等字段。用户在源图中已有的命名（图层链/路径对象名）可原样转写入 sourceLayer，不算擅自命名；作者未命名的对象保持 path-NN。
 - **数据文件的结构字段与枚举值全英文**（existing/approved/future、main/branch/connector/standalone 等），中文仅限 name/aliases/info 值等文本内容（含源图命名原样转写字段 sourceLayer 与 meta.layer——validate 的 CJK 豁免名单已含）；全部文件 UTF-8 无 BOM（编码顾虑，用户明令）。
+- **不主动做性能检查/量测/调优**（2026-11-22 用户明令「不要浪费大量时间在检查性能上，我感觉性能不好自己会说的」）：用户报了卡顿再查，手感以用户真机为准。
+- **简单请求先做完、先汇报**（2026-11-22 教训：「导入个数据」被拖 23 分钟、占 82% 上下文）：同一消息里的简单事项（导入/重跑/看一眼）几分钟内做完并**立即告知**，再处理其余；顺带发现的 bug 先报备、用户点头再修；设计题的大规模读码单独起一轮或发 worker。
 - 遵循 Gall's Law 增量演进：每阶段出口必须是"能用的简单系统"。
 - **过程文档不入库**（2026-11-21 用户指示）：讨论记录-\*、进度状态-\*、标定试验-\*、源资产分析-\* 一律 gitignore 仅本地保留；入库的仅关键文档（CLAUDE.md、架构方案-\*、README）与代码/数据/工具。
 

@@ -127,8 +127,8 @@
   };
 
   // ---------- 通用 ----------
-  function fetchJSON(url) {
-    return fetch(url).then((res) => {
+  function fetchJSON(url, opts) {
+    return fetch(url, opts).then((res) => {
       if (!res.ok) throw new Error(url + ' → HTTP ' + res.status);
       return res.json();
     });
@@ -143,19 +143,23 @@
   async function fetchNetFiles() {
     let lastErr = null;
     for (const base of NET_BASES) {
+      // 本地预览位（build/net）每次向本地服务重新验证：python http.server 只发 Last-Modified
+      // 不发 Cache-Control，浏览器按启发式新鲜度直接吃旧缓存——flatten 刚重生成、用户
+      // 刷新后仍看到旧数据（2026-11-22 抓包）。发布位 net/ 保持默认，照常吃 CDN 缓存。
+      const opts = base === 'build/net' ? { cache: 'no-cache' } : undefined;
       let linesFC;
       try {
-        linesFC = await fetchJSON(base + '/lines.geojson');
+        linesFC = await fetchJSON(base + '/lines.geojson', opts);
       } catch (e) { lastErr = e; continue; }
       let stopsFC = { type: 'FeatureCollection', features: [] };
       try {
-        stopsFC = await fetchJSON(base + '/stops.geojson');
+        stopsFC = await fetchJSON(base + '/stops.geojson', opts);
       } catch (e) {
         console.warn('提示：' + base + '/stops.geojson 缺失，按零站处理（' + (e && e.message) + '）');
       }
       let indexOrder = null, lineGroups = null;
       try {
-        const idx = await fetchJSON(base + '/index.json');
+        const idx = await fetchJSON(base + '/index.json', opts);
         if (idx && (idx.fmt === 'net-index@2' || idx.fmt === 'net-index@1')) {
           if (Array.isArray(idx.lineOrder)) indexOrder = idx.lineOrder.map(String);
           if (idx.fmt === 'net-index@2' && Array.isArray(idx.lineGroups)) lineGroups = idx.lineGroups;

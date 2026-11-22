@@ -511,6 +511,20 @@
     return out;
   }
 
+  /** manifest.archived（归档线 id 表，防编号复用）的规范化（纯逻辑，node 单测覆盖）。
+   *  prev＝上一份 manifest 的 archived（可缺失），lines＝当前全部线：当前归档的补入、
+   *  **已取消归档的必须摘除**——留着即 validate 报「archived id is also an active line」，
+   *  flatten 又按归档表把这条线整条剔除（2026-11-22 抓包：l0061 取消归档后查看器里
+   *  仍不见）。已不在 lines 里的历史 id 原样保留（编号永不复用）。返回升序数组。 */
+  function archivedIdList(prev, lines) {
+    const ids = new Set(Array.isArray(prev) ? prev.filter((x) => typeof x === 'string') : []);
+    for (const l of lines || []) {
+      if (l && l.meta && l.meta.archived) ids.add(l.id);
+      else if (l && l.id) ids.delete(l.id);
+    }
+    return [...ids].sort();
+  }
+
   /** 「预控通道」类别（meta.layer＝源图 Line 直属子图层名原样转写）：该类线不设站——建线默认
    *  远期、无需加站即整线显示（2026-11-22 用户说明；查看器侧另有 联络线/他省 的类别裁定） */
   const LAYER_RESERVED = '预控通道';
@@ -815,7 +829,7 @@
     nextStopSeq, fixStatusField, lineIssues, planBulkFill,
     planStopImport, applyStopImport, suggestForStop, transferMarkForStop, conflictsForStop, backfillTransferNames,
     layerGroupsOf, junctionStroke, planStationGroup, connValidTargets,
-    normalizeLineOrder, LAYER_RESERVED, searchTermsOf, matchesTerms, groupSearchText, pageSlice,
+    normalizeLineOrder, archivedIdList, LAYER_RESERVED, searchTermsOf, matchesTerms, groupSearchText, pageSlice,
     isReservedLine, segStatusesOf, lineDrawKey, sameLineDraw,
     calibForward, calibInverse, tpsForward, tpsInverse, poly3Forward, poly3Inverse,
     lonToTileX, latToTileY, tileXToLon, tileYToLat };
@@ -3993,15 +4007,14 @@
 
   function buildManifest() {
     const active = [...S.lines.values()].filter((l) => !l.meta.archived);
-    const archivedIds = new Set(S.manifest ? S.manifest.archived || [] : []);
-    for (const l of S.lines.values()) if (l.meta.archived) archivedIds.add(l.id);
+    // archived 表：沿用旧表防编号复用＋补当前归档线；取消归档的线从中摘除（见 archivedIdList）
     S.manifest = {
       schema: 'fmt/manifest@1',
       dataset: (S.manifest && S.manifest.dataset) || 'main',
       version: (S.manifest && S.manifest.version) || '0.1.0',
       updated: today(),
       lines: active.map((l) => ({ id: l.id, file: `lines/${l.id}.json`, name: l.name, stops: l.stops.length })),
-      archived: [...archivedIds].sort(),
+      archived: archivedIdList(S.manifest && S.manifest.archived, [...S.lines.values()]),
       // 显示顺序（可选字段，2026-11-22 需求 5）：写出全量显式顺序——normalize 已清失效 id、
       // 补齐全部线（含归档线，flatten/查看器侧自会忽略归档）；flatten 据此产出 net/index.json
       lineOrder: effectiveLineOrder(),
