@@ -5,7 +5,8 @@
 // 尺寸缩放冻结表达式构造、显示文案（起讫格式化、未名站占位）。
 // 浏览器端挂 globalThis.VIEWER_CORE；node 端（tools/test_viewer_logic.js）走 module.exports。
 // 数据契约：net/lines.geojson（每 feature＝线×分段）、net/stops.geojson（每 feature＝线×站）。
-// 2026-11-21 增：出省箭头（stop.kind:'arrow'——非站，不进组/标签/摘要/导出，仅出 arrows 视图）、
+// 2026-11-21 增：出省箭头（stop.kind:'arrow'——非站，不进组/标签/摘要/导出；2026-11-22
+// 改版后查看器不再画 glyph，arrow 站仅作 arrowFadePlan 的出省端判定输入）、
 // ≥3 线同站组药丸链序（planGroupPillChain 贪心最近邻，与编辑器侧逐字节同规格）。
 // 2026-11-22 增：GCJ02 显示变换三件套（outOfChina/wgs84ToGcj02＝src/geom.js 同源受控副本＋
 // makeDispCoord 显示坐标工厂）——测试阶段底图（高德）对齐用，仅显示侧，权威数据不动。
@@ -18,9 +19,12 @@
 // 双端渐变取色（head/tailColor＝首/末端各自最近的目标线色，connects≥3 每端各取最近、
 // 有效目标 <2 不出条目＝渲染层深灰兜底）；stopList/pinOfStop 保留 stroke 字段（flatten
 // 产出的联络线站圈描边色＝最近端目标线色）。
-// 2026-11-22 增（用户需求 3「白罩高亮」）：computeDimmedSet 增可选 hlMode——'veil' 时
-// 聚焦不再贡献 dim（「全都不动」，高亮由渲染层白罩＋聚焦重画层呈现）；分期与他省线
-// 恒调光照旧；缺省＝'dim' 旧行为完全不变。
+// 2026-11-22 白罩定案（用户确认遮罩 70%、删全部对比开关与旧调光路径）：computeDimmedSet
+// 的 hlMode 机制删除——聚焦不再贡献 dim（「全都不动」，高亮由渲染层白罩＋聚焦重画层呈现）；
+// 分期与他省线恒调光照旧，focus 字段仅剩「调光场合激活位」一职（让他省线恒入调光集）。
+// 2026-11-22 增（用户改版·出省箭头）：arrowFadePlan——按线内站序判定 arrow 站端属
+//（首＝head/尾＝tail、非端点忽略），算 1km 渐变段的 line-progress 断点 cut（平面近似
+// 总长、clamp [0,1]）；arrowFadeGradient——按端组合构造 line-gradient 渐变 stops 表达式。
 // 2026-11-22 增（用户裁定·主支线合并）：一条线路的主线与支线在查看器眼中恒为一条线——
 // buildLineGroups 双向并集归并（line.groupId 指向 ＋ 组记录 members；无 main 组防御不合并）、
 // 列表合并行（layerGroups 增收 lineGroups——主线行显示名改组名、支线不出独立行）、组级
@@ -332,59 +336,91 @@
     return [num(lon) * Math.cos(ref * Math.PI / 180), num(lat)];
   }
 
-  // ---------- 出省箭头视图（kind:'arrow'，非真实车站） ----------
-  // 方向＝normalize(箭头位 − 同线真实邻站位)：邻站取该线按站序（t 序）与箭头相邻的真实站
-  //（|Δt| 最小；平手取 t 较小者）；箭头无 t 或该线站全无 t 时退化为几何最近站（防御）。
-  // angleDeg＝平面方向自北顺时针度数（icon-rotate 语义：0＝指北、90＝指东）；
-  // 取不到邻站或与邻站重合 → angleDeg=null（渲染层退化为小圆点）。
-  // 箭头不进 pins/labels（→不进搜索/hover/点选面板）、不进组、不算站数、不进导出。
-  function buildArrowViews(stops) {
-    const peersByLine = new Map();
-    for (const s of stops) {
-      if (s.kind === 'arrow') continue;
-      if (!peersByLine.has(s.lineId)) peersByLine.set(s.lineId, []);
-      peersByLine.get(s.lineId).push(s);
+  // ---------- 出省渐变计划（2026-11-22 用户改版：查看器以线身末端渐隐示意出省） ----------
+  // arrowFadePlan(linesMap, stops)：对每条线找 stops 中 kind==='arrow' 的设站，按其在该线
+  // 站序中的位置判端——站序＝该线全部设站（arrow 一并参与排序）按 t 升序、t 缺失排最后
+  //（与 lineSummaries 同口径）：排首＝head 端（t≈0 侧）、排尾＝tail 端（t≈1 侧）；非首非尾
+  // 的 arrow 忽略（防御：schema 上 arrow 只应设在端点）。t 缺失的站排最后——arrow 无 t 时
+  // 天然落到尾位＝按 tail 端处理（防御性归位，现实数据 arrow 恒有 t）。站序与几何坐标序的
+  // 一致性由编辑器数据保证（本函数从简：端属只看站序）。
+  // 渐变段长恒 1km（ARROW_FADE_M）：cut＝ARROW_FADE_M / 全线平面近似总长——沿线逐段累积
+  // dLat×111320m、dLng×111320×cos(lat0)，lat0＝全线首末有效点纬度均值（与
+  // connectorFadePlan 的 planarOf 近似同档精度），clamp 到 [0,1]：线总长短于 1km 时该端
+  // cut＝1＝整线渐变。无有效坐标或总长 ≤0 的线不出条目（防御）；无 arrow 的线不进 plan。
+  // 返回 [{lineId, headCut, tailCut}]——对应端无 arrow 时该字段为 null。
+  const ARROW_FADE_M = 1000;
+  const M_PER_DEG_LAT = 111320;
+  function arrowFadePlan(linesMap, stops) {
+    const out = [];
+    if (!(linesMap instanceof Map)) return out;
+    const byLine = new Map();
+    for (const s of Array.isArray(stops) ? stops : []) {
+      if (!s || s.lineId == null) continue;
+      const k = String(s.lineId);
+      if (!byLine.has(k)) byLine.set(k, []);
+      byLine.get(k).push(s);
     }
-    for (const arr of peersByLine.values()) {
-      arr.sort((a, b) => (a.t == null ? 1 : 0) - (b.t == null ? 1 : 0) || num(a.t) - num(b.t));
-    }
-    const arrows = [];
-    let seq = 0;
-    for (const a of stops) {
-      if (a.kind !== 'arrow') continue;
-      const peers = peersByLine.get(a.lineId) || [];
-      let nb = null;
-      if (a.t != null) {
-        let best = Infinity;
-        for (const p of peers) {               // 已按 t 升序：严格小于 → |Δt| 平手取 t 较小者
-          if (p.t == null) continue;
-          const d = Math.abs(num(p.t) - num(a.t));
-          if (d < best) { best = d; nb = p; }
+    const byT = (a, b) => (a.t == null ? 1 : 0) - (b.t == null ? 1 : 0) || num(a.t) - num(b.t);
+    for (const line of linesMap.values()) {
+      if (!line || line.lineId == null) continue;
+      const sts = (byLine.get(String(line.lineId)) || []).slice().sort(byT);
+      if (!sts.length) continue;
+      const headArrow = sts[0].kind === 'arrow';
+      const tailArrow = sts[sts.length - 1].kind === 'arrow';
+      if (!headArrow && !tailArrow) continue;
+      // 全线有效坐标（normalizeLines 已保证 segments 按 segIndex 升序）→ 参考纬度＋总长
+      const pts = [];
+      for (const seg of line.segments || []) {
+        for (const pt of (seg && seg.coords) || []) {
+          if (Array.isArray(pt) && Number.isFinite(pt[0]) && Number.isFinite(pt[1])) pts.push(pt);
         }
       }
-      if (!nb && peers.length) {               // 防御兜底：几何最近邻（lat0 取箭头自身纬度作共享常因子）
-        const [ax, ay] = planarOf(a.lon, a.lat, a.lat);
-        let best2 = Infinity;
-        for (const p of peers) {
-          const [bx, by] = planarOf(p.lon, p.lat, a.lat);
-          const dd = (ax - bx) * (ax - bx) + (ay - by) * (ay - by);
-          if (dd < best2) { best2 = dd; nb = p; }
-        }
+      if (pts.length < 2) continue;   // 无有效几何 → 渐变线无从画（不出条目）
+      const lat0 = (pts[0][1] + pts[pts.length - 1][1]) / 2;   // 全线首末纬度均值
+      const kLng = M_PER_DEG_LAT * Math.cos(lat0 * Math.PI / 180);
+      let total = 0;
+      for (let i = 1; i < pts.length; i++) {
+        total += Math.hypot((pts[i][0] - pts[i - 1][0]) * kLng,
+          (pts[i][1] - pts[i - 1][1]) * M_PER_DEG_LAT);
       }
-      let angleDeg = null;
-      if (nb) {
-        const lat0 = (num(a.lat) + num(nb.lat)) / 2;   // 点对共享参考纬度
-        const [ax, ay] = planarOf(a.lon, a.lat, lat0);
-        const [bx, by] = planarOf(nb.lon, nb.lat, lat0);
-        const dx = ax - bx, dy = ay - by;
-        if (dx !== 0 || dy !== 0) angleDeg = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
-      }
-      arrows.push({
-        key: a.sid || 'arrow:' + (seq++), lineId: a.lineId, lineName: a.lineName || '',
-        lon: a.lon, lat: a.lat, angleDeg, neighborSid: nb ? nb.sid : null,
-      });
+      if (!(total > 0)) continue;   // 总长 0/NaN（防御）
+      const cut = Math.min(1, ARROW_FADE_M / total);
+      out.push({ lineId: String(line.lineId), headCut: headArrow ? cut : null, tailCut: tailArrow ? cut : null });
     }
-    return arrows;
+    return out;
+  }
+
+  // arrowFadeGradient(color, headCut, tailCut)：按端组合构造 line-gradient 的渐变 stops
+  // 表达式（line-progress 0→1；调用方＝渲染层 arrow-fade 动态层）。c＝线色（normalizeHex
+  // 兜底默认灰），fade＝同色 alpha 0：
+  //   仅 tail：[0, c, 1−t, c, 1, fade]（中段恒色、尾端渐隐）；
+  //   仅 head：[0, fade, h, c, 1, c]（首端自渐隐起、中段恒色）；
+  //   两端：[0, fade, h, c, 1−t, c, 1, fade]。
+  // 边界防御（MapLibre interpolate 的 stop 输入必须严格递增，重键＝层级校验失败被静默
+  // 弃载——本项目血泪教训同类）：单端 cut≥1（线总长短于 1km＝整线渐变）收成两 stop 形式；
+  // 双端渐变段重叠（h＋t＞1，短于 1km 且两端均 arrow）按比例收缩保升序；恰衔接（和＝1）
+  // 时中段退化并段。两端均 null → null（调用方跳过建层）。
+  function arrowFadeGradient(color, headCut, tailCut) {
+    const cl = (v) => Math.min(1, Math.max(0, Number(v)));
+    const h = headCut == null ? null : cl(headCut);
+    const t = tailCut == null ? null : cl(tailCut);
+    if (h == null && t == null) return null;
+    const hex = normalizeHex(color) || '#888888';
+    const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+    const fade = 'rgba(' + r + ',' + g + ',' + b + ',0)';
+    const I = ['interpolate', ['linear'], ['line-progress']];
+    if (t == null) {
+      if (h >= 1) return I.concat([0, fade, 1, hex]);                    // 整线渐变（<1km）
+      return I.concat([0, fade, h, hex, 1, hex]);
+    }
+    if (h == null) {
+      if (t >= 1) return I.concat([0, hex, 1, fade]);                    // 整线渐变（<1km）
+      return I.concat([0, hex, 1 - t, hex, 1, fade]);
+    }
+    let hh = h, tt = t;
+    if (hh + tt > 1) { const s = 1 / (hh + tt); hh *= s; tt *= s; }      // 重叠按比例收缩（保升序）
+    if (1 - tt <= hh) return I.concat([0, fade, hh, hex, 1, fade]);      // 恰衔接：中段退化并段
+    return I.concat([0, fade, hh, hex, 1 - tt, hex, 1, fade]);
   }
 
   // 换乘组归并 + 渲染/标签视图：
@@ -398,12 +434,11 @@
   //   pills —— ≥3 线 same-station 组的胶囊折线：成员 geo 按 planGroupPillChain 链序串联
   //（渲染层双层 line＋圆头端帽即得白底黑边胶囊；恰 2 线组不出药丸）。条目自带 pin
   //（组级信息面板/hover 单元，key 'g:<id>'，渲染层并入 pinByKey；不进 pins＝不渲染成圈）。
-  //   arrows —— 出省箭头渲染单元（buildArrowViews 产物，非站）。
   //   labels —— HTML 标签与搜索条目单元：无组站各一；组（三种类型）各一（均值位置，同名取首个非空）。
+  //（arrow 非站：此处一律跳过——不进组、不进 pin/label；其出省端属判定走 arrowFadePlan。）
   function buildStopView(stops) {
     const byGroup = new Map();   // groupId → {groupId,type,members}
     const singles = [];
-    const arrows = buildArrowViews(stops);
     for (const s of stops) {
       if (s.kind === 'arrow') continue;   // 箭头不是站：不进组、不进 pin/label
       if (!s.groupId) { singles.push(s); continue; }
@@ -459,7 +494,7 @@
       }
       labels.push({ key: 'g:' + grp.groupId, name, lon, lat, group: true, groupType: grp.type, lineNames, lineIds });
     }
-    return { pins, pills, arrows, labels };
+    return { pins, pills, labels };
   }
 
   // 线路摘要（信息面板/搜索用）：站按 t 升序（t 缺失排最后），环线 terminals=null（无起讫）。
@@ -763,27 +798,22 @@
   }
 
   // 调光线集：state＝{ phase: 'none'|'existing'|'approved'|'future', focus: lineId|null,
-  //                   lineGroups: buildLineGroups 产物（可选，缺省＝逐线旧行为）,
-  //                   hlMode: 'veil'|'dim'（可选，缺省＝'dim' 旧行为完全不变） }。
-  // 分期非「无」档：期次不匹配的线调光；聚焦：非聚焦线调光；两者叠加取并集（任一命中即调光）。
-  // 「仅显示」级（displayOnly）线在任何调光场合（phase 或 focus 任一激活）恒入调光集——
-  // 即便期次恰好匹配（2026-11-22 用户裁定）。默认态（无分期＋无聚焦）不调光，displayOnly 正常显示。
+  //                   lineGroups: buildLineGroups 产物（可选，缺省＝逐线旧行为） }。
+  // 2026-11-22 白罩定案（用户确认遮罩 70%、删全部对比开关与旧调光路径）：聚焦不再贡献
+  // dim、也不再走组豁免——聚焦高亮恒由渲染层白罩＋聚焦重画层呈现（聚焦组成员从基础层
+  // 剔除、罩上重画恒原色），非聚焦线不调光不隐站名（「全都不动」）。focus 字段仅剩一职：
+  // 「调光场合激活位」——他省线（displayOnly）在任何调光场合（phase 或 focus 任一激活）
+  // 恒入调光集（既有独立裁定，与高亮方式无关，即便期次恰好匹配）。
+  // 分期非「无」档：期次不匹配的线调光——现唯一的 dim 源。默认态（无分期＋无聚焦）不调光，
+  // displayOnly 正常显示。
   // 2026-11-22 主支线合并（用户裁定）：组级调光——有效组成员的期次态/仅显示级判定一律以
-  // 主线为准（「其余没考虑到的都以主线为准」），组全体同调同不调；聚焦豁免＝组全体成员
-  //（主线＋支线都不调光）。S.focus 恒为主线 id（胶水层 toggleFocus 已归一），但此处对
-  // 直传支线 id 亦按其组豁免（防御）。无 main 的组不经 lineGroups 进入（buildLineGroups
-  // 已滤），组员照旧逐线判定。
-  // 2026-11-22 高亮改版（hlMode，用户裁定）：'veil'＝白罩遮罩高亮——「全都不动，
-  // 在高亮线路和其他线路之间隔一层白色半透明遮罩」，此时聚焦不再贡献 dim（非聚焦
-  // 线不调光、不隐站名，高亮由渲染层的白罩＋聚焦重画层呈现）；分期调光（其余半透明
-  // ＋隐站名）与他省线恒调光是既有独立裁定，两种模式下都维持 opacity 行为不变
-  //（veil 下 displayOnly 照旧入集）。'dim'＝旧「聚焦半透明其他」行为（缺省）。
+  // 主线为准（「其余没考虑到的都以主线为准」），组全体同调同不调。无 main 的组不经
+  // lineGroups 进入（buildLineGroups 已滤），组员照旧逐线判定。
   function computeDimmedSet(linesMap, state) {
     const dim = new Set();
     const st = state || {};
     const phase = st.phase && st.phase !== 'none' ? st.phase : null;
     const focus = st.focus != null && st.focus !== '' ? String(st.focus) : null;
-    const veil = st.hlMode === 'veil';   // 缺省＝false＝旧 dim 行为完全不变
     if (!phase && !focus) return dim;
     const lines = linesMap instanceof Map ? [...linesMap.values()]
       : (Array.isArray(linesMap) ? linesMap : []);
@@ -791,16 +821,13 @@
     const getById = linesMap instanceof Map
       ? (id) => linesMap.get(id)
       : (id) => lines.find((l) => l && String(l.lineId) === id) || null;
-    const focusGrp = lg && focus ? lg.ofLine.get(focus) : null;   // 聚焦线（主线）所在组
     for (const line of lines) {
       if (!line || line.lineId == null) continue;
       const id = String(line.lineId);
       const grp = lg ? lg.ofLine.get(id) : null;
       const ref = grp ? (getById(grp.mainId) || line) : line;     // 组判定基准线＝主线
       if (lineLayerRank(ref) === 'displayOnly') { dim.add(id); continue; }
-      if (phase && linePhaseOf(ref) !== phase) dim.add(id);   // 两条件独立叠加（并集）
-      // veil 模式下聚焦不贡献 dim（高亮由白罩＋重画层呈现，「全都不动」）
-      if (focus && !veil && id !== focus && !(focusGrp && focusGrp.members.indexOf(id) >= 0)) dim.add(id);
+      if (phase && linePhaseOf(ref) !== phase) dim.add(id);   // 分期不匹配＝唯一 dim 源
     }
     return dim;
   }
@@ -1048,10 +1075,10 @@
     SIZE_ZOOM_MIN, SIZE_ZOOM_HOLD, SIZE_SCALE_EXP, labelScale,
     UNNAMED_STOP_ZH, stopDisplayName, formatTerminals,
     xmlEscape, normalizeHex, hexToKmlColor,
-    normalizeLines, lineBboxOf, stopList, buildStopView, buildArrowViews,
+    normalizeLines, lineBboxOf, stopList, buildStopView,
     planGroupPillChain, planarOf, lineSummaries, layerGroups, visibleListGroups,
     linePhaseOf, lineLayerRank, computeDimmedSet, nextPhase, connectorFadePlan,
-    connectorBlendPlan,
+    connectorBlendPlan, arrowFadePlan, arrowFadeGradient, ARROW_FADE_M,
     zoomInterp, scaledSize, LINE_WIDTH_PX, DBLCLICK_TOL_PX, lineWidthAt,
     pointToScreenPolylineDist,
     buildLineGroups, lineSearchEntries, lineLabelOf, linesOfPin,

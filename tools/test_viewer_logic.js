@@ -3,20 +3,24 @@
 // 线路摘要与分组（lineSummaries/layerGroups/visibleListGroups 类别过滤）、搜索匹配
 //（matchEntries）、标签分级与可见性（filterLabels zoom 门槛 11＋visibleLabels 优先级：
 // 全局开关＞聚焦常显＞调光隐藏＞zoom 门槛）、调光纯逻辑（linePhaseOf 线路期次归类/
-// lineLayerRank 仅显示级/computeDimmedSet 分期＋聚焦叠加/nextPhase 四档循环）、尺寸缩放
+// lineLayerRank 仅显示级/computeDimmedSet 分期＋displayOnly/nextPhase 四档循环）、尺寸缩放
 //冻结改等比（zoomInterp/scaledSize：z≥11 封顶、z<11 按 2^(z−11) 与画布同比例）、单线导出（buildLineGeoJSON/buildLineKML——2026-11-22
-// 改版后纯色实线统一不透明）、颜色与转义工具、药丸链序（planGroupPillChain）、出省箭头
-//（kind:'arrow'）、手造输入链路（arrow＋3 线 same 组）、GCJ02 显示变换（与 src/geom.js
-// 逐点对拍守卫——防两份副本漂移；makeDispCoord 三态）。
+// 改版后纯色实线统一不透明）、颜色与转义工具、药丸链序（planGroupPillChain）、出省渐隐
+//（kind:'arrow' 过滤＋arrowFadePlan/arrowFadeGradient——2026-11-22 改版：查看器以线身
+// 末端 1km 渐隐示意出省）、手造输入链路（arrow＋3 线 same 组）、GCJ02 显示变换（与
+// src/geom.js 逐点对拍守卫——防两份副本漂移；makeDispCoord 三态）。
 // 2026-11-22 增：主支线合并（buildLineGroups 双向并集归属/无 main 组不合并/layerGroups
 // 合并行/lineSearchEntries＋terms 合并命中/computeDimmedSet 组级调光/lineLabelOf·
 // linesOfPin 站牌组名）；地图双击线路精确命中（lineWidthAt 与线宽表达式同源求值/
 // pointToScreenPolylineDist 点到折线最小屏幕距离——描边内外、段外端点距、多段最小、空防御）。
 // 2026-11-22 四项改版增：联络线双端渐变取色（connectorBlendPlan：2 线方向判定/
 // connects<2/目标不存在/≥3 每端各最近/两端同线/目标或自身无坐标防御/多段拼接——
-// 中途设站不影响 plan，其端到端抽查在 flatten 侧）、computeDimmedSet veil 模式
-//（聚焦不贡献 dim、分期与他省照旧、dim 缺省回归、组级、visibleLabels 下游兼容）、
-// stopList/pinOfStop 的 stroke 透传（联络线站圈描边＝最近端目标线色）。
+// 中途设站不影响 plan，其端到端抽查在 flatten 侧）、stopList/pinOfStop 的 stroke 透传
+//（联络线站圈描边＝最近端目标线色）。
+// 2026-11-22 定案轮改写：computeDimmedSet 白罩定案恒定语义（聚焦不贡献 dim、focus 仅作
+// displayOnly 激活位；旧 hlMode 分支用例删除）；arrows glyph 视图用例改写为 arrowFadePlan
+//（head/tail/两端/非端点忽略/无 arrow 不进 plan/<1km clamp/平面近似总长手算对照）＋
+// arrowFadeGradient（端组合 stops、整线渐变收并、双端重叠收缩、恰衔接并段）。
 // 用法：node tools/test_viewer_logic.js（纯 node，不引 jsdom/DOM/maplibre）
 
 const V = require(path_join('src', 'viewer_core.js'));
@@ -144,7 +148,7 @@ eq((sv.labels.find((l) => l.key === 'g:g1') || {}).lineIds, ['la', 'lb', 'lc'], 
 eq((sv.labels.find((l) => l.key === 'g:g3') || {}).lineIds, ['la', 'lb'], '出闸组标签 lineIds＝两成员线');
 eq(sv.labels.filter((l) => l.group).length, 6, '组标签恰好 6 个');
 eq(sv.labels.filter((l) => !l.group).map((l) => l.key).sort(), ['s1', 's10'], '无组站标签');
-eq(V.buildStopView([]), { pins: [], pills: [], arrows: [], labels: [] }, '空输入不崩');
+eq(V.buildStopView([]), { pins: [], pills: [], labels: [] }, '空输入不崩（2026-11-22 改版后无 arrows 视图）');
 
 // ---------- lineSummaries ----------
 console.log('lineSummaries:');
@@ -256,19 +260,19 @@ eq([...V.computeDimmedSet(null, { phase: 'existing' })], [], 'null linesMap 不�
 eq([...V.computeDimmedSet(lm, { phase: 'existing' })].sort(), ['lb', 'lc'], '分期「既有」→ lb/lc 调光');
 eq([...V.computeDimmedSet(lm, { phase: 'approved' })].sort(), ['la', 'lc'], '分期「已批复」→ la/lc 调光');
 eq([...V.computeDimmedSet(lm, { phase: 'future' })].sort(), ['la', 'lb'], '分期「远期」→ la/lb 调光');
-// 聚焦：非聚焦线调光
-eq([...V.computeDimmedSet(lm, { phase: 'none', focus: 'la' })].sort(), ['lb', 'lc'], '聚焦 la → lb/lc 调光');
-// 叠加：任一条件命中即调光（并集）
-eq([...V.computeDimmedSet(lm, { phase: 'existing', focus: 'lb' })].sort(), ['la', 'lb', 'lc'],
-  '分期既有＋聚焦 lb：lb 期次不匹配（approved）同样被调光——聚焦不豁免期次，并集叠加');
+// 聚焦：2026-11-22 白罩定案——聚焦不贡献 dim（高亮由渲染层白罩＋聚焦重画层呈现）
+eq([...V.computeDimmedSet(lm, { phase: 'none', focus: 'la' })], [], '聚焦 la → 不调光（「全都不动」，非聚焦线照常）');
+// 分期＋聚焦：唯一 dim 源是分期（focus 仅作 displayOnly 激活位，见下）
+eq([...V.computeDimmedSet(lm, { phase: 'existing', focus: 'lb' })].sort(), ['lb', 'lc'],
+  '分期既有＋聚焦 lb：聚焦既不豁免也不加重——并集只剩分期侧（lb 期次 approved 照旧被调）');
 eq([...V.computeDimmedSet(lm, { phase: 'existing', focus: 'la' })].sort(), ['lb', 'lc'],
-  '分期既有＋聚焦 la（期次恰好匹配）→ 仍只 lb/lc 调光');
-// 「仅显示」级：任何调光场合恒半透明（即便期次恰好匹配）
+  '分期既有＋聚焦 la（期次恰好匹配）→ 同纯分期档');
+// 「仅显示」级：任何调光场合恒半透明（即便期次恰好匹配）——focus 激活位仍触发
 const mixTP = new Map([...lm, ...lmTP]);
 eq([...V.computeDimmedSet(mixTP, { phase: 'existing' })].sort(), ['lb', 'lc', 'tp'],
   '他省线期次恰好匹配 existing 仍被调光（用户裁定硬规则 2）');
-eq([...V.computeDimmedSet(mixTP, { phase: 'none', focus: 'la' })].sort(), ['lb', 'lc', 'tp'],
-  '聚焦场合他省线恒在半透明侧');
+eq([...V.computeDimmedSet(mixTP, { phase: 'none', focus: 'la' })].sort(), ['tp'],
+  '聚焦场合他省线恒在半透明侧（focus 现仅剩此一职——调光场合激活位）');
 eq([...V.computeDimmedSet(mixTP, { phase: 'none', focus: null })], [],
   '默认态（无任何调光）他省线正常显示');
 eq([...V.computeDimmedSet(mixTP, { focus: 'tp' })].includes('tp'), true,
@@ -430,31 +434,25 @@ eq(V.connectorBlendPlan(lm).filter((it) => it.lineId !== 'lc'), [],
   '无 connects 的线一律不出条目（lm 仅 lc 为 connector 且 connects<2 → 全空）');
 eq(V.connectorBlendPlan(lm), [], 'lm 的 lc（connects 缺失）→ 空（旧快照容错）');
 
-// ---------- computeDimmedSet veil 模式（2026-11-22 用户需求 3：白罩高亮） ----------
-console.log('computeDimmedSet veil:');
-eq([...V.computeDimmedSet(mixTP, { focus: 'la', hlMode: 'veil' })], ['tp'],
-  'veil＋聚焦：非聚焦线（lb/lc）不进 dimmed（「全都不动」），他省线照旧（既有独立裁定）');
-eq([...V.computeDimmedSet(mixTP, { phase: 'none', focus: 'la', hlMode: 'veil' })], ['tp'],
-  'veil＋聚焦（显式 phase none）：同上');
-eq([...V.computeDimmedSet(mixTP, { phase: 'existing', hlMode: 'veil' })].sort(), ['lb', 'lc', 'tp'],
-  'veil＋分期未选中照旧调光（分期是既有独立裁定，与高亮方式无关）');
-eq([...V.computeDimmedSet(mixTP, { phase: 'existing', focus: 'la', hlMode: 'veil' })].sort(), ['lb', 'lc', 'tp'],
-  'veil＋分期＋聚焦：并集只剩分期侧贡献');
-eq([...V.computeDimmedSet(mixTP, { focus: 'la', hlMode: 'dim' })].sort(), ['lb', 'lc', 'tp'],
-  '显式 dim 模式＝旧行为');
-eq([...V.computeDimmedSet(mixTP, { focus: 'la' })].sort(),
-  [...V.computeDimmedSet(mixTP, { focus: 'la', hlMode: 'dim' })].sort(),
-  '缺省 hlMode（不传）＝显式 dim（回归保护：旧调用零变化）');
-eq([...V.computeDimmedSet(mixTP, { hlMode: 'veil' })], [],
-  'veil 无分期无聚焦＝默认态不调光');
-// veil 下 visibleLabels 自然兼容：非聚焦线标签不再因调光隐藏（dimmedSet 收窄的下游效应）
-const veilDim = V.computeDimmedSet(mixTP, { focus: 'la', hlMode: 'veil' });
+// ---------- computeDimmedSet 白罩定案恒定语义（2026-11-22 用户确认遮罩 70%，删对比开关） ----------
+console.log('computeDimmedSet focus (veil final):');
+eq([...V.computeDimmedSet(mixTP, { focus: 'la' })], ['tp'],
+  '聚焦：非聚焦线（lb/lc）不进 dimmed（「全都不动」），他省线照旧（既有独立裁定）');
+eq([...V.computeDimmedSet(mixTP, { phase: 'none', focus: 'la' })], ['tp'],
+  '聚焦（显式 phase none）：同上（无 hlMode——对比开关已删，旧 dim 语义不复存在）');
+eq([...V.computeDimmedSet(mixTP, { phase: 'existing' })].sort(), ['lb', 'lc', 'tp'],
+  '分期未选中照旧调光（分期是既有独立裁定，与聚焦高亮方式无关）');
+eq([...V.computeDimmedSet(mixTP, { phase: 'existing', focus: 'la' })].sort(), ['lb', 'lc', 'tp'],
+  '分期＋聚焦：并集只剩分期侧贡献');
+eq([...V.computeDimmedSet(mixTP, {})], [], '默认态不调光');
+// 下游兼容：聚焦线标签常显逻辑不变（非聚焦线标签不再因调光隐藏——dimmedSet 收窄的下游效应）
+const veilDim = V.computeDimmedSet(mixTP, { focus: 'la' });
 eq(V.visibleLabels(vlLabels, 9, 800, { focus: 'la', dimmedSet: veilDim }).map((l) => l.key).sort(),
   ['g1', 's1'],
-  'veil 聚焦下 z9 标签＝聚焦线常显照旧＋z9 低于组门槛全隐（调光隐藏不再参与——对照 dim 模式同 z9 也是 ["s1","g1"]，差异体现在 z≥10 普通站名不再被调光隐藏）');
+  '聚焦下 z9 标签＝聚焦线常显照旧＋z9 低于组门槛全隐');
 eq(V.visibleLabels(vlLabels, 11, 800, { focus: 'la', dimmedSet: veilDim }).map((l) => l.key).sort(),
   ['g1', 'g2', 's1', 's2', 'x1'],
-  'veil 聚焦下 z11 全部标签显示（非聚焦线 s2/g2/x1 不被调光隐藏——「全都不动」；dim 模式下此景 s2/g2 会被隐藏）');
+  '聚焦下 z11 全部标签显示（非聚焦线 s2/g2/x1 不被调光隐藏——「全都不动」）');
 
 // ---------- stopList/pinOfStop 的 stroke 透传（联络线站圈描边，2026-11-22 用户需求 2） ----------
 console.log('stop stroke passthrough:');
@@ -591,8 +589,8 @@ eq(V.planGroupPillChain([[0, 0], [1, 0], [2, 0], [0, 10]]), [2, 1, 0, 3], '跨�
 eq(V.planGroupPillChain([[7, 7], [8, 8], [9, 9]]), V.planGroupPillChain([[7, 7], [8, 8], [9, 9]]), '同输入同输出（确定性）');
 eq(V.planGroupPillChain([null, [1, 1]]), [0, 1], '坏点容错（null 点按 0,0 参与选序不崩）');
 
-// ---------- 出省箭头（stop.kind:'arrow'，非站） ----------
-console.log('arrows:');
+// ---------- 出省箭头 kind 过滤（非站：不进视图/摘要/导出；2026-11-22 改版后无 glyph 视图） ----------
+console.log('arrows (kind filter):');
 const arFeat = (sid, lineId, t, lon, lat, lineName) => ({
   type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] },
   properties: { sid, name: '', lineId, lineName, t, kind: 'arrow' },
@@ -603,32 +601,16 @@ const arrowFC = fc(
   stopFeat('m1', '甲站', 'lm', 'M线', 0, 0, 0),
   stopFeat('m2', '乙站', 'lm', 'M线', 1, 2, 0),
   stopFeat('n1', '丙站', 'ln', 'N线', 1, 0, 10),
-  arFeat('ar1', 'lm', 1.5, 3, 0, 'M线'),    // 东行：邻站＝乙站（t=1，|Δt|=0.5 最小）
-  arFeat('ar2', 'ln', 1.2, 0, 11, 'N线'),   // 北行：邻站＝丙站
-  arFeat('ar3', 'lo', 0.5, 1, 1, 'O线'),    // lo 线无真实站 → 无邻站
-  arFeat('ar4', 'lp', null, 1, 1, 'P线'),   // arrow 无 t → 几何最近邻兜底
-  stopFeat('p1', '丁站', 'lp', 'P线', null, 0, 0),
-  arFeat('ar5', 'lq', 0.5, 9, 9, 'Q线'),    // 与邻站重合 → 方向退化
-  stopFeat('q1', '戊站', 'lq', 'Q线', 0.4, 9, 9),
+  arFeat('ar1', 'lm', 1.5, 3, 0, 'M线'),    // lm 站序（t 序）最末 → tail 端
+  arFeat('ar2', 'ln', 1.2, 0, 11, 'N线'),   // ln 站序最末 → tail 端
+  arFeat('ar3', 'lo', 0.5, 1, 1, 'O线'),    // lo 线不在 linesMap（孤 arrow 站）
 );
 const stAr = V.stopList(arrowFC);
 eq(stAr.find((s) => s.sid === 'm1').kind, 'stop', '缺 kind 字段归 stop');
 eq(stAr.find((s) => s.sid === 'ar1').kind, 'arrow', 'kind:"arrow" 保留（不剔除）');
 const svAr = V.buildStopView(stAr);
-eq(svAr.arrows.length, 5, '5 个 arrow 全进 arrows 视图');
 ok(!svAr.pins.some((p) => String(p.key).indexOf('ar') === 0) && !svAr.labels.some((l) => String(l.key).indexOf('ar') === 0),
-  'arrow 不进 pins/labels（搜索索引随 labels 一并排除）');
-const ar1 = svAr.arrows.find((a) => a.key === 'ar1') || {};
-eq(ar1.neighborSid, 'm2', '邻站＝同线 t 序最近真实站');
-ok(Math.abs(ar1.angleDeg - 90) < 1e-9, '东向箭头 angleDeg=90（icon-rotate 语义：0 指北、顺时针）');
-const ar2 = svAr.arrows.find((a) => a.key === 'ar2') || {};
-eq(ar2.neighborSid, 'n1', '北向箭头邻站＝丙站');
-ok(Math.abs(ar2.angleDeg) < 1e-9, '北向箭头 angleDeg=0');
-const ar4 = svAr.arrows.find((a) => a.key === 'ar4') || {};
-eq(ar4.neighborSid, 'p1', 'arrow 无 t → 几何最近邻兜底（防御）');
-ok(Math.abs(ar4.angleDeg - 45) < 0.01, '东北向 ≈45°（经度×cos(纬度) 平面近似）');
-eq((svAr.arrows.find((a) => a.key === 'ar3') || {}).angleDeg, null, '取不到邻站 → angleDeg null（渲染退小圆点）');
-eq((svAr.arrows.find((a) => a.key === 'ar5') || {}).angleDeg, null, '与邻站重合 → angleDeg null');
+  'arrow 不进 pins/labels（搜索索引随 labels 一并排除——不画圈、不进搜索/点选）');
 const lmAr = V.normalizeLines(arrowFC);
 const sumAr = V.lineSummaries(lmAr, stAr);
 eq(sumAr.get('lm').stopCount, 2, 'lineSummaries 不把 arrow 计为站');
@@ -639,6 +621,93 @@ eq(gjAr.features.filter((f) => f.geometry.type === 'Point').map((f) => f.propert
   'GeoJSON 导出剔除 arrow');
 ok(!V.buildLineKML('lm', lmAr, stAr).includes('ar1'), 'KML 导出剔除 arrow');
 
+// ---------- arrowFadePlan（出省端末段 1km 渐隐计划，2026-11-22 用户改版） ----------
+console.log('arrowFadePlan:');
+ok(V.ARROW_FADE_M === 1000, '渐变段长常量＝1000m（2026-11-22 用户定案值）');
+const afFC = fc(
+  lineFeat('ah', 0, 'future', [[0, 0], [1, 0]], { name: 'H线', color: '#ff0000' }),        // head 端 arrow
+  lineFeat('at', 0, 'future', [[0, 5], [1, 5]], { name: 'T线', color: '#00ff00' }),        // tail 端 arrow
+  lineFeat('ab', 0, 'future', [[0, 10], [1, 10]], { name: 'B线', color: '#0000ff' }),      // 两端 arrow
+  lineFeat('am', 0, 'future', [[0, 15], [1, 15]], { name: 'M线', color: '#123456' }),      // 非端点 arrow → 忽略
+  lineFeat('an', 0, 'future', [[0, 20], [1, 20]], { name: 'N线', color: '#654321' }),      // 无 arrow → 不进 plan
+  lineFeat('as', 0, 'future', [[0, 25], [0, 25.001]], { name: 'S线', color: '#999999' }),  // 111.32m 短线 → clamp
+  lineFeat('az', 0, 'future', [[0, 30], [1, 30]], { name: 'Z线', color: '#abcdef' }),      // arrow 无 t → 尾位归位
+  lineFeat('ax', 1, 'existing', [[0.5, 50], [0.5, 50.5]], { name: 'X线', color: '#feed00' }),  // 多段折线（乱序 segIndex）
+  lineFeat('ax', 0, 'existing', [[0, 50], [0.5, 50]], { name: 'X线', color: '#feed00' }),
+  { type: 'Feature', geometry: { type: 'LineString', coordinates: [[NaN, NaN], [NaN, NaN]] },
+    properties: { lineId: 'abad', segIndex: 0, segStatus: 'existing' } },                  // 有 arrow 但无有效坐标
+  stopFeat('ha0', '甲', 'ah', 'H线', 1, 1, 0),
+  arFeat('ha', 'ah', 0, 0, 0, 'H线'),
+  stopFeat('ta0', '乙', 'at', 'T线', 0, 0, 5),
+  arFeat('ta', 'at', 1, 1, 5, 'T线'),
+  stopFeat('ba0', '丙', 'ab', 'B线', 0.5, 0.5, 10),
+  arFeat('ba1', 'ab', 0, 0, 10, 'B线'),
+  arFeat('ba2', 'ab', 1, 1, 10, 'B线'),
+  stopFeat('ma0', '丁', 'am', 'M线', 0, 0, 15),
+  stopFeat('ma1', '戊', 'am', 'M线', 1, 1, 15),
+  arFeat('ma', 'am', 0.5, 0.5, 15, 'M线'),
+  stopFeat('na0', '己', 'an', 'N线', 0.5, 0.5, 20),
+  stopFeat('sa0', '庚', 'as', 'S线', 0, 0, 25),
+  arFeat('sa', 'as', 1, 0, 25.001, 'S线'),
+  stopFeat('za0', '辛', 'az', 'Z线', 0, 0, 30),
+  arFeat('za', 'az', null, 1, 1, 'Z线'),
+  stopFeat('xa0', '壬', 'ax', 'X线', 0.5, 0.5, 50),
+  arFeat('xa', 'ax', 1, 0.5, 50.5, 'X线'),
+  arFeat('bada', 'abad', 0, 0, 0, '坏线'),
+);
+const lmAF = V.normalizeLines(afFC);
+const stAF = V.stopList(afFC);
+const plan = V.arrowFadePlan(lmAF, stAF);
+eq(plan.map((it) => it.lineId), ['ah', 'at', 'ab', 'as', 'az', 'ax'],
+  'plan 成员＝linesMap 序（am 非端点忽略、an 无 arrow、abad 无有效坐标均不进）');
+// 手算对照（平面近似：1° 纬差＝111320m；1° 经差＝111320×cos(线首末纬均值)；lat=0 时 cos 因子 1）
+ok(plan[0].tailCut === null && Math.abs(plan[0].headCut - 1000 / 111320) < 1e-12,
+  'ah：首站 arrow → 仅 headCut＝1000/111320（赤道 1° 线总长）');
+ok(plan[1].headCut === null && Math.abs(plan[1].tailCut - 1000 / (111320 * Math.cos(5 * Math.PI / 180))) < 1e-12,
+  'at：尾站 arrow → 仅 tailCut（1° 经差线在 lat0＝5° 的总长）');
+ok(Math.abs(plan[2].headCut - 1000 / (111320 * Math.cos(10 * Math.PI / 180))) < 1e-12
+  && Math.abs(plan[2].tailCut - plan[2].headCut) < 1e-15,
+  'ab：两端 arrow → headCut＝tailCut（双 cut 同值）');
+eq(plan[3], { lineId: 'as', headCut: null, tailCut: 1 },
+  'as：总长 111.32m＜1km → clamp cut＝1＝整线渐变');
+ok(plan[4].headCut === null && Math.abs(plan[4].tailCut - 1000 / (111320 * Math.cos(30 * Math.PI / 180))) < 1e-12,
+  'az：arrow 无 t → 站序排最后＝按 tail 端处理（防御性归位）');
+// ax：多段乱序 segIndex 拼接，段1＝0.5° 经差×cos(50.25°)、段2＝0.5° 纬差（lat0＝(50+50.5)/2）
+const axTotal = 0.5 * 111320 * Math.cos(50.25 * Math.PI / 180) + 0.5 * 111320;
+ok(plan[5].headCut === null && Math.abs(plan[5].tailCut - 1000 / axTotal) < 1e-12,
+  'ax：多段折线平面近似总长（经纬混合、cos 因子按全线首末纬均值）');
+eq(V.arrowFadePlan(null, stAF), [], 'linesMap 非 Map → []');
+eq(V.arrowFadePlan(lmAF, null), [], 'stops null → 无站序可判 → []（防御）');
+eq(V.arrowFadePlan(lmAF, 'not-array'), [], 'stops 非数组 → []（防御）');
+
+// ---------- arrowFadeGradient（端组合渐变 stops 表达式，渲染层 arrow-fade 层同构） ----------
+console.log('arrowFadeGradient:');
+const cR = '#ff0000', fadeR = 'rgba(255,0,0,0)';
+eq(V.arrowFadeGradient(cR, null, 0.25),
+  ['interpolate', ['linear'], ['line-progress'], 0, '#ff0000', 0.75, '#ff0000', 1, fadeR],
+  '仅 tail：[0,c, 1−cut,c, 1,fade]——中段恒色、尾端渐隐');
+eq(V.arrowFadeGradient(cR, 0.25, null),
+  ['interpolate', ['linear'], ['line-progress'], 0, fadeR, 0.25, '#ff0000', 1, '#ff0000'],
+  '仅 head：[0,fade, cut,c, 1,c]——首端自渐隐起');
+eq(V.arrowFadeGradient(cR, 0.2, 0.3),
+  ['interpolate', ['linear'], ['line-progress'], 0, fadeR, 0.2, '#ff0000', 0.7, '#ff0000', 1, fadeR],
+  '两端：[0,fade, h,c, 1−t,c, 1,fade]');
+eq(V.arrowFadeGradient(cR, 1, null),
+  ['interpolate', ['linear'], ['line-progress'], 0, fadeR, 1, '#ff0000'],
+  '仅 head 且 cut＝1（<1km）→ 整线渐变收两 stop');
+eq(V.arrowFadeGradient(cR, null, 1),
+  ['interpolate', ['linear'], ['line-progress'], 0, '#ff0000', 1, fadeR],
+  '仅 tail 且 cut＝1（<1km）→ 整线渐变收两 stop');
+eq(V.arrowFadeGradient(cR, 0.6, 0.6),
+  ['interpolate', ['linear'], ['line-progress'], 0, fadeR, 0.5, '#ff0000', 1, fadeR],
+  '双端重叠（0.6+0.6＞1）→ 按比例收缩（各 0.5）＋恰衔接并段（stop 严格升序防弃层）');
+eq(V.arrowFadeGradient(cR, 0.5, 0.5),
+  ['interpolate', ['linear'], ['line-progress'], 0, fadeR, 0.5, '#ff0000', 1, fadeR],
+  '双端恰衔接（和＝1）→ 中段退化并段（无重复 stop 键）');
+ok(V.arrowFadeGradient('#ff0000', null, null) === null, '两端均 null → null（调用方跳过建层）');
+eq(V.arrowFadeGradient('not-a-color', 0.25, null)[6], '#888888', '非法色退默认灰');
+eq(V.arrowFadeGradient('#00FF00', null, 0.25)[8], 'rgba(0,255,0,0)', '大写色 normalizeHex 小写化后取 rgb（fade＝同色 alpha 0）');
+
 // ---------- 手造输入链路自证：arrow＋3 线 same 组一起过纯逻辑（不起浏览器） ----------
 console.log('pill+arrow integration:');
 const pillFC = fc(
@@ -648,7 +717,7 @@ const pillFC = fc(
   stopFeat('x1', '药丸甲', 'lx', 'X线', 0.1, 8, 0, 'g9', 'same-station'),
   stopFeat('y1', '药丸乙', 'ly', 'Y线', 0.9, 9, 0, 'g9', 'same-station'),
   stopFeat('z1', '药丸丙', 'lz', 'Z线', 0.5, 9, 1, 'g9', 'same-station'),
-  arFeat('arx', 'lx', 1.5, 10, 0, 'X线'),   // 组外出省箭头：邻站＝x1（t 序唯一真实站）
+  arFeat('arx', 'lx', 1.5, 10, 0, 'X线'),   // 组外出省箭头：站序（t 序）最末 → tail 端
 );
 const stP = V.stopList(pillFC);
 const svP = V.buildStopView(stP);
@@ -659,11 +728,16 @@ eq(svP.pins.filter((p) => p.groupId === 'g9').length, 0, '三成员圈隐去（�
 ok(pill9.pin && pill9.pin.kind === 'group' && pill9.pin.name === '药丸甲' && pill9.pin.key === 'g:g9',
   '药丸条目自带组 pin（首个非空名）');
 ok(!svP.pins.some((p) => p.kind === 'group' && p.groupId === 'g9'), '药丸组不再有合并大圈 pin');
-eq(svP.arrows.map((a) => a.key), ['arx'], 'arrow 与药丸并存互不干扰');
-ok(Math.abs(svP.arrows[0].angleDeg - 90) < 1e-9, 'arx 东向 90°（邻站＝x1）');
 eq(svP.labels.filter((l) => l.group).map((l) => l.key), ['g:g9'], '药丸组合并为一个组标签');
 const sumP = V.lineSummaries(V.normalizeLines(pillFC), stP);
 eq(sumP.get('lx').stopCount, 1, 'lx 站数不含 arrow（药丸成员照常计数）');
+// arrowFadePlan 小集成：arrow 与药丸并存互不干扰——lx 的 arx 站序最末 → tail 端；
+// lx 总长＝段1（1° 经差×cos(0.5°)，lat0＝全线首末纬均值 (0+1)/2）＋段2（1° 纬差）
+const planP = V.arrowFadePlan(V.normalizeLines(pillFC), stP);
+eq(planP.map((it) => it.lineId), ['lx'], '仅 lx 进 plan（ly/lz 无 arrow）');
+const lxTotal = 111320 * Math.cos(0.5 * Math.PI / 180) + 111320;
+ok(planP[0].headCut === null && Math.abs(planP[0].tailCut - 1000 / lxTotal) < 1e-12,
+  'arx → 仅 tailCut（多段折线平面近似总长手算对照）');
 
 // ---------- 主支线合并（2026-11-22 用户裁定：主线与支线在查看器眼中恒为一条线） ----------
 console.log('line groups merge:');
@@ -725,15 +799,13 @@ eq([...V.computeDimmedSet(lmG, { phase: 'existing', lineGroups: lgFull })].sort(
 eq([...V.computeDimmedSet(lmG, { phase: 'future', lineGroups: lgFull })].sort(),
   ['b1', 'b2', 'd1', 'd2', 'm1', 'm2', 's1'],
   '分期「远期」组级：组全体同调（b1 自身 future 但随主线 existing 一起被调光；x1/x2 恰 future 不调）');
-eq([...V.computeDimmedSet(lmG, { focus: 'm1', lineGroups: lgFull })].sort(),
-  ['b2', 'd1', 'd2', 'm2', 's1', 'x1', 'x2'],
-  '聚焦主线 m1：组全体（m1＋b1）豁免调光，其余调光（d 组随主线 displayOnly 恒调光）');
-eq([...V.computeDimmedSet(lmG, { focus: 'b1', lineGroups: lgFull })].sort(),
-  ['b2', 'd1', 'd2', 'm2', 's1', 'x1', 'x2'],
-  '防御：focus 直传支线 id 也按其组豁免（胶水层归一前的兜底）');
+eq([...V.computeDimmedSet(lmG, { focus: 'm1', lineGroups: lgFull })].sort(), ['d1', 'd2'],
+  '聚焦主线 m1：不贡献 dim（白罩定案），仅他省组（d1/d2）随 focus 激活位恒调光（组级 displayOnly 以主线 d1 为准）');
+eq([...V.computeDimmedSet(lmG, { focus: 'b1', lineGroups: lgFull })].sort(), ['d1', 'd2'],
+  '防御：focus 直传支线 id 同上（不再有聚焦豁免分支——组豁免语义由渲染层白罩承接）');
 eq([...V.computeDimmedSet(lmG, { phase: 'existing', focus: 'm2', lineGroups: lgFull })].sort(),
-  ['b1', 'b2', 'd1', 'd2', 'm1', 'm2', 's1', 'x1', 'x2'],
-  '叠加：分期既有＋聚焦 m2——全线并集（m2 期次不匹配照样被调光；lgA 组期次虽匹配但不在聚焦组，按聚焦调光）');
+  ['b2', 'd1', 'd2', 'm2', 's1', 'x1', 'x2'],
+  '叠加：分期既有＋聚焦 m2＝纯分期档结果（聚焦既不豁免 m2、也不对 lgA 组加调——并集只剩分期侧）');
 eq([...V.computeDimmedSet(lmG, { phase: 'existing' })].sort(),
   ['b1', 'b2', 'd1', 'd2', 'm2', 's1', 'x1', 'x2'],
   '不传 lineGroups＝逐线旧行为（b1 future 被调光——与组级路径对照）');
@@ -761,9 +833,6 @@ eq(V.lineLabelOf('s1', lmG, lgFull), '二号线', '无组线照旧');
 eq(V.lineLabelOf('m1', lmG, null), '一号线（又称 One）', '无线组结构照旧（旧快照兼容）');
 eq(V.lineLabelOf('zz', lmG, lgFull, '孤线'), '孤线', '孤线退 fallback');
 eq(V.linesOfPin({ kind: 'stop', lineId: 'zz', lineNames: ['孤线'] }, lmG, lgFull), ['孤线'], '孤站退 lineName');
-// veil 模式组级（2026-11-22 用户需求 3：白罩高亮——聚焦不贡献 dim，displayOnly 照旧）
-eq([...V.computeDimmedSet(lmG, { focus: 'm1', lineGroups: lgFull, hlMode: 'veil' })].sort(), ['d1', 'd2'],
-  'veil＋组级：聚焦 m1 组全体与无关线均不调光，他省组（d1/d2）照旧恒调光');
 
 // ---------- 地图双击线路精确命中（2026-11-22 用户反馈：只认直接点到线体描边） ----------
 console.log('dblclick precise hit:');
