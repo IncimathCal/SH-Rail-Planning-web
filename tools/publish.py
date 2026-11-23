@@ -93,6 +93,7 @@ def main():
     for js in sorted(TOOLS.parent.glob("src/viewer*.js")):
         cp(js.relative_to(ROOT).as_posix())
     cp("assets/vendor")
+    cp("basemap")   # 省级界线底图静态件（查看器运行时按相对路径只读此仓库内文件）
 
     # 4. 汇总与自检
     total = 0
