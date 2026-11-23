@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // viewer_core.js 纯逻辑单测：数据归一（normalizeLines/stopList）、组归并（buildStopView）、
 // 线路摘要与分组（lineSummaries/layerGroups/visibleListGroups 类别过滤）、搜索匹配
-//（matchEntries）、标签分级与可见性（filterLabels zoom 门槛 11＋visibleLabels 优先级：
+//（matchEntries）、标签分级与可见性（filterLabels zoom 门槛 12 组站统一＋visibleLabels 优先级：
 // 全局开关＞聚焦常显·其余隐藏＞调光隐藏＞zoom 门槛——2026-11-22 真机反馈轮：聚焦时
 // 非聚焦线站名一律隐藏、focusMembers 组成员集常显）、调光纯逻辑（linePhaseOf 线路期次归类/
 // lineLayerRank 仅显示级/computeDimmedSet 分期＋displayOnly/nextPhase 四档循环）、尺寸缩放
@@ -214,21 +214,21 @@ eq(V.matchEntries('线', ents, 1).map((e) => e.id), ['la'], 'limit 截断');
 eq(V.matchEntries('线', ents).length, 2, '默认 limit 12 内全返');
 eq(V.matchEntries('人民', null).length, 0, 'null 索引不崩');
 
-// ---------- filterLabels（zoom 门槛层；2026-11-22 普通站门槛 12→11，组门槛 10 不动） ----------
+// ---------- filterLabels（zoom 门槛层；2026-11-23 用户裁定组站统一 12，两级制废止） ----------
 console.log('filterLabels:');
-ok(V.LABEL_ZOOM_STOP === 11 && V.LABEL_ZOOM_GROUP === 10, '门槛常量：普通站 11、组 10');
+ok(V.LABEL_ZOOM_STOP === 12 && V.LABEL_ZOOM_GROUP === 12, '门槛常量：组与站统一 12（2026-11-23 不再区分）');
 ok(!('LABEL_CAP' in V) && V.filterLabels.length === 2 && V.visibleLabels.length === 3,
   '标签总数上限已删：无 LABEL_CAP 导出，filterLabels/visibleLabels 不再收 cap 入参（2026-11-22 真数据抓包）');
 const bigLabels = [];
 for (let i = 0; i < 900; i++) bigLabels.push({ key: 's' + i, name: '站' + i, group: false });
 for (let i = 0; i < 100; i++) bigLabels.push({ key: 'g' + i, name: '组' + i, group: true });
 eq(V.filterLabels(bigLabels, 9).length, 0, 'z9 无标签');
-eq(V.filterLabels(bigLabels, 10).length, 100, 'z10 只组标签');
-eq(V.filterLabels(bigLabels, 10.9).length, 100, 'z10.9 仍只组标签');
-eq(V.filterLabels(bigLabels, 10.99).length, 100, 'z10.99 仍只组标签（门槛边界）');
-eq(V.filterLabels(bigLabels, 11).length, 1000, 'z11 全部显示——1000 个标签单元（超旧上限 800）不再砍普通站名');
-eq(V.filterLabels(bigLabels, 11).filter((l) => !l.group).length, 900, 'z11 普通站标签全在');
-eq(V.filterLabels(bigLabels, 11).filter((l) => l.group).length, 100, 'z11 换乘组标签全在');
+eq(V.filterLabels(bigLabels, 10).length, 0, 'z10 无标签（旧组门槛 10 已废）');
+eq(V.filterLabels(bigLabels, 11).length, 0, 'z11 无标签（旧站门槛 11 已废）');
+eq(V.filterLabels(bigLabels, 11.99).length, 0, 'z11.99 仍无标签（门槛边界）');
+eq(V.filterLabels(bigLabels, 12).length, 1000, 'z12 全部显示——1000 个标签单元（超旧上限 800）不再砍普通站名');
+eq(V.filterLabels(bigLabels, 12).filter((l) => !l.group).length, 900, 'z12 普通站标签全在');
+eq(V.filterLabels(bigLabels, 12).filter((l) => l.group).length, 100, 'z12 换乘组标签全在');
 eq(V.filterLabels(bigLabels, 13).length, 1000, 'z13 全部显示');
 eq(V.filterLabels([], 15).length, 0, '空标签不崩');
 eq(V.filterLabels(null, 15).length, 0, 'null 不崩');
@@ -241,9 +241,9 @@ for (let ln = 0; ln < 60; ln++) {
 }
 const scaleLabels = V.buildStopView(V.stopList(fc(...scaleFeats))).labels;
 eq(scaleLabels.length, 1080, '规模样本：1080 个普通站标签单元（＞旧上限 800）');
-eq(V.visibleLabels(scaleLabels, 10.99, {}).length, 0, '规模样本 z10.99：无换乘组 → 无标签');
-eq(V.visibleLabels(scaleLabels, 11, {}).length, 1080, '规模样本 z11：1080 个普通站名全部显示（旧 LABEL_CAP 下为 0）');
-eq(V.visibleLabels(scaleLabels, 11, { dimmedSet: new Set(['l3']) }).length, 1062, '规模样本 z11 调光一条线：仅该线 18 站隐去');
+eq(V.visibleLabels(scaleLabels, 11.99, {}).length, 0, '规模样本 z11.99：门槛下无标签（组站统一 12）');
+eq(V.visibleLabels(scaleLabels, 12, {}).length, 1080, '规模样本 z12：1080 个普通站名全部显示（旧 LABEL_CAP 下为 0）');
+eq(V.visibleLabels(scaleLabels, 12, { dimmedSet: new Set(['l3']) }).length, 1062, '规模样本 z12 调光一条线：仅该线 18 站隐去');
 
 // ---------- 调光纯逻辑：linePhaseOf / lineLayerRank / computeDimmedSet / nextPhase ----------
 console.log('dim / phase:');
@@ -1134,8 +1134,8 @@ const svNx = V.buildStopView(stNx, { linesMap: lmNx, lineGroups: lgNx, tree: tre
   const stNo = stNx.filter((s) => s.sid !== 'l0022-s20');
   eq(V.buildStopView(stNo, { linesMap: lmNx, lineGroups: lgNx, tree: V.buildGroupTree(noDirect, stNo) }).labels.map((l) => l.key),
     ['g:g9001', 'g:g9002', 'g:g9004'], '④ 出闸单元没有直属站则本单元不出自己的标签（子组标签照出）');
-  // 站名门槛规则不动：嵌套单元的标签一律 group 标签（z≥10 显示、再拉远不显示）
-  eq([V.filterLabels(svNx.labels, 10).length, V.filterLabels(svNx.labels, 9.99).length], [4, 0], '嵌套单元标签沿用组门槛 z≥10');
+  // 站名门槛规则不动：嵌套单元的标签一律 group 标签（组站统一门槛 z≥12——2026-11-23 裁定）
+  eq([V.filterLabels(svNx.labels, 12).length, V.filterLabels(svNx.labels, 11.99).length], [4, 0], '嵌套单元标签沿用统一门槛 z≥12');
   // 调光口径不变：单元标签收全部成员线，全成员被调光才隐藏
   eq([V.visibleLabels(svNx.labels, 12, { dimmedSet: ['l0008'] }).some((l) => l.key === 'g:g9002'),
     V.visibleLabels(svNx.labels, 12, { dimmedSet: ['l0057', 'l0007', 'l0008'] }).some((l) => l.key === 'g:g9002')],
