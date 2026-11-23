@@ -72,7 +72,7 @@
       pointer-events: none; z-index: 1;
     }
     #coordinateRuler { position:absolute; inset:0; width:100%; height:100%; z-index:2; pointer-events:none; overflow:hidden; }
-    #coordinateRuler text { fill:#6b7280; font:11px "PingFang SC","SHMetro Web",system-ui,sans-serif; paint-order:stroke fill; stroke:#fff; stroke-width:3px; stroke-linejoin:round; font-variant-numeric:tabular-nums; }
+    #coordinateRuler text { fill:#6b7280; font:11px "PingFang SC","SHMetro Web",system-ui,sans-serif; font-variant-numeric:tabular-nums; }
     /* 2026-11-22 三批改版：白板底→黑字＋白色外描边（paint-order:stroke fill 先描后填＝
        描边只露外侧；宽度＝字号 1/4（居中描边被填充盖掉一半）→ 可见外扩＝字号 1/8，
        用户例：24pt 字加 3pt 白边）；transform-origin 与 translate(-50%,-140%) 同参考点
@@ -100,6 +100,7 @@
     }
     #brand { font-weight: 600; white-space: nowrap; }
     #brand small { color: var(--text-dim); font-weight: 400; margin-left: 6px; }
+    #zoomIndicator { flex: none; color: var(--text-dim); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; user-select: none; }
     #searchWrap { position: relative; flex: 0 1 360px; min-width: 200px; }
     /* 搜索框：浅玻璃面板上的半透明白底输入框（细边框、聚焦描边变强调色） */
     #searchInput {
@@ -117,6 +118,24 @@
       border: 1px solid var(--control-border); border-radius: 10px;
     }
     #btnPhase:hover, #btnNames:hover, #btnBasemap:hover { border-color: var(--accent); }
+    /* 保留 MapLibre 原生缩放控件，视觉适配浅色玻璃面板 */
+    .maplibregl-ctrl-group {
+      overflow: hidden; border: 1px solid var(--panel-border) !important; border-radius: 10px !important;
+      background: var(--panel) !important;
+      -webkit-backdrop-filter: blur(14px) saturate(1.5);
+      backdrop-filter: blur(14px) saturate(1.5);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.6), 0 4px 18px rgba(0,0,0,.08) !important;
+    }
+    .maplibregl-ctrl-group button { background-color: transparent !important; }
+    .maplibregl-ctrl-group button:hover { background-color: var(--hover) !important; }
+    .maplibregl-ctrl-group button + button { border-top-color: var(--panel-border) !important; }
+    .maplibregl-ctrl-group button .maplibregl-ctrl-icon { filter: none; }
+    @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+      .maplibregl-ctrl-group { background: rgba(248,249,251,.97) !important; -webkit-backdrop-filter: none; backdrop-filter: none; box-shadow: 0 2px 10px rgba(0,0,0,.06) !important; }
+    }
+    .maplibregl-ctrl-bottom-right { right: 8px; bottom: 8px; }
+    .maplibregl-ctrl-bottom-right .maplibregl-ctrl { margin: 0; }
+    .maplibregl-ctrl-group button { width: 32px; height: 32px; }
     #searchDrop {
       position: absolute; top: calc(100% + 4px); left: 0; right: 0;
       margin: 0; padding: 4px 0; list-style: none;
@@ -311,6 +330,7 @@
 
   <header id="topbar">
     <div id="brand">上海轨道交通远期规划图<small>查看器</small></div>
+    <span id="zoomIndicator" aria-live="off">缩放：9.5</span>
     <div id="searchWrap">
       <input id="searchInput" type="text" placeholder="搜索线路或车站…" autocomplete="off" spellcheck="false">
       <ul id="searchDrop" hidden></ul>

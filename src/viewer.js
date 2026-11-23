@@ -521,6 +521,10 @@
     map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; hideStopTip(); });
     map.on('mousemove', id, showStopTip);
   }
+  function syncZoomIndicator() {
+    const el = $('zoomIndicator');
+    if (el && S.map) el.textContent = '缩放：' + S.map.getZoom().toFixed(1);
+  }
   function buildMap() {
     const map = new G.maplibregl.Map({
       container: 'map',
@@ -577,7 +581,9 @@
     });
     S.map = map;
     map.addControl(new G.maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
+    syncZoomIndicator();
 
+    map.on('zoom', syncZoomIndicator);
     map.on('move', scheduleLabels);
     map.on('resize', scheduleLabels);
     // 2026-11-22 晚终裁（用户）：地图线路上的一切点击聚焦交互撤除——单击聚焦与双击原生
