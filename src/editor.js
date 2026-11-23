@@ -2793,7 +2793,9 @@
     // ＋搜索框过滤＋每页 8 个翻页（组头计数：搜索时显示「命中 / 总数」）
     const sg = sgVisible();
     $('sgCount').textContent = (sg.terms.length || sgUi.filter) ? `${sg.hit} / ${sg.total} 组` : `${sg.total} 组`;
-    setHtml($('stationGroups'), sg.rows.length ? sg.rows.map((g) => {
+    // 行列表＋页脚一起作为 setHtml 实参（整段表达式包在括号里）：此前页脚串拼在 setHtml(...) 闭合
+    // 之后、加到了其返回值 undefined 上被丢弃，页脚从未渲染，翻页无从点击（2026-11-23 修复）
+    setHtml($('stationGroups'), (sg.rows.length ? sg.rows.map((g) => {
       const hasBlk = g.stops.some((sid) => stopKindOf(sid) === 'block');
       const lock = hasBlk ? ' title="组内含线路所：只能为接轨站（junction）"' : '';
       // 嵌套组（2026-11-23）：父组行的成员行尾列出子组（id＋类型，点击跳过去）；子组行注明上级组（同可跳）；
@@ -2844,7 +2846,7 @@
         <button class="mini" data-sgpg="prev" ${sg.page <= 1 ? 'disabled' : ''}>上一页</button>
         <span>${sg.page} / ${sg.pages} 页</span>
         <button class="mini" data-sgpg="next" ${sg.page >= sg.pages ? 'disabled' : ''}>下一页</button>
-      </div>` : '');
+      </div>` : ''));
     // 线组
     const lgs = S.groups.lineGroups || [];
     setHtml($('lineGroups'), lgs.length ? lgs.map((g) => {
