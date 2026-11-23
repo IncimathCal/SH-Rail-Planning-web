@@ -71,8 +71,6 @@
       position: absolute; inset: 0; overflow: hidden;
       pointer-events: none; z-index: 1;
     }
-    #coordinateRuler { position:absolute; inset:0; width:100%; height:100%; z-index:2; pointer-events:none; overflow:hidden; }
-    #coordinateRuler text { fill:#6b7280; font:11px "PingFang SC","SHMetro Web",system-ui,sans-serif; paint-order:stroke fill; stroke:#fff; stroke-width:3px; stroke-linejoin:round; font-variant-numeric:tabular-nums; }
     /* 2026-11-22 三批改版：白板底→黑字＋白色外描边（paint-order:stroke fill 先描后填＝
        描边只露外侧；宽度＝字号 1/4（居中描边被填充盖掉一半）→ 可见外扩＝字号 1/8，
        用户例：24pt 字加 3pt 白边）；transform-origin 与 translate(-50%,-140%) 同参考点
@@ -307,7 +305,6 @@
 <body>
   <div id="map"></div>
   <div id="labelLayer"></div>
-  <svg id="coordinateRuler" aria-hidden="true"></svg>
 
   <header id="topbar">
     <div id="brand">上海轨道交通远期规划图<small>查看器</small></div>

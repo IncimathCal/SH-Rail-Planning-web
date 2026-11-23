@@ -942,26 +942,7 @@ eq(V.makeDispCoord('osm')(121.47, 31.23), [121.47, 31.23], 'makeDispCoord(osm) �
 eq(V.makeDispCoord('carto')(121.47, 31.23), [121.47, 31.23], 'makeDispCoord(carto) 恒等（CARTO 瓦片即 WGS84，2026-11-23 接入）');
 eq(V.makeDispCoord('gaode')(121.47, 31.23), V.wgs84ToGcj02(121.47, 31.23), 'makeDispCoord(gaode)＝wgs84ToGcj02');
 eq(V.makeDispCoord('gaode')(0, 0), [0, 0], 'makeDispCoord(gaode) 境外恒等（outOfChina 内部守卫）');
-const gcj = V.wgs84ToGcj02(121.47,31.23), back = V.gcj02ToWgs84(gcj[0],gcj[1]);
-ok(Math.abs(back[0]-121.47)<1e-8 && Math.abs(back[1]-31.23)<1e-8, 'GCJ02 边缘读数逆变换还原 WGS84');
 eq(V.makeDispCoord('weird')(1, 2), [1, 2], '未知 mode 兜恒等（防御）');
-
-// ---------- 视口边缘读数尺 ----------
-console.log('coordinate ruler:');
-eq(V.niceTickStep(10, 1000, 100), 1, '1-2-5：1 档');
-eq(V.niceTickStep(20, 1000, 100), 2, '1-2-5：2 档');
-eq(V.niceTickStep(40, 1000, 100), 5, '1-2-5：5 档');
-eq(V.niceTickStep(80, 1000, 100), 10, '1-2-5：进位');
-eq(V.coordinateTicks(-1, 1, 0.5), [-1,-0.5,0,0.5,1], '经纬刻度序列含负数与零');
-eq(V.formatCoordinate(-121.1234, 'lon', 0.01), '121.12°W', '经度负值与精度格式');
-eq(V.formatCoordinate(0, 'lon', 1), '0°E', '零值避免负零');
-eq(V.formatCoordinate(-0.0001, 'lat', 0.001), '0.000°N', '小数舍入不留负零与浮点尾巴');
-eq(V.edgeTickPositions([{t:0,value:-1},{t:1,value:1}], [0]), [{value:0,t:0.5}], '边缘线性插值求交');
-eq(V.edgeTickPositions([{t:0,value:-1},{t:0.5,value:1},{t:1,value:-1}], [0]), [{value:0,t:0.25},{value:0,t:0.75}], '非单调边缘保留两个交点');
-eq(V.edgeTickPositions([{t:0,value:0},{t:1,value:0}], [0]), [], '重合边不生成不定交点');
-const edgeSamples=[{t:0,value:0},{t:1,value:10}];
-eq(V.edgeTickPositions(edgeSamples,[5]),[{value:5,t:0.5}],'边缘经纬坐标与屏幕参数对齐');
-// 横/竖标签碰撞由 SVG 实际文字盒在页面层按真实像素裁决；此处验证交点屏幕参数。
 
 // ---------- 嵌套换乘组（2026-11-23 用户裁定：换乘组可再把另一个组当成员） ----------
 // 数据契约：index.json（fmt net-index@3）顶层 stationGroups＝[{id, type, stops, groups}]；站 feature 的
