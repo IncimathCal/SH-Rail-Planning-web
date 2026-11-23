@@ -938,6 +938,7 @@ const sh = V.wgs84ToGcj02(121.47, 31.23);
 ok(Math.abs(sh[0] - 121.47) > 0.001 && Math.abs(sh[1] - 31.23) > 0.001, '上海点有实际偏移（非恒等）');
 eq(V.makeDispCoord('none')(121.47, 31.23), [121.47, 31.23], 'makeDispCoord(none) 恒等');
 eq(V.makeDispCoord('osm')(121.47, 31.23), [121.47, 31.23], 'makeDispCoord(osm) 恒等（OSM 瓦片即 WGS84）');
+eq(V.makeDispCoord('carto')(121.47, 31.23), [121.47, 31.23], 'makeDispCoord(carto) 恒等（CARTO 瓦片即 WGS84，2026-11-23 接入）');
 eq(V.makeDispCoord('gaode')(121.47, 31.23), V.wgs84ToGcj02(121.47, 31.23), 'makeDispCoord(gaode)＝wgs84ToGcj02');
 eq(V.makeDispCoord('gaode')(0, 0), [0, 0], 'makeDispCoord(gaode) 境外恒等（outOfChina 内部守卫）');
 eq(V.makeDispCoord('weird')(1, 2), [1, 2], '未知 mode 兜恒等（防御）');

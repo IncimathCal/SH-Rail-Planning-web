@@ -159,7 +159,8 @@
     return [lon + dLon, lat + dLat];
   }
 
-  // 显示坐标变换工厂（测试阶段底图）：'none'|'osm' → 恒等（OSM 瓦片即 WGS84，与数据同基准）；
+  // 显示坐标变换工厂（测试阶段底图）：'none'|'osm'|'carto' → 恒等（OSM 与 CARTO 瓦片均
+  // WGS84 与数据同基准，恒等直叠；CARTO＝Positron 无字版，2026-11-23 接入）；
   // 'gaode' → wgs84ToGcj02 包装（高德瓦片为 GCJ02，对齐＝仅显示用坐标做偏移——境外点恒等
   // 由 outOfChina 在 wgs84ToGcj02 内部处理）。⚠ 只喂渲染/标签定位/相机定位等显示侧；
   // 权威数据（linesMap/stops/摘要/搜索索引/导出）一律不过此函数。未知 mode 兜恒等（防御）。
