@@ -290,6 +290,13 @@
       <div class="sg-head"><b>换乘节点组</b><span id="sgCount" class="sg-count"></span></div>
       <input type="search" id="sgSearch" autocomplete="off" placeholder="搜索：站名／线路／组号"
         title="按空格分隔多个关键词（都包含才显示）：匹配组号、类型（同站/出闸/接轨站）、成员站的站名、站号、线路 id 或线名；命中处橙色标出。Esc 清空搜索">
+      <div style="display:flex;align-items:center;gap:6px;margin:4px 0">
+        <label for="sgFilter" style="font-size:11px;color:var(--dim)">筛选</label>
+        <select id="sgFilter" title="两站分离：双线同站组、两站心相距超 50 米——平行线放大后换乘大圆悬浮在两线之间，逐个改行内「画法：药丸」（2026-11-23）。静态元素，列表重渲染不动它">
+          <option value="">全部</option>
+          <option value="split">两站分离</option>
+        </select>
+      </div>
       <div id="stationGroups"></div>
       <hr style="border-color:var(--border);border-style:dashed">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">

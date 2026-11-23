@@ -43,7 +43,7 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
                         （net-index@3）：
                         {"fmt":"net-index@3","lineOrder":[线id,...],
                          "lineGroups":[{id,name,mainId,members}],
-                         "stationGroups":[{id,type,stops,groups}]}。
+                         "stationGroups":[{id,type,stops,groups[,shape]}]}。
                         lineOrder 顺序来源＝<data>/manifest.json 可选字段
                         lineOrder（编辑器顶栏「排序」面板维护）：列出的线
                         在前（按其顺序），未列出的按现有顺序排后；数组为
@@ -61,12 +61,15 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
                         随版本走。
                         stationGroups＝groups.json 全部换乘节点组的**原样
                         结构表**（@3，2026-11-23 嵌套组增补）：每项
-                        {id, type, stops, groups}——type 为 null 输出 null；
+                        {id, type, stops, groups[, shape]}——type 为 null 输出 null；
                         stops＝该组**直属**设站；groups＝子组 id 列表
-                        （可选字段，缺省输出 []）；不按归档线过滤，如实反映
-                        groups.json。设站经子组间接属于上层节点，stops.geojson
-                        的 groupId/groupType 仍只带直属组，节点归属由消费端据
-                        本表自最外层组还原。消费端同步收 @1（旧快照）/@2/@3。
+                        （可选字段，缺省输出 []）；shape＝显式画法强制
+                        （可选，现行仅 same-station 组的 "pill"，写了才透传，
+                        2026-11-23 平行线双线站大圆悬浮对策）；不按归档线过滤，
+                        如实反映 groups.json。设站经子组间接属于上层节点，
+                        stops.geojson 的 groupId/groupType 仍只带直属组，
+                        节点归属由消费端据本表自最外层组还原。消费端同步收
+                        @1（旧快照）/@2/@3。
 
 复用（绝不重推导）：
   - tools/svg_parse.py  path_from_d（= parse_path + flatten + ArcPath）：
@@ -216,12 +219,16 @@ def load_groups(data_dir):
             continue
         stops = sg.get("stops")
         subs = sg.get("groups")
-        station_groups.append({
+        entry = {
             "id": sg["id"],
             "type": sg.get("type"),
             "stops": list(stops) if isinstance(stops, list) else [],
             "groups": list(subs) if isinstance(subs, list) else [],
-        })
+        }
+        # shape（2026-11-23）：显式画法强制（现行仅 same-station 组的 "pill"），写了才透传
+        if sg.get("shape"):
+            entry["shape"] = sg["shape"]
+        station_groups.append(entry)
     return group_color, stop_group, line_groups, station_groups
 
 

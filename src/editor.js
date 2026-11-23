@@ -810,11 +810,54 @@
   }
   /** 绘制单元画不画药丸（2026-11-23 用户裁定「上级组无论有几个站圆，都按多线站生成药丸」）：带子组的
    *  同站／接轨单元一律药丸、不论线数；平铺的同站单元按逻辑线数 ≥3（见 logicalLineCount）；接轨单元不画。
+   *  shape:"pill"（2026-11-23）：同站组显式强制药丸——平行线双线站大圆悬浮对策，不论线数
+   *  （仅 same-station 生效；validate 禁其他类型写 shape）。
    *  g＝单元组对象；kids＝其子组 id 列表；lines／lineGroups／allLines 同 logicalLineCount。 */
   function unitIsPill(g, kids, lines, lineGroups, allLines) {
     if (!g || (g.type !== 'same-station' && g.type !== 'junction')) return false;
+    if (g.shape === 'pill' && g.type === 'same-station') return true;
     if (Array.isArray(kids) && kids.length) return true;
     return g.type === 'same-station' && logicalLineCount(lines, lineGroups, allLines) >= 3;
+  }
+  // ---------- 「两站分离」筛选（2026-11-23 用户裁定·shape:"pill" 配套） ----------
+  // 双线同站组两站心不重合（手放站未必压在交叉点上）：换乘大圆圆心＝均值、半径屏幕恒定，
+  // 放大后圆悬在两线之间。组列表筛选列出这类候选（两站心相距 >50m），供逐个改「画法：药丸」。
+  /** 两点（[lon,lat] 经纬度）地表距离米（haversine；纯逻辑，node 单测覆盖） */
+  function haversineM(a, b) {
+    const R = 6371008.8, rad = Math.PI / 180;
+    const dLat = (b[1] - a[1]) * rad, dLon = (b[0] - a[0]) * rad;
+    const s1 = Math.sin(dLat / 2), s2 = Math.sin(dLon / 2);
+    const h = s1 * s1 + Math.cos(a[1] * rad) * Math.cos(b[1] * rad) * s2 * s2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+  /** 组内直属站两两（画板坐标经标定换经纬度后）地表距离的最大值（米）；无标定或任一站定不了位
+   *  返回 null（候选判定按「未知」不入选，不误报）。posOf/标定注入，纯逻辑，node 单测覆盖；
+   *  forward 缺省用模块内 calibForward（单测注入线性假变换，不依赖真 TPS 标定数据） */
+  function groupSplitMeters(g, posOf, calib, forward) {
+    if (!g || !Array.isArray(g.stops) || g.stops.length < 2 || !calib) return null;
+    const fwd = forward || calibForward;
+    let best = null;
+    for (let i = 0; i < g.stops.length; i++) {
+      const p1 = posOf(g.stops[i]);
+      if (!p1) return null;
+      const c1 = fwd(calib, p1[0], p1[1]);
+      for (let j = i + 1; j < g.stops.length; j++) {
+        const p2 = posOf(g.stops[j]);
+        if (!p2) return null;
+        const d = haversineM(c1, fwd(calib, p2[0], p2[1]));
+        if (best == null || d > best) best = d;
+      }
+    }
+    return best;
+  }
+  /** 「两站分离」候选：same-station、恰 2 条逻辑线（药丸线数口径）、两站心相距 >50m。
+   *  ≥3 逻辑线已是药丸不必列；出闸／接轨组不在此列（裁定场景＝双线换乘站）。 */
+  const SPLIT_M = 50;
+  function isSplitGroup(g, lines, posOf, calib, lineGroups, allLines, forward) {
+    if (!g || g.type !== 'same-station' || !calib) return false;
+    if (logicalLineCount(lines, lineGroups, allLines) !== 2) return false;
+    const m = groupSplitMeters(g, posOf, calib, forward);
+    return m != null && m > SPLIT_M;
   }
   /** 设站的「所属组」判脏键（lineDrawKey 的逐站组键；纯逻辑，node 单测覆盖）：
    *  `${直属组 id}|${直属组 type}|${h|v}`——直属组决定出闸黑边与提示文本；h＝站圈被绘制单元吸收隐去。
@@ -1069,6 +1112,7 @@
     planStopImport, applyStopImport, suggestForStop, transferMarkForStop, conflictsForStop, backfillTransferNames,
     layerGroupsOf, junctionStroke, planStationGroup, connValidTargets,
     groupTree, groupIsRoot, groupLeafStops, groupDrawPlan, logicalLineCount, groupUnitCount,
+    haversineM, groupSplitMeters, isSplitGroup,
     stopGroupKey, groupUnitSig,
     cascadeStationGroups, pruneStationGroups, normalizeStationGroups, pendingGroupIssues,
     normalizeLineOrder, archivedIdList, LAYER_RESERVED, searchTermsOf, matchesTerms, groupSearchText, pageSlice,
@@ -2667,7 +2711,7 @@
   // 临时 UI 状态——不进快照、不进撤销、不进自动暂存，刷新回默认（同 impListUi/lineListUi）。
   // 搜索框是 editor.html 里的静态元素：列表重渲染只动 #stationGroups，输入焦点与输入法不丢。
   const SG_PAGE_SIZE = 8;
-  const sgUi = { page: 1, q: '' };
+  const sgUi = { page: 1, q: '', filter: '' };   // filter：'' 全部｜'split' 两站分离（2026-11-23，shape:"pill" 配套）
   /** sid → 所属线路 id／线名／站名（检索文本与成员悬停提示用；每次渲染现建，规模小） */
   function stopInfoIndex() {
     const m = new Map();
@@ -2683,15 +2727,39 @@
   }
   /** 当前搜索命中的组（保持 stationGroups 原序）与页切片；页码越界在此回正。
    *  另带组树索引（嵌套组：行里列子组/注明上级组用，见 renderGroupsPanel） */
+  /** sid → 画板坐标 [x,y]（「两站分离」筛选用；每次渲染现建）——站沿线参数 t 经线几何缓存求点；
+   *  线几何缺失／出省箭头返回 null */
+  function stopPosIndex() {
+    const m = new Map();
+    for (const l of S.lines.values()) {
+      const ap = S.arcs.get(l.id);
+      if (!ap) continue;
+      for (const st of l.stops) {
+        if (st.kind === 'arrow') continue;
+        m.set(st.id, ap.pointAt(st.t));
+      }
+    }
+    return (sid) => m.get(sid) || null;
+  }
   function sgVisible() {
     const sgs = (S.groups && S.groups.stationGroups) || [];
     const info = stopInfoIndex();
     const terms = searchTermsOf(sgUi.q);
-    const hit = terms.length ? sgs.filter((g) => matchesTerms(groupSearchText(g, (sid) => info.get(sid)), terms)) : sgs;
+    let hit = terms.length ? sgs.filter((g) => matchesTerms(groupSearchText(g, (sid) => info.get(sid)), terms)) : sgs;
+    // 「两站分离」筛选（2026-11-23，shape:"pill" 配套）：双线同站、两站心相距 >50m——
+    // 平行线放大后换乘大圆悬浮的候选清单，供逐个改「画法：药丸」；无标定时不筛（全表原样）
+    let posOf = null;
+    if (sgUi.filter === 'split' && S.calib) {
+      posOf = stopPosIndex();
+      const lineById = new Map([...S.lines.values()].map((l) => [l.id, l]));
+      hit = hit.filter((g) => isSplitGroup(g,
+        (g.stops || []).map((sid) => { const o = info.get(sid); return o ? lineById.get(o.lineId) : null; }).filter(Boolean),
+        posOf, S.calib, (S.groups && S.groups.lineGroups) || [], [...S.lines.values()]));
+    }
     const pg = pageSlice(hit, sgUi.page, SG_PAGE_SIZE);
     sgUi.page = pg.page;   // 拆组/换工作区后结果变短：页码回正（临时状态，无快照）
     return { rows: pg.rows, page: pg.page, pages: pg.pages, total: sgs.length, hit: hit.length, info, terms,
-      tree: groupTree(sgs) };
+      tree: groupTree(sgs), posOf };
   }
   /** 新建组后的左栏定位（临时 UI 状态）：翻到该组所在页；被当前搜索词滤掉则清空搜索
    *  （输入框同步）——分页后新组追加在末尾，否则要翻到末页才看得到刚建的组 */
@@ -2724,7 +2792,7 @@
     // 换乘节点组（含线路所的组：线路所不得进 same-station/out-of-station，类型下拉锁死 junction）
     // ＋搜索框过滤＋每页 8 个翻页（组头计数：搜索时显示「命中 / 总数」）
     const sg = sgVisible();
-    $('sgCount').textContent = sg.terms.length ? `${sg.hit} / ${sg.total} 组` : `${sg.total} 组`;
+    $('sgCount').textContent = (sg.terms.length || sgUi.filter) ? `${sg.hit} / ${sg.total} 组` : `${sg.total} 组`;
     setHtml($('stationGroups'), sg.rows.length ? sg.rows.map((g) => {
       const hasBlk = g.stops.some((sid) => stopKindOf(sid) === 'block');
       const lock = hasBlk ? ' title="组内含线路所：只能为接轨站（junction）"' : '';
@@ -2744,6 +2812,17 @@
       const parentHtml = parent
         ? `
         <div class="m">上级组：<span class="namehint" data-gjump="${parent}" title="上级组（点击跳到该组行）">${hlMatch(parent, sg.terms)}（${typeText(parent)}）</span></div>` : '';
+      // 画法强制（2026-11-23 shape:"pill"）：仅 same-station 组给「自动／药丸」下拉——
+      // 药丸＝强制画胶囊（平行线双线站大圆悬浮对策）；「两站分离」筛选下附两站心距离
+      const shapeSel = g.type === 'same-station' ? `
+        <select data-gshape="${g.id}" title="画法：自动＝按线数（≥3 条逻辑线画药丸）；药丸＝强制画胶囊——平行线双线站放大后换乘大圆悬浮在两线之间的对策（2026-11-23）">
+          <option value="" ${g.shape !== 'pill' ? 'selected' : ''}>自动</option>
+          <option value="pill" ${g.shape === 'pill' ? 'selected' : ''}>药丸</option>
+        </select>` : '';
+      const splitNote = (sg.posOf && g.type === 'same-station')
+        ? (() => { const mm = groupSplitMeters(g, sg.posOf, S.calib);
+            return mm != null ? `<span class="namehint" title="组内直属站两两间地表距离的最大值">Δ≈${Math.round(mm)}m</span>` : ''; })()
+        : '';
       return `
       <div class="grp-row" data-gid="${g.id}"${isPendGrp ? ' style="background:#4a3a10;border-radius:3px"' : ''}>
         <b>${hlMatch(g.id, sg.terms)}</b>
@@ -2752,12 +2831,12 @@
           <option value="out-of-station" ${g.type === 'out-of-station' ? 'selected' : ''} ${hasBlk ? 'disabled' : ''}>出闸</option>
           <option value="junction" ${g.type === 'junction' ? 'selected' : ''}>接轨站</option>
           <option value="" ${!g.type ? 'selected' : ''} ${hasBlk ? 'disabled' : ''}>type 未定</option>
-        </select>${nestBtn}
+        </select>${shapeSel}${nestBtn}
         <button class="mini danger" data-gdel="${g.id}">拆组</button>
         <div class="m">${g.stops.map((s2) => {
           const o = sg.info.get(s2);
           return `<span title="${esc(o ? o.lineName || '' : '')}">${hlMatch(stopLabel(s2), sg.terms)}</span>`;
-        }).join('；')}${kidHtml ? `${g.stops.length ? '；' : ''}${kidHtml}` : ''}</div>${parentHtml}
+        }).join('；')}${kidHtml ? `${g.stops.length ? '；' : ''}${kidHtml}` : ''}${splitNote ? `；${splitNote}` : ''}</div>${parentHtml}
       </div>`;
     }).join('')
       : `<div style="color:var(--dim);font-size:12px">${sg.total ? '（无匹配）' : '（暂无）'}</div>`)
@@ -3960,6 +4039,18 @@
     }
   });
   $('stationGroups').addEventListener('change', (e) => {
+    // 画法强制（2026-11-23 shape:"pill"，仅 same-station 组渲染此下拉）：可撤销（同组类型切换）
+    const shp = e.target.dataset.gshape;
+    if (shp) {
+      const g = S.groups.stationGroups.find((x) => x.id === shp);
+      if (!g) return;
+      snapshot();
+      if (e.target.value === 'pill') g.shape = 'pill'; else delete g.shape;
+      renderWorld(); autosave();
+      // 同 gtype：有搜索词/筛选时重渲染保持列表如实；无则保住下拉焦点
+      if (searchTermsOf(sgUi.q).length || sgUi.filter) renderGroupsPanel();
+      return;
+    }
     const gid = e.target.dataset.gtype;
     if (!gid) return;
     const g = S.groups.stationGroups.find((x) => x.id === gid);
@@ -3971,10 +4062,17 @@
       return;
     }
     snapshot();   // 组类型切换可撤销（与建组/拆组一致）
-    g.type = e.target.value || null; renderWorld(); autosave();
-    // 有搜索词时重渲染保持列表如实（类型是检索字段之一，改后该行可能不再命中）；
-    // 无搜索词不重渲染：保住下拉焦点，便于连续改多行
-    if (searchTermsOf(sgUi.q).length) renderGroupsPanel();
+    g.type = e.target.value || null;
+    if (g.type !== 'same-station') delete g.shape;   // shape 仅同站合法（validate 门禁），换类型时摘除
+    renderWorld(); autosave();
+    // 有搜索词/筛选时重渲染保持列表如实（类型是检索字段之一，改后该行可能不再命中）；
+    // 无则不重渲染：保住下拉焦点，便于连续改多行
+    if (searchTermsOf(sgUi.q).length || sgUi.filter) renderGroupsPanel();
+  });
+  // 组列表筛选下拉（静态元素，见 editor.html）：切换即回第 1 页（临时 UI 状态，同 sgUi.q）
+  $('sgFilter').addEventListener('change', (e) => {
+    sgUi.filter = e.target.value; sgUi.page = 1;
+    renderGroupsPanel();
   });
   // 换乘节点组搜索框（静态元素，见 editor.html）：逐键过滤（含中文输入法组词中的 input）、回第 1 页
   $('sgSearch').addEventListener('input', (e) => {

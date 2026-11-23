@@ -482,11 +482,11 @@
   // 防御：成环（A∋B∋A）时 rootOf 取环上 id 最小者当根——环上各组仍只出一套图形、站不丢；
   // 表条目/类型/子组引用逐项判型，脏项跳过不抛（启动期抛错＝整页黑屏）。
   function buildGroupTree(stationGroups, stops) {
-    const byId = new Map();       // id → {id, type, children:[id], parentId:id|null, listed, typed}
+    const byId = new Map();       // id → {id, type, shape, children:[id], parentId:id|null, listed, typed}
     const tableOrder = [];        // 表内组 id（表序）
     const ensure = (id) => {
       let n = byId.get(id);
-      if (!n) { n = { id, type: null, children: [], parentId: null, listed: false, typed: false }; byId.set(id, n); }
+      if (!n) { n = { id, type: null, shape: null, children: [], parentId: null, listed: false, typed: false }; byId.set(id, n); }
       return n;
     };
     // ① 表内记录（重复 id 首条为准；type 非字符串按 null；groups 非数组按缺省 []）
@@ -499,6 +499,9 @@
       if (n.listed) continue;
       n.listed = true;
       n.type = typeof g.type === 'string' ? g.type : null;
+      // shape（2026-11-23）：显式画法强制，现行仅同站组的 "pill"（平行线双线站大圆悬浮对策）；
+      // 其他值按无强制处理（validate 门禁另行报错）
+      n.shape = g.shape === 'pill' ? 'pill' : null;
       listed.push([n, Array.isArray(g.groups) ? g.groups : []]);
       tableOrder.push(id);
     }
@@ -690,8 +693,11 @@
       const leaves = tree.leafStops(gid);
       if (!leaves.length) return;   // 无站组（成员线已归档、全线路所组被上游剔除等）：不出图形不出标签
       const u = unitOf(leaves);
-      // 上级组（带子组的同站／接轨单元）一律药丸、不论线数（2026-11-23 用户裁定）；平铺组沿用逻辑线 ≥3
-      if (tree.childrenOf(gid).length > 0
+      // shape:"pill"（2026-11-23 用户裁定）：同站组显式强制药丸——平行线双线站大圆悬浮对策，
+      // 不论线数（仅 same-station 生效；validate 禁其他类型写 shape）；上级组（带子组的
+      // 同站／接轨单元）一律药丸、不论线数；平铺组沿用逻辑线 ≥3
+      const gn = tree.byId.get(gid);
+      if ((gn && gn.shape === 'pill' && type === 'same-station') || tree.childrenOf(gid).length > 0
         || (type === 'same-station' && logicalLineCount(u.lineIds, linesMap, lineGroups) >= 3)) {
         // 药丸替代一切成员图形——成员个人小圈不再出现（药丸即换乘标识，
         // 2026-11-22 用户裁定）；组 pin 挂在药丸条目上（不进 pins＝不被渲染成圈），

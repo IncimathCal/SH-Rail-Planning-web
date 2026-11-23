@@ -1159,6 +1159,36 @@ const svNx = V.buildStopView(stNx, { linesMap: lmNx, lineGroups: lgNx, tree: tre
   eq([svJF.pins.map((p) => [p.key, p.big, p.groupType]), svJF.pills.length],
     [[['g:jN', false, 'junction'], ['g:jI', true, 'same-station']], 0], 'junction 对照：平铺（无子组）＝合并普通尺寸圈、不出药丸');
 }
+// shape:"pill"（2026-11-23 用户裁定）：同站组显式强制药丸——平行线双线站放大后大圆悬浮在两线之间的对策
+{
+  const shpSt = V.stopList(fc(
+    stopFeat('sa1', '平行甲', 'la', '甲线', 0.5, 121, 31, 'gs1', 'same-station'),
+    stopFeat('sb1', '平行甲', 'lb', '乙线', 0.5, 121.01, 31.001, 'gs1', 'same-station'),   // 两站心不重合（平行线）
+  ));
+  const shpLines = new Map([['la', { lineId: 'la', name: '甲线', role: 'standalone' }],
+    ['lb', { lineId: 'lb', name: '乙线', role: 'standalone' }]]);
+  const shpTbl = [{ id: 'gs1', type: 'same-station', stops: ['sa1', 'sb1'], groups: [] }];
+  eq(V.buildGroupTree(shpTbl, shpSt).group('gs1').shape, null, '树：结构表无 shape → null');
+  eq(V.buildGroupTree([Object.assign({}, shpTbl[0], { shape: 'pill' })], shpSt).group('gs1').shape, 'pill', '树：shape:"pill" 收进树节点');
+  const svD = V.buildStopView(shpSt, { linesMap: shpLines, lineGroups: null, tree: V.buildGroupTree(shpTbl, shpSt) });
+  eq(svD.pins.map((p) => p.key), ['g:gs1'], 'shape：双线同站组默认＝合并大圆（进 pins）');
+  eq(svD.pills, [], 'shape：默认无药丸');
+  const pillTbl = [Object.assign({}, shpTbl[0], { shape: 'pill' })];
+  const svP = V.buildStopView(shpSt, { linesMap: shpLines, lineGroups: null, tree: V.buildGroupTree(pillTbl, shpSt) });
+  eq(svP.pills.map((p) => p.key), ['g:gs1'], 'shape：shape:"pill" 强制药丸（不论线数）');
+  eq(svP.pins, [], 'shape：药丸组不进 pins（药丸即换乘标识）');
+  eq(svP.pills[0].chain.map((c) => c.join(',')).sort().join(';'), '121,31;121.01,31.001', 'shape：药丸链收两站心（圆心均值改过站心胶囊）');
+  eq(svP.labels.map((l) => l.key), ['g:gs1'], 'shape：标签照出');
+  // 非 same-station 写 shape 不生效（validate 禁写；查看器防御性忽略）
+  const svJ2 = V.buildStopView(shpSt, { linesMap: shpLines, lineGroups: null,
+    tree: V.buildGroupTree([Object.assign({}, shpTbl[0], { type: 'junction', shape: 'pill' })], shpSt) });
+  eq([svJ2.pills.length, svJ2.pins.map((p) => [p.key, p.big, p.groupType])], [0, [['g:gs1', false, 'junction']]],
+    'shape：junction 写 shape 不生效（平铺接轨仍合并普通圈）');
+  // 未知 shape 值按无强制（validate 禁写；防御）
+  const svX = V.buildStopView(shpSt, { linesMap: shpLines, lineGroups: null,
+    tree: V.buildGroupTree([Object.assign({}, shpTbl[0], { shape: 'circle' })], shpSt) });
+  eq([svX.pills.length, svX.pins.map((p) => p.key)], [0, ['g:gs1']], 'shape：未知 shape 值按无强制处理');
+}
 // 出闸套出闸（三层）：子组按自身 type 递归
 {
   const stO = V.stopList(fc(

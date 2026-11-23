@@ -1012,6 +1012,34 @@ eq(L.unitIsPill(G2('p5', 'same-station'), [], [LN('l0001', 'standalone', null), 
 eq(L.unitIsPill(G2('p6', 'out-of-station', ['k']), ['k'], []), false, 'unitIsPill：出闸单元不画药丸（直属站各自成圈）');
 eq(L.unitIsPill(null, ['k'], []), false, 'unitIsPill：空组不崩');
 
+// ---------- shape:"pill" ＋「两站分离」候选（2026-11-23：平行线双线站大圆悬浮对策） ----------
+console.log('shape pill / split candidates');
+eq(L.unitIsPill(Object.assign(G2('sp1', 'same-station'), { shape: 'pill' }), [], [LN('l0001', 'standalone', null), LN('l0002', 'standalone', null)]), true,
+  'unitIsPill：同站组 shape:"pill" 强制药丸（双线也药丸）');
+eq(L.unitIsPill(Object.assign(G2('sp2', 'junction'), { shape: 'pill' }), [], [LN('l0001', 'standalone', null), LN('l0002', 'standalone', null), LN('l0003', 'standalone', null)]), false,
+  'unitIsPill：接轨组写 shape 不生效（平铺接轨仍不药丸）');
+eq(L.unitIsPill(Object.assign(G2('sp3', 'out-of-station'), { shape: 'pill' }), ['k'], []), false,
+  'unitIsPill：出闸组写 shape 不生效（直属站各自成圈）');
+ok(Math.abs(L.haversineM([0, 0], [1, 0]) - 111195.1) < 50, 'haversineM：赤道 1° 经度 ≈ 111.195km');
+ok(L.haversineM([121, 31], [121, 31]) < 1e-6, 'haversineM：同点为 0');
+// 假变换：1 画板单位＝1 米（纬向）；posOf 手造索引——不依赖真 TPS 标定数据
+const M2DEG = 1 / 111195;
+const fakeFwd = (c, x, y) => [121 + x * M2DEG, 31 + y * M2DEG];
+const posMapF = { sa: [0, 0], sb: [0, 60], sc: [0, 45], sd: [0, 20] };
+const posOfF = (sid) => (sid in posMapF ? posMapF[sid] : null);
+const G3 = (id, stops, type, extra) => Object.assign({ id, type: type || 'same-station', stops, groups: [] }, extra || {});
+const ls2F = [LN('la', 'standalone', null), LN('lb', 'standalone', null)];
+const ls3F = [LN('la', 'standalone', null), LN('lb', 'standalone', null), LN('lc', 'standalone', null)];
+ok(Math.abs(L.groupSplitMeters(G3('m1', ['sa', 'sb']), posOfF, {}, fakeFwd) - 60) < 0.1, 'groupSplitMeters：两站 60 单位 → ≈60m');
+ok(Math.abs(L.groupSplitMeters(G3('m2', ['sa', 'sb', 'sc']), posOfF, {}, fakeFwd) - 60) < 0.1, 'groupSplitMeters：三站取两两最大');
+eq(L.groupSplitMeters(G3('m3', ['sa', 'zz']), posOfF, {}, fakeFwd), null, 'groupSplitMeters：站定不了位 → null（不误报）');
+eq(L.groupSplitMeters(G3('m4', ['sa', 'sb']), posOfF, null), null, 'groupSplitMeters：无标定 → null');
+eq(L.isSplitGroup(G3('s1', ['sa', 'sb']), ls2F, posOfF, {}, [], null, fakeFwd), true, 'isSplitGroup：双线同站 60m → 候选');
+eq(L.isSplitGroup(G3('s2', ['sa', 'sd']), ls2F, posOfF, {}, [], null, fakeFwd), false, 'isSplitGroup：双线同站 20m → 不候选');
+eq(L.isSplitGroup(G3('s3', ['sa', 'sb']), ls3F, posOfF, {}, [], null, fakeFwd), false, 'isSplitGroup：3 条逻辑线 → 不候选（已是药丸）');
+eq(L.isSplitGroup(G3('s4', ['sa', 'sb'], 'out-of-station'), ls2F, posOfF, {}, [], null, fakeFwd), false, 'isSplitGroup：出闸组不候选');
+eq(L.isSplitGroup(G3('s5', ['sa', 'sb'], 'junction'), ls2F, posOfF, {}, [], null, fakeFwd), false, 'isSplitGroup：接轨组不候选（裁定场景＝双线换乘站）');
+
 // ---------- 嵌套换乘组：编组判定（待编组单位可含既有顶层组） ----------
 console.log('nested station groups: plan');
 eq(L.planStationGroup([null], 1), { ok: true, type: 'same-station', allBlock: false }, '一站＋一整组＝2 个单位：默认同站（中辰路/上海金山型）');

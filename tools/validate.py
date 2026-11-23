@@ -400,6 +400,15 @@ def main():
                     seen_stop[sid] = sgid
             if sg.get("type") is not None and sg.get("type") not in GROUP_TYPES:
                 err("groups.json", f"stationGroup {sgid}: bad type {sg.get('type')!r}")
+            # shape（2026-11-23 增补）：显式画法强制，现行仅 same-station 组可写 "pill"
+            # （平行线双线站大圆悬浮对策；不写＝按线数自动）
+            shape = sg.get("shape")
+            if shape is not None:
+                if shape != "pill":
+                    err("groups.json", f"stationGroup {sgid}: bad shape {shape!r} (only 'pill')")
+                if sg.get("type") != "same-station":
+                    err("groups.json",
+                        f"stationGroup {sgid}: shape only allowed on same-station groups")
             n_blk = sum(1 for sid in members if stop_kinds.get(sid) == "block")
             if n_blk and sg.get("type") != "junction":
                 err("groups.json", f"stationGroup {sgid}: contains block stop(s) but type is not 'junction'")
