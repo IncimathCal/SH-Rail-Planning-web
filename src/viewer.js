@@ -72,6 +72,14 @@
 //（renderStopsFC/renderPillsFC 补）与聚焦组成员集的交集，组符号（junction 合并圈/换乘
 // 大圈/药丸）任一成员命中即豁免——对齐 pinDimmed 的组规则；filter 表达式 '!'/'any' 包
 // 'in' 的布尔结果合法（与「'!' 吃 0/1 数字」弃层坑不同，见 memberMatchExpr 注）。
+// 2026-11-23 嵌套换乘组（用户裁定）：换乘组可再把另一个组当成员——index.json 升 net-index@3
+//（VIEWER_CORE.parseNetIndex 解读，顶层 stationGroups 结构表；@1/@2 旧产物照常＝各组顶层）。
+// 节点＝最外层组：同站单元全部叶站合成一个符号（逻辑线 ≥3 药丸、否则合并黑边大圈；药丸线数
+// 联络线不计、同一线组算一条）、内层组不单独出图形与站名；出闸单元直属站各自成圈、各子组
+// 自成绘制单元递归套用；junction 成员递归取全部叶站（规则全在 VIEWER_CORE，本层只多传
+// linesMap/lineGroups/结构树三样入参）。结构树 S.groupTree（buildGroupTree）由视图与站点面板
+// 共用；站点面板对嵌套节点补「换乘节点／节点成员／换乘对端」行（平铺组一行不加，呈现与旧版
+// 一致）；单线导出对嵌套节点的站补节点信息。
 // 与编辑器完全独立：不加载 editor.js 的任何代码。中文标签走 HTML 叠加（架构方案 §6 备案路线）。
 
 (function (G) {
@@ -85,6 +93,7 @@
     linesMap: new Map(),          // lineId → line（归一后，WGS84 权威——导出用）
     stops: [],                    // 站点平表（WGS84 权威——导出用）
     view: { pins: [], labels: [] }, // 渲染/标签视图（组已归并；坐标 WGS84）
+    groupTree: null,                // 换乘组结构树（VIEWER_CORE.buildGroupTree；节点＝最外层组。视图与站点面板共用，boot 填充；旧快照无结构表＝各组顶层）
     dispBbox: new Map(),          // lineId → 渲染 bbox（fitBounds 用，与渲染特征同帧）
     dispStopsBbox: null,          // 站点渲染 bbox（无线时的兜底视野）
     dispLabels: [],               // 标签列表（map.project 定位用，WGS84）
@@ -138,7 +147,9 @@
   // lines 在所有候选位都取不到才算加载失败。index.json（线路自定义显示序＋线组索引，编辑器
   // 排序面板 → manifest.lineOrder → flatten 产出）缺失按「无自定义序/无线组」容错——旧快照/
   // 旧 flatten 产物照常工作。fmt 严格校验（有校验故随 flatten 升版）：@2＝含 lineGroups
-  //（主支线合并）；@1＝仅 lineOrder（旧快照，无组信息＝逐线独立显示）。两版都收 lineOrder。
+  //（主支线合并）；@1＝仅 lineOrder（旧快照，无组信息＝逐线独立显示）。三版都收 lineOrder；
+  // 2026-11-23 增 @3＝另含 stationGroups（嵌套换乘组结构表，喂 buildGroupTree）。解读与判型
+  // 收在 VIEWER_CORE.parseNetIndex（单测覆盖）。
   const NET_BASES = ['net', 'build/net'];
   async function fetchNetFiles() {
     let lastErr = null;
@@ -157,15 +168,19 @@
       } catch (e) {
         console.warn('提示：' + base + '/stops.geojson 缺失，按零站处理（' + (e && e.message) + '）');
       }
-      let indexOrder = null, lineGroups = null;
+      let indexOrder = null, lineGroups = null, stationGroups = null;
       try {
         const idx = await fetchJSON(base + '/index.json', opts);
-        if (idx && (idx.fmt === 'net-index@2' || idx.fmt === 'net-index@1')) {
-          if (Array.isArray(idx.lineOrder)) indexOrder = idx.lineOrder.map(String);
-          if (idx.fmt === 'net-index@2' && Array.isArray(idx.lineGroups)) lineGroups = idx.lineGroups;
-        }
-      } catch (e) { /* 无 index.json＝无自定义序/无线组，容错直通 */ }
-      return { linesFC, stopsFC, base, indexOrder, lineGroups };
+        // fmt 名单外的 index 整份视同不存在、字段类型不符视同缺省；唯 @3 而 stationGroups 非数组
+        //＝数据契约被破坏（嵌套组会被画成平铺），按无嵌套（各组顶层）处理并告警——不抛
+        //（启动期抛错＝整页黑屏）
+        const parsed = V.parseNetIndex(idx);
+        indexOrder = parsed.indexOrder;
+        lineGroups = parsed.lineGroups;
+        stationGroups = parsed.stationGroups;
+        if (parsed.problem) console.warn('提示：' + base + '/index.json ' + parsed.problem);
+      } catch (e) { /* 无 index.json＝无自定义序/无线组/无换乘组结构，容错直通 */ }
+      return { linesFC, stopsFC, base, indexOrder, lineGroups, stationGroups };
     }
     throw lastErr || new Error('net/lines.geojson 与 build/net/lines.geojson 均不可用');
   }
@@ -1172,17 +1187,27 @@
         .map((s) => V.stopDisplayName(s.name) + (s.lineName ? '（' + s.lineName + '）' : ''));
       if (others.length) infoRow(body, '组内车站', others.join('、'));
     }
+    // 嵌套换乘节点（2026-11-23 用户裁定）：关系描述如实反映结构——换乘节点（自最外层组向下的
+    // 链：它在哪个节点、哪一层）、节点成员（节点的直属站＋各子组）、换乘对端（出闸关系的另一端）。
+    // 纯逻辑在 VIEWER_CORE.groupRelations；平铺组返回 null＝此处一行不加，面板与旧版完全一致
+    const rel = pin.groupId
+      ? V.groupRelations(pin.groupId, pin.kind === 'stop', S.groupTree, S.linesMap, S.lineGroups) : null;
+    if (rel) {
+      if (rel.nodeChain) infoRow(body, '换乘节点', rel.nodeChain);
+      if (rel.nodeMembers) infoRow(body, '节点成员', rel.nodeMembers);
+      if (rel.partners) infoRow(body, '换乘对端', rel.partners);
+    }
     infoRow(body, pin.kind === 'group' ? '组 ID' : '站 ID', pin.kind === 'group' ? pin.groupId : pin.key);
   }
   function exportLine(lineId, kind) {
     const line = S.linesMap.get(lineId);
     const base = line && line.name ? line.name : lineId;
     if (kind === 'geojson') {
-      const obj = V.buildLineGeoJSON(lineId, S.linesMap, S.stops);
+      const obj = V.buildLineGeoJSON(lineId, S.linesMap, S.stops, S.groupTree);   // 结构树：嵌套节点的站补节点信息
       if (!obj) return;
       downloadText(base + '.geojson', JSON.stringify(obj, null, 2), 'application/geo+json');
     } else {
-      const kml = V.buildLineKML(lineId, S.linesMap, S.stops);
+      const kml = V.buildLineKML(lineId, S.linesMap, S.stops, { tree: S.groupTree });
       if (!kml) return;
       downloadText(base + '.kml', kml, 'application/vnd.google-earth.kml+xml');
     }
@@ -1430,7 +1455,12 @@
     // 一次常驻，不随聚焦变（arrowSet 供 renderLinesFC 基础层剔除，层在 rebuildConnLayers）
     S.arrowPlan = V.arrowFadePlan(S.linesMap, S.stops);
     S.arrowSet = new Set(S.arrowPlan.map((it) => it.lineId));
-    S.view = V.buildStopView(S.stops);
+    // 换乘组结构树（2026-11-23 嵌套换乘组）：net/index.json 的 stationGroups（@3）× 站的直属组
+    //（groupId）；旧快照（@1/@2 无结构表）＝各组顶层、无子组＝旧行为。视图与站点面板共用这一棵
+    S.groupTree = V.buildGroupTree(net.stationGroups, S.stops);
+    // 视图按「节点＝最外层组」出图；linesMap/lineGroups 供药丸逻辑线数判定（联络线不计、同一线组
+    // 算一条——不传则退回按 distinct lineId 计的旧行为）
+    S.view = V.buildStopView(S.stops, { linesMap: S.linesMap, lineGroups: S.lineGroups, tree: S.groupTree });
     S.dispLabels = S.view.labels;   // WGS84 直通（仅进 map.project 定位）
     S.pinByKey = new Map(S.view.pins.map((p) => [p.key, p]));
     for (const pill of S.view.pills || []) if (pill.pin) S.pinByKey.set(pill.pin.key, pill.pin);

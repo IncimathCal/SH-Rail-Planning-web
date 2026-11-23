@@ -295,6 +295,25 @@
     return null;
   }
 
+  /** 联络线不带颜色属性（2026-11-22 用户裁定「联络线取消颜色属性，颜色由所联络的两条线决定」；
+   *  validate 既有规则：connector 带 color 即错）。就地清除 role==='connector' 线上遗留的 color——
+   *  **按键删除**，与现有联络线文件的写法一致（无 color 键）；返回是否清了。非联络线一律不动。
+   *  调用点：角色改为联络线的那一刻（属性面板）、线路载入五路径（经 migrateLineNote）。 */
+  function stripConnectorColor(line) {
+    if (!line || line.role !== 'connector' || !Object.prototype.hasOwnProperty.call(line, 'color')) return false;
+    delete line.color;
+    return true;
+  }
+  /** 落盘用的线路对象（node 单测覆盖）：联络线不带 color 落盘——兜底，正常路径下内存里早已清除
+   *  （stripConnectorColor），此处保证任何来路的联络线都不把它写进文件。需要剔除时返回剔除后的
+   *  浅拷贝（不改写内存），否则原样返回同一对象。 */
+  function lineForSave(line) {
+    if (!line || line.role !== 'connector' || !Object.prototype.hasOwnProperty.call(line, 'color')) return line;
+    const out = Object.assign({}, line);
+    delete out.color;
+    return out;
+  }
+
   /** 保存前客户端自检（与 validate.py 规则对应的子集） */
   function lineIssues(l) {
     const issues = [];
@@ -576,7 +595,9 @@
     return out;
   }
   /** 线路「画法输入」比对键：线级字段 path/loop/color/role/status/是否预控通道＋逐站 [id,t,name,kind,
-   *  所属组键]＋各站间段绘制状态。grpKeyOf：sid -> 所属换乘组的 `${id}|${type}`（无组可缺）。
+   *  所属组键]＋各站间段绘制状态。grpKeyOf：sid -> 所属换乘组的 `${id}|${type}|${h|v}`（无组可缺；
+   *   id/type＝**直属**组，决定出闸黑边与提示文本；h/v＝站圈是否被绘制单元吸收隐去——嵌套组下
+   *   上级组类型、子组关系的变化只经这一位影响本线画法，2026-11-23）。
    *  **给线路绘制新增数据依赖时必须同步补进这里**，否则改了数据画布不更新（联络线的目标集与
    *  几何代际依赖别的线，另由界面层比对）。 */
   function lineDrawKey(line, grpKeyOf) {
@@ -645,14 +666,224 @@
    *  含出省箭头 → 一律拒绝（ok:false, reason:'arrow'——箭头不是站点，不可编组，全箭头也不行）；
    *  含线路所 → 组类型强制 junction（接轨站）且成员必须全为线路所；
    *  线路所与普通车站混选 → 拒绝（ok:false, reason:'mixed'）；
-   *  全普通车站 → 默认 same-station（既有行为不变）。 */
-  function planStationGroup(kinds) {
+   *  全普通车站 → 默认 same-station（既有行为不变）。
+   *  nGroups（嵌套组 2026-11-23；可缺省）＝待编组里「既有顶层组」的个数：**子组不参与类型判定**
+   *  （外层组的类型＝直属站与各子组整体之间的关系，出省箭头/线路所规则只看直属站 kinds），仅用于
+   *  「成员单位总数（直属站＋子组）≥2」把门——传入时不足 2 拒绝（ok:false, reason:'few'）；
+   *  不传则沿用「≥2 由调用方把门」的既有约定。 */
+  function planStationGroup(kinds, nGroups) {
     const arr = kinds || [];
     if (arr.some((k) => k === 'arrow')) return { ok: false, reason: 'arrow' };
+    if (nGroups !== undefined && arr.length + Math.max(0, nGroups | 0) < 2) return { ok: false, reason: 'few' };
     const nBlock = arr.filter((k) => k === 'block').length;
     if (nBlock > 0 && nBlock < arr.length) return { ok: false, reason: 'mixed' };
     if (nBlock > 0) return { ok: true, type: 'junction', allBlock: true };
     return { ok: true, type: 'same-station', allBlock: false };
+  }
+
+  // ---------- 嵌套换乘组（2026-11-23 用户裁定「换乘组可以再把另一个组当成员」；纯逻辑，node 单测覆盖） ----------
+  // 数据：stationGroups 每项可选 groups:[子组 id]（缺省视同 []；为空不写出）；stops 恒为该组的**直属**设站。
+  // 约束：一个组至多一个父组、不成环、不自引、子组 id 须存在；成员单位总数（直属站＋子组）≥2。
+  // 以下各函数对破损数据一律防御（不死循环、其余部分照常渲染），不擅自改写数据。
+  /** 组树索引：返回 { byId, parentOf, childrenOf, issues }——parentOf＝子组 id → 父组 id；
+   *  childrenOf＝组 id → 有效子组 id（保持 groups 书写序）。未知子组 id／自引／非字符串项忽略，
+   *  重复引用去重；一个组至多一个父组——已被认领的子组再被引用时**后到的引用忽略**（先到者胜）。
+   *  以上各项记入 issues（中文串，供界面提示；不影响返回的索引）。 */
+  function groupTree(stationGroups) {
+    const list = Array.isArray(stationGroups) ? stationGroups : (stationGroups ? [stationGroups] : []);
+    const byId = new Map();
+    for (const g of list) if (g && typeof g.id === 'string') byId.set(g.id, g);
+    const parentOf = new Map(), childrenOf = new Map(), issues = [];
+    for (const g of list) {
+      if (!g || typeof g.id !== 'string') continue;
+      const kids = [];
+      const raw = Array.isArray(g.groups) ? g.groups : [];
+      for (const cid of raw) {
+        if (typeof cid !== 'string' || !cid) { issues.push(`${g.id}：子组 id 非法（已忽略）`); continue; }
+        if (cid === g.id) { issues.push(`${g.id}：引用自身为子组（已忽略）`); continue; }
+        if (!byId.has(cid)) { issues.push(`${g.id}：子组 ${cid} 不存在（已忽略）`); continue; }
+        if (kids.includes(cid)) continue;                      // 重复引用：去重，不算问题
+        if (parentOf.has(cid)) {                               // 多父：先到者胜
+          issues.push(`${cid}：同时被 ${parentOf.get(cid)} 与 ${g.id} 引用为子组（按 ${parentOf.get(cid)} 计）`);
+          continue;
+        }
+        parentOf.set(cid, g.id);
+        kids.push(cid);
+      }
+      childrenOf.set(g.id, kids);
+    }
+    return { byId, parentOf, childrenOf, issues };
+  }
+  /** 是否最外层组（没有上级的组）。parentOf 是「每组至多一个父组」的函数关系：无上级即最外层；
+   *  成环（A→B→A）时环上每个组都有上级，自然都不算最外层，无需另做环检测。gid 不存在视同最外层 */
+  function groupIsRoot(tree, gid) {
+    return !tree.parentOf.has(gid);
+  }
+  /** 组的全部叶站（直属站＋所有子孙组的直属站）：深度优先，直属站在前、子组按 groups 书写序。
+   *  走过的组不再进入（成环防御）；设站 id 原样带出，存在性由调用方按线路解析 */
+  function groupLeafStops(tree, gid) {
+    const out = [], seen = new Set();
+    const walk = (id) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      const g = tree.byId.get(id);
+      if (!g) return;
+      const stops = Array.isArray(g.stops) ? g.stops : [];
+      for (const sid of stops) out.push(sid);
+      for (const cid of tree.childrenOf.get(id) || []) walk(cid);
+    };
+    walk(gid);
+    return out;
+  }
+  /** 绘制单元规划（用户 2026-11-23 确认的渲染规则；编辑器画布与查看器同此，逐条对应）。
+   *  节点＝最外层组，画法由最外层组的 type 决定；「绘制单元」＝按自身规则画出一个（或一组）图形的组：
+   *  · same-station 单元：全部叶站合成一个换乘符号，**吸收**子组（内层组不单独出图形）；叶站站圈隐去；
+   *  · junction 单元：既有画法（合并普通尺寸圈），成员递归取全部叶站，同样吸收子组；叶站站圈隐去；
+   *  · out-of-station 单元：直属站各自一个黑边圈（不并点，由线路渲染按直属组类型描边），**不吸收**——
+   *    每个子组自成绘制单元，按自身 type 递归套用本规则；
+   *  · type 未定（null／非法值）沿用现行处理（不出合并图形），结构上同 out-of-station：子组各自成单元。
+   *  被吸收的组、以及成环等破损数据下没有最外层祖先的组都不是绘制单元。
+   *  返回 { tree, units:[绘制单元组 id，保持 stationGroups 书写序], unitSet:Set(同上),
+   *        hidden:Set(被吸收的叶站 sid), leafOf:Map(单元组 id → 叶站 sid 数组) } */
+  function groupDrawPlan(stationGroups) {
+    const list = Array.isArray(stationGroups) ? stationGroups : [];
+    const tree = groupTree(stationGroups);
+    const absorbs = (g) => g.type === 'same-station' || g.type === 'junction';
+    const isUnit = new Set(), queue = [];
+    for (const g of list) {
+      if (g && typeof g.id === 'string' && groupIsRoot(tree, g.id)) { isUnit.add(g.id); queue.push(g.id); }
+    }
+    while (queue.length) {                        // 自顶向下：吸收型单元的子组不成单元，其余单元的子组成单元
+      const g = tree.byId.get(queue.shift());
+      if (absorbs(g)) continue;
+      for (const cid of tree.childrenOf.get(g.id) || []) {
+        if (!isUnit.has(cid)) { isUnit.add(cid); queue.push(cid); }
+      }
+    }
+    const units = [], unitSet = new Set(), hidden = new Set(), leafOf = new Map();
+    for (const g of list) {
+      if (!g || !isUnit.has(g.id)) continue;
+      const leafs = groupLeafStops(tree, g.id);
+      units.push(g.id);
+      unitSet.add(g.id);
+      leafOf.set(g.id, leafs);
+      if (absorbs(g)) for (const sid of leafs) hidden.add(sid);
+    }
+    return { tree, units, unitSet, hidden, leafOf };
+  }
+  /** 药丸线数口径（用户 2026-11-23 裁定「支线算一条，联络线不算线」；适用于**一切** same-station 单元，
+   *  含不嵌套的普通同站组，取代旧「按 distinct lineId 计」）。
+   *  lines＝单元叶站所属的线对象列表；lineGroups＝groups.json 的 lineGroups（可缺省）。
+   *  role==='connector' 的线不计；同一线组内的线算一条——线组归属取双向并集（线文件 groupId 指向 ＋
+   *  线组 members 声明，与 flatten/查看器的归并同口径；两处皆无的线各自成一条）。返回去重后的逻辑线数。
+   *  allLines＝全部线对象（界面层必传）：线组须有 role==='main' 的成员才把成员并成一条——没有主线的线组
+   *  （如只为捆绑展示而建的线族）成员各算一条，与查看器 buildLineGroups「无 main 不归并」同口径；
+   *  缺省时不作此判（仅单测直接调用）。 */
+  function logicalLineCount(lines, lineGroups, allLines) {
+    const declared = new Map();                   // lid → 线组 id（members 声明；先声明者胜）
+    const known = new Set();                      // 线组表里实际存在的线组 id
+    for (const lg of Array.isArray(lineGroups) ? lineGroups : []) {
+      if (!lg || typeof lg.id !== 'string') continue;
+      known.add(lg.id);
+      for (const m of Array.isArray(lg.members) ? lg.members : []) {
+        if (typeof m === 'string' && !declared.has(m)) declared.set(m, lg.id);
+      }
+    }
+    const withMain = new Set();                   // 有主线成员的线组（传入全表时才判；无 main 的线组不归并）
+    if (Array.isArray(allLines)) {
+      for (const l of allLines) {
+        if (!l || l.role !== 'main') continue;
+        if (typeof l.groupId === 'string' && known.has(l.groupId)) withMain.add(l.groupId);
+        const d = declared.get(l.id);
+        if (d) withMain.add(d);
+      }
+    }
+    const keys = new Set();
+    for (const l of Array.isArray(lines) ? lines : []) {
+      if (!l || l.role === 'connector') continue;
+      const own = typeof l.groupId === 'string' && l.groupId ? l.groupId : null;
+      let gid = (own && known.has(own)) ? own : (declared.get(l.id) || null);   // 孤儿 groupId 不归并（同 flatten/查看器）
+      if (Array.isArray(allLines) && gid && !withMain.has(gid)) gid = null;
+      keys.add(gid ? 'g:' + gid : 'l:' + l.id);
+    }
+    return keys.size;
+  }
+  /** 设站的「所属组」判脏键（lineDrawKey 的逐站组键；纯逻辑，node 单测覆盖）：
+   *  `${直属组 id}|${直属组 type}|${h|v}`——直属组决定出闸黑边与提示文本；h＝站圈被绘制单元吸收隐去。
+   *  嵌套组下上级组类型、子组关系、子组成员的变化，对本线画法的影响全部落在 h/v 这一位上。 */
+  function stopGroupKey(group, hidden) {
+    return group.id + '|' + (group.type || '') + '|' + (hidden ? 'h' : 'v');
+  }
+  /** 绘制单元的判脏键（纯逻辑，node 单测覆盖；界面层 syncGroupShapes 据此决定是否重建该单元的符号）。
+   *  members＝单元全部叶站的成员记录 [{line, st}]，kids＝子组 id 列表。输入任一变化键即变：
+   *  自身类型、药丸/大圈档位（线数口径的结论）、几何代际、联络线目标摘要、线组表摘要、子组名单、
+   *  逐叶站的 [线 id, t, 站名, kind, 角色, 色, 线组归属]。
+   *  **给单元绘制新增数据依赖时必须同步补进这里**，否则改了数据画布不更新。 */
+  function groupUnitSig(type, isPill, geomGen, connDigest, lgDigest, kids, members) {
+    return type + '|' + isPill + '|' + geomGen + '|' + connDigest + '|' + lgDigest + '|' + (kids || []).join('.')
+      + (members || []).map((m) => `|${m.line.id}:${m.st.t}:${m.st.name}:${m.st.kind || ''}:${m.line.role}:${m.line.color}:${m.line.groupId || ''}`).join('');
+  }
+  /** 组的成员单位总数（直属站＋子组；约束 ≥2，拆组/删站后的自动拆除依据） */
+  function groupUnitCount(g) {
+    return (Array.isArray(g && g.stops) ? g.stops.length : 0) + (Array.isArray(g && g.groups) ? g.groups.length : 0);
+  }
+  /** 沿上级链级联拆除：seeds＝刚被删的组 id。逐个找到仍把它列为子组的上级，摘除引用（groups 删空即删字段）；
+   *  摘除后成员单位总数不足 2 的上级一并拆除（其直属站恢复未编组、其余子组升为顶层），并以它为新 seed
+   *  继续向上。就地改写 list；返回连带拆除的组 id（不含 seeds，按拆除先后）。 */
+  function cascadeStationGroups(list, seeds) {
+    const out = [], queue = [...(seeds || [])];
+    while (queue.length) {
+      const gone = queue.shift();
+      for (const p of list) {
+        if (!p || !Array.isArray(p.groups) || !p.groups.includes(gone)) continue;
+        p.groups = p.groups.filter((x) => x !== gone);
+        if (!p.groups.length) delete p.groups;   // 为空不写出
+        if (groupUnitCount(p) < 2) {
+          list.splice(list.indexOf(p), 1);
+          out.push(p.id);
+          queue.push(p.id);
+        }
+      }
+    }
+    return out;
+  }
+  /** 组表修剪（删站后调用；取代旧「stops 不足 2 即删」的过滤）：成员单位总数不足 2 的组全部拆除，
+   *  再自被拆的组沿上级链级联（cascadeStationGroups）。就地改写 list，返回被拆除的组 id（先直拆、后级联）。 */
+  function pruneStationGroups(list) {
+    const removed = [];
+    for (let i = 0; i < (list || []).length; i++) {
+      if (groupUnitCount(list[i]) < 2) { removed.push(list[i].id); list.splice(i, 1); i--; }
+    }
+    return removed.concat(cascadeStationGroups(list, removed));
+  }
+  /** 载入规范化（`groups` 字段全程保留不丢的入口；node 单测覆盖）：groups 须为字符串数组——非数组视同 []，
+   *  非字符串/空串项丢弃、重复去重；**为空不保留该字段**（旧数据无此字段往返不变，保存时不写出）。
+   *  只动 groups 字段（引用是否存在、是否成环等交由校验与组树工具防御，不在此改写）；返回是否有改动。 */
+  function normalizeStationGroups(stationGroups) {
+    let changed = false;
+    for (const g of Array.isArray(stationGroups) ? stationGroups : []) {
+      if (!g || typeof g !== 'object') continue;
+      const raw = g.groups;
+      if (raw === undefined) continue;
+      const out = [];
+      for (const cid of Array.isArray(raw) ? raw : []) {
+        if (typeof cid === 'string' && cid && !out.includes(cid)) out.push(cid);
+      }
+      if (out.length) {
+        if (!Array.isArray(raw) || out.length !== raw.length) { g.groups = out; changed = true; }
+      } else { delete g.groups; changed = true; }
+    }
+    return changed;
+  }
+  /** 待编组里的既有组能否编入上层（纯逻辑，node 单测覆盖）：须是存在的**顶层组**。
+   *  返回问题列表 [{ id, reason:'missing'|'parent', parent }]（parent＝其上级组 id），空＝全部可用。 */
+  function pendingGroupIssues(tree, groupIds) {
+    const out = [];
+    for (const gid of groupIds || []) {
+      if (!tree.byId.has(gid)) out.push({ id: gid, reason: 'missing', parent: null });
+      else if (tree.parentOf.has(gid)) out.push({ id: gid, reason: 'parent', parent: tree.parentOf.get(gid) });
+    }
+    return out;
   }
 
   /** 多线换乘药丸串法（同站组 ≥3 线画药丸用；确定性，与查看器侧逐字节同规格——两边必须一致）。
@@ -826,9 +1057,12 @@
   const SHLogic = { SEG_ORDER, SEG_LABEL, ROLE_LABEL, EPS, segInsert, segRemove,
     pruneSections, migrateLineToV2, planSectionSplit, applySectionMerge, sectionSpanOf, sectionIssuesOf,
     canPlaceArrow, planGroupPillChain, nextStopKind,
-    nextStopSeq, fixStatusField, lineIssues, planBulkFill,
+    nextStopSeq, fixStatusField, lineIssues, planBulkFill, stripConnectorColor, lineForSave,
     planStopImport, applyStopImport, suggestForStop, transferMarkForStop, conflictsForStop, backfillTransferNames,
     layerGroupsOf, junctionStroke, planStationGroup, connValidTargets,
+    groupTree, groupIsRoot, groupLeafStops, groupDrawPlan, logicalLineCount, groupUnitCount,
+    stopGroupKey, groupUnitSig,
+    cascadeStationGroups, pruneStationGroups, normalizeStationGroups, pendingGroupIssues,
     normalizeLineOrder, archivedIdList, LAYER_RESERVED, searchTermsOf, matchesTerms, groupSearchText, pageSlice,
     isReservedLine, segStatusesOf, lineDrawKey, sameLineDraw,
     calibForward, calibInverse, tpsForward, tpsInverse, poly3Forward, poly3Inverse,
@@ -882,6 +1116,8 @@
     selStop: null,           // sid
     selImport: null,         // {source, sourceLayer}
     pending: [],             // 编组模式待选 stop id 列表
+    pendingGroups: [],       // 编组模式待编入上层的**既有顶层组** id 列表（嵌套组 2026-11-23；与 pending 并存、
+                             // 瞬态——同 pending 不进快照/撤销/自动暂存，切模式/Esc/清空一并清）
     undo: [],                // 快照栈 {lines, groups, imports}
   };
   // 编号水位（含 localStorage 持久，防删除后复用）
@@ -947,13 +1183,13 @@
     // 快照可能是升级前的 @1 数据：还原后重跑迁移（幂等），防旧格式流入渲染/保存
     for (const l of d.lines) migrateLineToV2(l);
     S.lines = new Map(d.lines.map((l) => [l.id, l]));
-    S.groups = d.groups;
+    S.groups = takeGroups(d.groups);
     // imports 不随快照回滚（见 snapshot 注释）；旧版快照含 imports 键亦忽略
     S.lineOrder = Array.isArray(d.lineOrder) ? d.lineOrder : null;   // 旧快照无此键＝null（回退 id 升序）
     S.arcs = reuseArcs(S.arcs, S.lines);   // path 没变的线沿用旧弧；变了的丢掉重建
     if (S.selImport && !S.imports.some((im) => im.source === S.selImport.source)) S.selImport = null;
     if (!S.lines.has(S.activeLine)) S.activeLine = null;
-    S.selStop = null; S.pending = [];
+    S.selStop = null; S.pending = []; S.pendingGroups = [];
     renderAll(); setStatus('已撤销。');
   }
 
@@ -1000,7 +1236,7 @@
         return l;
       });
       S.lines = new Map(snap.lines.map((l) => [l.id, l]));
-      S.groups = snap.groups;
+      S.groups = takeGroups(snap.groups);
       // 暂存里的显示顺序较新则采用；旧暂存（功能上线前）无此键则保留 boot 时读到的 manifest 顺序
       if (Array.isArray(snap.lineOrder)) S.lineOrder = snap.lineOrder;
       // 导入记录：同名来源以刚从 import/ 磁盘载入的为准（可能比暂存新），其余保留暂存里的
@@ -1009,7 +1245,7 @@
       S.activeLine = snap.activeLine && S.lines.has(snap.activeLine) ? snap.activeLine : null;
       // 暂存不带选中/待编组态：清掉，免左栏高亮与就近提示残留；弧缓存随线路集整体替换
       // （path 没变的沿用旧弧，变了的丢弃重建——否则同 id 异 path 的线会按旧几何落站）
-      S.selStop = null; S.pending = [];
+      S.selStop = null; S.pending = []; S.pendingGroups = [];
       S.arcs = reuseArcs(S.arcs, S.lines);
       $('banner').classList.remove('show');
       syncCountersWithLoaded(); renderAll();
@@ -1037,14 +1273,28 @@
 
   /** 线路对象载入统一入口的迁移环节：@1（segments 为状态字符串数组）→@2 分段实体，
    *  就地转换；返回 null（已是 @2）或中文提示（「l0001：旧版分段已转换为分段实体（N 段），保存后生效」）。
+   *  兼任联络线载入规范化（stripConnectorColor：清除联络线遗留的 color，另有提示）。
    *  覆盖路径：拖入/选择 .json（loadDataObject）、工作区直读/目录读（applyWorkspace）、
    *  http 自动拉取 data/（bootFetchData）、本地暂存恢复（offerRestore）、撤销还原（undo）。 */
   function migrateLineNote(obj) {
     const n = migrateLineToV2(obj);
-    return n ? `${obj.id}：旧版分段已转换为分段实体（${n} 段），保存后生效` : null;
+    // 联络线载入规范化（2026-11-23）：清除遗留的 color——validate 既有规则「connector 不得带 color」，
+    // 而界面对联络线不提供颜色栏，旧数据无从改起；载入即清、下次保存自动转正
+    const stripped = stripConnectorColor(obj);
+    if (n) return `${obj.id}：旧版分段已转换为分段实体（${n} 段），保存后生效`;
+    return stripped ? `${obj.id}：联络线不带颜色属性（颜色由所联络的两条线决定），已清除遗留的 color，保存后生效` : null;
   }
   const isLineObj = (o) => o && /^l\d{4}$/.test(o.id || '')
     && (o.schema === 'fmt/line@1' || o.schema === 'fmt/line@2');
+  /** groups 对象载入统一入口的规范化环节（嵌套组 groups 字段，见 normalizeStationGroups）：
+   *  覆盖路径：拖入 groups.json（loadDataObject）、工作区直读/目录读（applyWorkspace）、http 自动拉取
+   *  （bootFetchData）、本地暂存恢复（offerRestore）、撤销还原（undo）。返回同一对象（缺省原样返回）。 */
+  function takeGroups(obj) {
+    if (obj) normalizeStationGroups(obj.stationGroups);
+    return obj;
+  }
+  /** 当前换乘节点组表（S.groups 未初始化时为空表） */
+  const stationGroupsOf = () => (S.groups && S.groups.stationGroups) || [];
 
   /** 站圆预置（fmt/stations-import@2，@1 同构兼容）载入：items 并入 S.stationPresets，同源替换。只读参考数据。
    *  去重键用 obj.source（内容级标识）——boot 自动拉取与手动载入同一文件不会重复堆积。 */
@@ -1114,7 +1364,7 @@
       setStatus(`已载入线路 ${obj.id}${prev ? '（覆盖旧版，Ctrl+Z 可撤销）' : ''}。` + (note ? ' ' + note + '。' : ''));
       return;
     }
-    if (obj && obj.schema === 'fmt/groups@1') { snapshot(); S.groups = obj; return; }
+    if (obj && obj.schema === 'fmt/groups@1') { snapshot(); S.groups = takeGroups(obj); return; }
     if (obj && obj.schema === 'fmt/manifest@1') {
       S.manifest = obj;
       // 单独载入 manifest：带有显示顺序则采用（缺失不清洗当前顺序——线路文件可能尚未到齐）
@@ -1143,7 +1393,7 @@
       try { const r = await fetch(u, { cache: 'no-cache' }); if (!r.ok) return null; return await r.json(); } catch (e) { return null; }
     };
     const groups = await get('data/groups.json');
-    if (groups) S.groups = groups;
+    if (groups) S.groups = takeGroups(groups);
     const manifest = await get('data/manifest.json');
     if (manifest) S.manifest = manifest;
     // 显示顺序原始值直接存（生效顺序用时经 normalizeLineOrder 现算，见 S.lineOrder 注释）
@@ -1460,7 +1710,9 @@
   //    就原样复用，变了只重建这一条线（≈1 ms）；
   //  · 当前线／选中站／待编组是瞬态，不进重建——只原地改样式、挪选中环、切 class；
   //  · 缩放只原地改屏幕恒定尺寸（站圈半径、描边宽、箭头三角…），不重建；
-  //  · 换乘药丸／合并圈按组判脏，就近提示按输入判脏；未建线导入组沿用既有持久组逻辑。
+  //  · 换乘药丸／合并圈按组判脏（嵌套组 2026-11-23：按**绘制单元**——最外层组及出闸/未定单元的子组，
+  //    叶站＝直属站＋所有子孙组的直属站，见 groupDrawPlan／syncGroupShapes），就近提示按输入判脏；
+  //    未建线导入组沿用既有持久组逻辑。
   // 层叠序与全量重建时一致：底图 → 未建线导入 path → 各线（S.lines 迭代序）→ 药丸 → 合并圈 → 就近提示。
   // 约定：凡改了某线「画法输入」的数据，下一次 renderWorld 必须能由 lineStale 判出（逐字段比对，
   // 不靠调用方标脏；比对键＝纯逻辑层 lineDrawKey／sameLineDraw，node 单测覆盖）；日后给线路绘制
@@ -1545,23 +1797,48 @@
       return tg ? connNearestTarget(tg, pt).color : CONNECTOR_FALLBACK;
     };
     const scale = viewScale();
-    // 换乘组索引：同站/接轨组成员隐藏小圈（画合并圈）；出闸组成员圈描黑边；
-    // 同站组 ≥3 线改画药丸——成员圈同样隐去（药丸即换乘标识，2026-11-22 用户裁定）；
-    // 恰好 2 线维持大圈
-    const stationGroups = (S.groups && S.groups.stationGroups) || [];
-    const grpOf = new Map();               // sid -> 组对象
-    const grpKeyOf = new Map();            // sid -> `${id}|${type}`（线路判脏用）
+    // 换乘组索引：同站/接轨**单元**成员隐藏小圈（画合并圈）；出闸组成员圈描黑边；
+    // 同站单元逻辑线数 ≥3 改画药丸——叶站圈同样隐去（药丸即换乘标识，2026-11-22 用户裁定）；
+    // 不足 3 线维持大圈。嵌套组（2026-11-23）：绘制单元与被吸收的叶站由 groupDrawPlan 给出
+    // （节点＝最外层组；出闸/未定单元的子组各自成单元），叶站＝直属站＋所有子孙组的直属站；
+    // 出闸黑边与 <title> 提示仍按**直属组**判定（grpOf）
+    const stationGroups = stationGroupsOf();
+    const lineGroups = (S.groups && S.groups.lineGroups) || [];
+    const gplan = groupDrawPlan(stationGroups);
+    const grpOf = new Map();               // sid -> 直属组对象
+    const grpKeyOf = new Map();            // sid -> `${直属组 id}|${直属组 type}|${h|v}`（线路判脏用；
+                                           //   h＝站圈被单元吸收隐去——上级组类型/子组关系变化只经此位影响本线画法）
     const lineOfStop = new Map();          // sid -> lid（组内线数统计、合并圈成员查找用）
     for (const [lid0, line0] of S.lines) for (const st0 of line0.stops) lineOfStop.set(st0.id, lid0);
-    const pillGroups = new Set();          // same-station 且 ≥3 线的组 id
-    const mergedHidden = new Set();        // 同站/接轨组（含药丸组）成员 sid
+    const pillGroups = new Set();          // 画药丸的 same-station 单元 id（逻辑线数 ≥3，口径见 logicalLineCount）
+    const mergedHidden = gplan.hidden;     // 同站/接轨单元（含药丸单元）吸收的全部叶站 sid
     for (const g of stationGroups) {
-      for (const sid of g.stops) { grpOf.set(sid, g); grpKeyOf.set(sid, g.id + '|' + (g.type || '')); }
-      if (g.type === 'same-station') {
-        const nLines = new Set(g.stops.map((sid) => lineOfStop.get(sid)).filter(Boolean)).size;
-        if (nLines >= 3) pillGroups.add(g.id);   // ≥3 线画药丸（成员圈一并隐去，见 buildGroupShape）
+      for (const sid of g.stops) {
+        grpOf.set(sid, g);
+        grpKeyOf.set(sid, stopGroupKey(g, mergedHidden.has(sid)));
       }
-      if (g.type === 'same-station' || g.type === 'junction') for (const sid of g.stops) mergedHidden.add(sid);
+    }
+    for (const gid of gplan.units) {
+      const g = gplan.tree.byId.get(gid);
+      if (g.type !== 'same-station') continue;
+      const lines = gplan.leafOf.get(gid).map((sid) => S.lines.get(lineOfStop.get(sid))).filter(Boolean);
+      if (logicalLineCount(lines, lineGroups, [...S.lines.values()]) >= 3) pillGroups.add(gid);   // ≥3 线画药丸（叶站圈一并隐去，见 buildGroupShape）
+    }
+    // 待编组集（瞬态）：待编组站＋待编入上层的整组及其全部子孙组的直属站——站圈/单元符号的待编组提示样式
+    // 与就近提示的跳过判定同用（整组待编入时，它自己的站不该再被标成「就近候选」）
+    const pend = new Set(S.pending);
+    const pendGrpVis = new Set();          // 待编入上层的组及其全部子孙组 id
+    const pendGrpSids = [];                // 这些组的全部直属站（就近提示的跳过集随组树变化的判脏依据）
+    for (const gid of S.pendingGroups) {
+      const stack = [gid];
+      while (stack.length) {
+        const cur = stack.pop();
+        if (pendGrpVis.has(cur)) continue;
+        pendGrpVis.add(cur);
+        const g = gplan.tree.byId.get(cur);
+        if (g) for (const sid of g.stops) { pend.add(sid); pendGrpSids.push(sid); }
+        for (const cid of gplan.tree.childrenOf.get(cur) || []) stack.push(cid);
+      }
     }
     // 几何代际：任一线的弧对象换了（「更新path」／撤销／载入重建 S.arcs）即 +1——联络线渐变
     // 端色与换乘合并圈的位置/取色依赖**其他线**的几何，靠它判脏（本线几何变化由 path 比对覆盖）
@@ -1570,8 +1847,13 @@
     lastArcs = arcsNow;
     let connDigest = '';                   // 联络线目标集及其取色的摘要（合并圈成员色判脏用）
     for (const [cid, tg] of connTgtsOf) connDigest += cid + tg.map((t) => t.lid + t.color).join('');
+    let lgDigest = '';                     // 线组表摘要（药丸线数口径依赖线组归属：members 声明变了药丸/大圈须互换）
+    for (const lg of lineGroups) lgDigest += (lg && lg.id) + ':' + ((lg && lg.members) || []).join('.') + ';';
+    // 各线组的主线归属也入摘要：线组有无主线决定它算不算一条逻辑线（见 logicalLineCount），改角色后药丸/大圈须互换
+    for (const l of S.lines.values()) if (l && l.role === 'main') lgDigest += 'm' + (l.groupId || '') + '.' + l.id + ';';
     return { connTgtsOf, connColorAt, scale, stationGroups, grpOf, grpKeyOf, lineOfStop,
-      pillGroups, mergedHidden, geomGen, connDigest, pend: new Set(S.pending) };
+      pillGroups, mergedHidden, geomGen, connDigest, pend, pendGrpVis, pendGrpSids: pendGrpSids.join(','),
+      gplan, unitSet: gplan.unitSet, leafOf: gplan.leafOf, tree: gplan.tree, lineGroups, lgDigest };
   }
   /** 线路的「画法输入」是否变了（变了才重建该线；瞬态——当前线/选中站/待编组——不在此列）。
    *  本线数据走 lineDrawKey 逐字段比对（纯逻辑层，单测覆盖）；联络线另比目标集取色与几何代际
@@ -1753,8 +2035,14 @@
     }
     return changed;
   }
-  /** 重建一个换乘组的图形（≥3 线同站组＝药丸；其余同站/接轨组＝合并圈） */
+  /** 重建一个换乘**绘制单元**的图形（逻辑线数 ≥3 的同站单元＝药丸；其余同站/接轨单元＝合并圈）。
+   *  g＝作为绘制单元的那个组（符号的 data-grp 归它；嵌套组 2026-11-23）；members＝该单元全部叶站的
+   *  成员记录（直属站＋所有子孙组的直属站）——并点位置与药丸链都按叶站算 */
   function buildGroupShape(g, members, isPill, ctx, sig) {
+    // 提示文本列全部叶站；嵌套时附子组（内层组不单独出图形，凭此知道它被吸收进了本单元）
+    const kids = ctx.tree.childrenOf.get(g.id) || [];
+    const leafText = (ctx.leafOf.get(g.id) || []).map((sid) => stopLabel(sid)).join('；');
+    const kidNote = kids.length ? `（含子组 ${kids.join('、')}）` : '';
     if (isPill) {
       // 药丸：双描边法——黑垫层（厚＋2×边宽）＋白面层，圆帽圆角＝胶囊；命中/提示挂在面层。
       // 胶囊沿成员站圈位置的贪心最近邻链（planGroupPillChain，n 点连线 n-1 次）
@@ -1767,8 +2055,8 @@
         'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, pillG);
       pill.dataset.grp = g.id;
       const tp = el('title', {}, pill);
-      const nLinesP = new Set(members.map((m) => m.line.id)).size;
-      tp.textContent = `${g.id} 同站换乘（${nLinesP} 线药丸）：${g.stops.map((sid) => stopLabel(sid)).join('；')}`;
+      const nLinesP = logicalLineCount(members.map((m) => m.line), ctx.lineGroups, [...S.lines.values()]);   // 线数口径：支线算一条、联络线不算
+      tp.textContent = `${g.id} 同站换乘（${nLinesP} 线药丸）：${leafText}${kidNote}`;
       return { isPill: true, sig, scale: NaN, pend: null, els: [under, pill] };
     }
     // 合并圈：位置取距所有成员线路最近点（投影质心迭代收敛）。
@@ -1803,7 +2091,7 @@
         : '#000' }, gMerge);
     c.dataset.grp = g.id;
     const t = el('title', {}, c);
-    t.textContent = `${g.id} ${isJunc ? '接轨站' : '同站换乘'}：${g.stops.map((sid) => stopLabel(sid)).join('；')}`
+    t.textContent = `${g.id} ${isJunc ? '接轨站' : '同站换乘'}：${leafText}${kidNote}`
       + (anyBlk ? '（含线路所：仅编辑器可见，正式网页隐藏）' : '');
     return { isPill: false, sig, scale: NaN, pend: null, els: [c], junc: isJunc, blk: anyBlk };
   }
@@ -1821,14 +2109,16 @@
     }
     rec.scale = scale;
   }
-  /** 换乘药丸／合并圈对齐到当前数据：按组判脏重建，待编组标黄原地切 */
+  /** 换乘药丸／合并圈对齐到当前数据：按**绘制单元**判脏重建，待编组标黄原地切 */
   function syncGroupShapes(ctx) {
     const seen = new Set();
     let prevPill = null, prevMerge = null;
     for (const g of ctx.stationGroups) {
+      // 非绘制单元（被上级同站/接轨单元吸收，或破损数据下不成单元；嵌套组 2026-11-23）不单独出图形
+      if (!ctx.unitSet.has(g.id)) { dropGroupDom(g.id); continue; }
       if (g.type !== 'same-station' && g.type !== 'junction') { dropGroupDom(g.id); continue; }
-      const members = [];
-      for (const sid of g.stops) {
+      const members = [];                  // 全部叶站（直属站＋所有子孙组的直属站）按序解析
+      for (const sid of ctx.leafOf.get(g.id) || []) {
         const lid2 = ctx.lineOfStop.get(sid);
         const line2 = lid2 !== undefined ? S.lines.get(lid2) : null;
         const st = line2 && line2.stops.find((x) => x.id === sid);
@@ -1838,8 +2128,11 @@
       }
       if (!members.length) { dropGroupDom(g.id); continue; }
       const isPill = ctx.pillGroups.has(g.id);
-      const sig = g.type + '|' + ctx.geomGen + '|' + ctx.connDigest + '|'
-        + members.map((m) => `${m.line.id}:${m.st.t}:${m.st.name}:${m.st.kind || ''}:${m.line.role}:${m.line.color}`).join(',');
+      // 判脏键：类型＋药丸/大圈档位＋几何代际＋联络线目标摘要＋线组表摘要（线数口径）＋子组名单（提示文本）
+      // ＋逐叶站 [线,t,站名,kind,角色,色,线组归属]——上级组类型/子组关系/子组成员的变化都会体现为
+      // 叶站集合或档位的变化；成员自身的 color/groupId 入键（取色与线数口径依赖）
+      const sig = groupUnitSig(g.type, isPill, ctx.geomGen, ctx.connDigest, ctx.lgDigest,
+        ctx.tree.childrenOf.get(g.id), members);
       let rec = grpDom.get(g.id);
       if (!rec || rec.sig !== sig) {
         dropGroupDom(g.id);
@@ -1851,7 +2144,8 @@
       if (isPill) prevPill = rec.els[1]; else prevMerge = rec.els[0];
       seen.add(g.id);
       if (rec.scale !== ctx.scale) syncGroupScale(rec, ctx.scale);
-      const anyPend = g.stops.some((sid) => ctx.pend.has(sid));
+      // 待编组提示样式（瞬态）：直属站在待编组里，或本组（整组）待编入上层（含作为待编入组的子孙单元）
+      const anyPend = g.stops.some((sid) => ctx.pend.has(sid)) || ctx.pendGrpVis.has(g.id);
       if (rec.isPill) {
         if (rec.pend !== anyPend) { rec.els[1].style.stroke = anyPend ? 'var(--warn)' : '#fff'; rec.pend = anyPend; }
       } else {
@@ -1860,14 +2154,16 @@
     }
     for (const gid of [...grpDom.keys()]) if (!seen.has(gid)) dropGroupDom(gid);
   }
-  /** 编组就近提示（纯视觉，绝不自动成组）：输入（待编组集／比例／线路重建）变了才重画 */
+  /** 编组就近提示（纯视觉，绝不自动成组）：输入（待编组集／比例／线路重建）变了才重画。
+   *  判脏键含待编入上层的整组及其全部直属站（S.pendingGroups／ctx.pendGrpSids，嵌套组 2026-11-23）：
+   *  提示圈跳过 ctx.pend（待编组站＋整组待编入的组的全部直属站），整组增减、其子树变化都须经判脏键触发重画 */
   function syncHints(ctx, linesChanged) {
     if (!(S.mode === 'group' && S.pending.length)) {
       if (hintSig !== null) { gHint.textContent = ''; hintSig = null; }
       return;
     }
     if (linesChanged) hintGen++;
-    const sig = ctx.scale + '|' + hintGen + '|' + S.pending.join(',');
+    const sig = ctx.scale + '|' + hintGen + '|' + S.pending.join(',') + '|' + S.pendingGroups.join(',') + '|' + ctx.pendGrpSids;
     if (sig === hintSig) return;
     hintSig = sig;
     gHint.textContent = '';
@@ -2378,7 +2674,8 @@
     const re = new RegExp('(' + terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'gi');
     return String(text).split(re).map((piece, i) => (i % 2 ? `<b class="hl">${esc(piece)}</b>` : esc(piece))).join('');
   }
-  /** 当前搜索命中的组（保持 stationGroups 原序）与页切片；页码越界在此回正 */
+  /** 当前搜索命中的组（保持 stationGroups 原序）与页切片；页码越界在此回正。
+   *  另带组树索引（嵌套组：行里列子组/注明上级组用，见 renderGroupsPanel） */
   function sgVisible() {
     const sgs = (S.groups && S.groups.stationGroups) || [];
     const info = stopInfoIndex();
@@ -2386,7 +2683,8 @@
     const hit = terms.length ? sgs.filter((g) => matchesTerms(groupSearchText(g, (sid) => info.get(sid)), terms)) : sgs;
     const pg = pageSlice(hit, sgUi.page, SG_PAGE_SIZE);
     sgUi.page = pg.page;   // 拆组/换工作区后结果变短：页码回正（临时状态，无快照）
-    return { rows: pg.rows, page: pg.page, pages: pg.pages, total: sgs.length, hit: hit.length, info, terms };
+    return { rows: pg.rows, page: pg.page, pages: pg.pages, total: sgs.length, hit: hit.length, info, terms,
+      tree: groupTree(sgs) };
   }
   /** 新建组后的左栏定位（临时 UI 状态）：翻到该组所在页；被当前搜索词滤掉则清空搜索
    *  （输入框同步）——分页后新组追加在末尾，否则要翻到末页才看得到刚建的组 */
@@ -2405,11 +2703,16 @@
     if (!S.groups) {
       S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
     }
-    // 待编组
+    // 待编组（嵌套组 2026-11-23：另有「整组待编入上层」的既有顶层组，与站并存；单位总数 ≥2 才可建）
+    const nUnits = S.pending.length + S.pendingGroups.length;
+    const pgList = S.pendingGroups.length
+      ? S.pendingGroups.map((pg) => `${esc(pg)}（${GROUP_TYPE_TEXT[(stationGroupsOf().find((x) => x.id === pg) || {}).type || '']}）`).join('、')
+      : '';
     setHtml($('pendingBox'), S.mode === 'group' ? `
-      <div style="font-size:12px;margin-bottom:4px">待编组：<b>${S.pending.length}</b> 站
-        <button class="mini primary" id="btnMkGroup" ${S.pending.length >= 2 ? '' : 'disabled'}>编组</button>
-        <button class="mini" id="btnClearPend" ${S.pending.length ? '' : 'disabled'}>清空</button></div>
+      <div style="font-size:12px;margin-bottom:4px">待编组：<b>${S.pending.length}</b> 站${S.pendingGroups.length ? `＋<b>${S.pendingGroups.length}</b> 组` : ''}
+        <button class="mini primary" id="btnMkGroup" ${nUnits >= 2 ? '' : 'disabled'}>编组</button>
+        <button class="mini" id="btnClearPend" ${nUnits ? '' : 'disabled'}>清空</button></div>${pgList ? `
+      <div style="font-size:11px;color:var(--dim);margin-bottom:4px">整组待编入上层：${pgList}（新组建成后它们成为其子组）</div>` : ''}
       <div style="font-size:11px;color:var(--dim)">黄色虚线圈=就近提示，仅供参考，绝不自动合并。</div>` : '');
     // 换乘节点组（含线路所的组：线路所不得进 same-station/out-of-station，类型下拉锁死 junction）
     // ＋搜索框过滤＋每页 8 个翻页（组头计数：搜索时显示「命中 / 总数」）
@@ -2418,20 +2721,36 @@
     setHtml($('stationGroups'), sg.rows.length ? sg.rows.map((g) => {
       const hasBlk = g.stops.some((sid) => stopKindOf(sid) === 'block');
       const lock = hasBlk ? ' title="组内含线路所：只能为接轨站（junction）"' : '';
+      // 嵌套组（2026-11-23）：父组行的成员行尾列出子组（id＋类型，点击跳过去）；子组行注明上级组（同可跳）；
+      // **顶层组**行在编组模式下给「编入上层组」——整组作为一个单位加入待编组（再点一次取消），
+      // 已选中的行给待编组底色（同站列表待编组行）。非嵌套、非编组模式下行的 HTML 与原先逐字相同
+      const parent = sg.tree.parentOf.get(g.id) || null;
+      const kids = sg.tree.childrenOf.get(g.id) || [];
+      const isPendGrp = S.pendingGroups.includes(g.id);
+      const typeText = (gid) => GROUP_TYPE_TEXT[((sg.tree.byId.get(gid) || {}).type || '')];
+      const kidHtml = kids.length
+        ? `<span>子组：${kids.map((k) => `<span class="namehint" data-gjump="${k}" title="子组（点击跳到该组行）">${hlMatch(k, sg.terms)}（${typeText(k)}）</span>`).join('、')}</span>`
+        : '';
+      const nestBtn = (!parent && S.mode === 'group')
+        ? `
+        <button class="mini${isPendGrp ? ' primary' : ''}" data-gnest="${g.id}" title="${isPendGrp ? '已整组加入待编组：再点一次取消' : '把这个组整个作为一个单位加入待编组（嵌套组）：再配一站或另一组，点「编组」即建成它的上层组；画布上 Shift＋点换乘符号同效'}">编入上层组</button>` : '';
+      const parentHtml = parent
+        ? `
+        <div class="m">上级组：<span class="namehint" data-gjump="${parent}" title="上级组（点击跳到该组行）">${hlMatch(parent, sg.terms)}（${typeText(parent)}）</span></div>` : '';
       return `
-      <div class="grp-row" data-gid="${g.id}">
+      <div class="grp-row" data-gid="${g.id}"${isPendGrp ? ' style="background:#4a3a10;border-radius:3px"' : ''}>
         <b>${hlMatch(g.id, sg.terms)}</b>
         <select data-gtype="${g.id}"${lock}>
           <option value="same-station" ${g.type === 'same-station' ? 'selected' : ''} ${hasBlk ? 'disabled' : ''}>同站</option>
           <option value="out-of-station" ${g.type === 'out-of-station' ? 'selected' : ''} ${hasBlk ? 'disabled' : ''}>出闸</option>
           <option value="junction" ${g.type === 'junction' ? 'selected' : ''}>接轨站</option>
           <option value="" ${!g.type ? 'selected' : ''} ${hasBlk ? 'disabled' : ''}>type 未定</option>
-        </select>
+        </select>${nestBtn}
         <button class="mini danger" data-gdel="${g.id}">拆组</button>
         <div class="m">${g.stops.map((s2) => {
           const o = sg.info.get(s2);
           return `<span title="${esc(o ? o.lineName || '' : '')}">${hlMatch(stopLabel(s2), sg.terms)}</span>`;
-        }).join('；')}</div>
+        }).join('；')}${kidHtml ? `${g.stops.length ? '；' : ''}${kidHtml}` : ''}</div>${parentHtml}
       </div>`;
     }).join('')
       : `<div style="color:var(--dim);font-size:12px">${sg.total ? '（无匹配）' : '（暂无）'}</div>`)
@@ -2453,8 +2772,17 @@
     }).join('') : '<div style="color:var(--dim);font-size:12px">（暂无）</div>');
   }
 
+  /** 待编入上层的整组态的失配清理（嵌套组）：撤销/拆组/删站后可能残留已不存在或已非顶层的组 id——
+   *  只留仍存在的顶层组（瞬态状态，不进快照） */
+  function syncPendingGroups() {
+    if (!S.pendingGroups.length) return;
+    const tree = groupTree(stationGroupsOf());
+    S.pendingGroups = S.pendingGroups.filter((gid, i, a) => tree.byId.has(gid) && !tree.parentOf.has(gid) && a.indexOf(gid) === i);
+  }
+
   function renderAll() {
     if (!S.view) fitView();
+    syncPendingGroups();
     applyView();
     renderWorld();
     renderImportList();
@@ -2658,13 +2986,20 @@
     // 从换乘节点组中移除引用，防止悬挂
     let grpNote = '';
     if (S.groups) {
+      let directGid = null;
       for (const g of S.groups.stationGroups || []) {
         if (g.stops.includes(sid)) {
           g.stops = g.stops.filter((x) => x !== sid);
           grpNote = `（已从 ${g.id} 移除）`;
+          directGid = g.id;
         }
       }
-      S.groups.stationGroups = (S.groups.stationGroups || []).filter((g) => g.stops.length >= 2);
+      // 成员单位总数（直属站＋子组，嵌套组 2026-11-23）不足 2 的组拆除；被拆的组若还有上级，上级摘除
+      // 对它的引用并按同规则级联（pruneStationGroups）。直属站所在组自身的拆除沿用旧例不另报，其余一并报出
+      const gone = pruneStationGroups(S.groups.stationGroups || []);
+      S.groups.stationGroups = S.groups.stationGroups || [];
+      const casc = gone.filter((x) => x !== directGid);
+      if (casc.length) grpNote += `；${casc.join('、')} 成员不足 2 已自动拆组`;
     }
     if (S.selStop === sid) S.selStop = null;
     S.pending = S.pending.filter((x) => x !== sid);
@@ -2904,6 +3239,9 @@
       const mgEl = hitEl.closest('.stop-merge, .grp-pill');
       if (mgEl) {
         const g = S.groups.stationGroups.find((x) => x.id === mgEl.dataset.grp);
+        // Shift＋点换乘符号＝把该绘制单元的组整个作为一个单位加入/移出待编组（嵌套组 2026-11-23；
+        // 不带 Shift 的既有行为——直属站加入/移出待编组——不变；画布现有修饰键无冲突）
+        if (g && e.shiftKey) { togglePendingGroup(g.id); return; }
         if (g) {
           const allIn = g.stops.every((sid) => S.pending.includes(sid));
           S.pending = allIn ? S.pending.filter((sid) => !g.stops.includes(sid))
@@ -2930,7 +3268,10 @@
     const mgSel = hitEl.closest('.stop-merge, .grp-pill');
     if (mgSel) {
       const g = S.groups.stationGroups.find((x) => x.id === mgSel.dataset.grp);
-      if (g) setStatus(`${g.id} ${g.type === 'junction' ? '接轨站' : g.type === 'out-of-station' ? '出闸换乘' : g.type ? '同站换乘' : '类型未定'}组：${g.stops.map((sid) => stopLabel(sid)).join('；')}`);
+      // 嵌套组（2026-11-23）：符号所属组若吸收了子组，一并注明（子组的站合并进了这一个符号）
+      const kids = g ? (groupTree(stationGroupsOf()).childrenOf.get(g.id) || []) : [];
+      if (g) setStatus(`${g.id} ${g.type === 'junction' ? '接轨站' : g.type === 'out-of-station' ? '出闸换乘' : g.type ? '同站换乘' : '类型未定'}组：${g.stops.map((sid) => stopLabel(sid)).join('；')}`
+        + (kids.length ? `（含子组 ${kids.join('、')}：其站与直属站合并为这一个符号）` : ''));
       return;
     }
     const segEl = hitEl.closest('.seg-hit');
@@ -2983,6 +3324,38 @@
   function nearestTOnLine(lid, wx, wy) {
     const ap = arcOf(lid);
     return ap ? ap.project(wx, wy).t : 0;
+  }
+
+  /** 「编入上层组」（嵌套组 2026-11-23）：把一个**顶层**组整个作为一个单位加入/移出待编组
+   *  （与待编组站并存，凑满 2 个单位后「编组」即建成它的上层组）。组列表行的「编入上层组」按钮与
+   *  画布 Shift＋点换乘符号同走这里。已有上级的组拒绝（要调整先拆其上层组）。 */
+  function togglePendingGroup(gid) {
+    const idx = S.pendingGroups.indexOf(gid);
+    if (idx >= 0) {
+      S.pendingGroups.splice(idx, 1);
+      renderAll();
+      setStatus(`已将整组 ${gid} 移出待编组。`);
+      return;
+    }
+    const iss = pendingGroupIssues(groupTree(stationGroupsOf()), [gid]);
+    if (iss.length) {
+      const o = iss[0];
+      setStatus(o.reason === 'parent'
+        ? `${gid} 已是 ${o.parent} 的子组（不是顶层组），不能再整组编入别的组：要调整请先拆其上层组 ${o.parent}。`
+        : `${gid} 不存在，未加入待编组。`, true);
+      return;
+    }
+    S.pendingGroups.push(gid);
+    renderAll();
+    setStatus(`已将整组 ${gid} 加入待编组（作为一个单位；编组后它成为新组的子组，自身不变）：再配一站或另一个顶层组，`
+      + '点「编组」建成上层组；再点一次「编入上层组」（或 Shift＋点）取消。');
+  }
+  /** 组列表里跳到某组（子组／上级组 chip 点击）：翻到其所在页（被搜索滤掉则清空搜索，同新建组后的定位）并滚动可见 */
+  function jumpToGroupRow(gid) {
+    pageGroupIntoView(gid);
+    renderGroupsPanel();
+    const r = [...$('stationGroups').querySelectorAll('.grp-row')].find((x) => x.dataset.gid === gid);
+    if (r) r.scrollIntoView({ block: 'nearest' });
   }
 
   /** 编组模式拉框收尾：框内 ≥2 站直接建组（免确认）；已在其他组的站跳过并提示 */
@@ -3408,6 +3781,7 @@
 
   // 属性面板逐键渲染合帧（每帧至多一次；名称等不影响画布的字段跳过 renderWorld）——满规模防逐键全量重绘卡顿
   let formRaf = 0, formNeedsWorld = false;
+  const connColorMemo = new WeakMap();   // 线对象 → 改成联络线前的原色（联络线不带 color；改回时还回，见 lfRole）
   function scheduleFormRender(needsWorld) {
     if (needsWorld) formNeedsWorld = true;
     if (formRaf) return;
@@ -3439,8 +3813,21 @@
       }
       case 'lfRole': {
         snapshot();
+        const prevRole = l.role;
         l.role = e.target.value;
         if (l.role !== 'connector') l.connects = [];
+        // 联络线取消颜色属性（2026-11-22 用户裁定；validate 既有规则：connector 不得带 color）：改成联络线的
+        // 那一刻即清掉已有的 color——原先只藏颜色栏，文件里仍带着 color，validate 报错而界面又改不了。
+        // 快照在上，Ctrl+Z 可退回。原色暂存会话内存（WeakMap 按线对象，不落盘、随对象更换自然失效）：
+        // 改回非联络线时原样还回；无从还回（如载入的本来就是联络线）则取颜色栏当前显示的缺省值——
+        // 非联络线的 color 仍是必填（validate 既有规则），且与颜色栏所见一致
+        if (l.role === 'connector') {
+          if (l.color !== undefined) connColorMemo.set(l, l.color);
+          stripConnectorColor(l);
+        } else if (prevRole === 'connector' && l.color === undefined) {
+          l.color = connColorMemo.get(l) || ($('lfColor') ? $('lfColor').value.toUpperCase() : '#888888');
+          if ($('lfColor')) $('lfColor').value = l.color;   // 属性面板不重渲染（保焦点）：颜色栏同步成还回的原色
+        }
         if ((l.role === 'main' || l.role === 'branch') && !l.groupId) {
           // 留待用户在下方线组下拉中选择
         }
@@ -3540,11 +3927,30 @@
       if (foot) foot.scrollIntoView({ block: 'nearest' });
       return;
     }
+    // 嵌套组（2026-11-23）：子组／上级组 chip 点击＝跳到该组行；「编入上层组」＝整组加入/移出待编组
+    const jump = e.target.closest('[data-gjump]');
+    if (jump) { jumpToGroupRow(jump.dataset.gjump); return; }
+    const nest = e.target.dataset.gnest;
+    if (nest) { togglePendingGroup(nest); return; }
     const gid = e.target.dataset.gdel;
     if (!gid) return;
     snapshot();
-    S.groups.stationGroups = S.groups.stationGroups.filter((g) => g.id !== gid);
+    // 拆组（简单组与原先一致＝删组、直属站恢复未编组、无提示）。嵌套组 2026-11-23 语义，两种情形可并存：
+    // 拆的是有上级的组 → 上级从 groups 摘除它（摘空即删字段），上级因此成员单位不足 2 的一并拆除并向上级联；
+    // 拆的是含子组的组 → 子组升为顶层组（删掉本组即自然达成）
+    const list = S.groups.stationGroups;
+    const g0 = list.find((x) => x.id === gid);
+    const parent0 = g0 ? list.find((x) => x !== g0 && Array.isArray(x.groups) && x.groups.includes(gid)) : null;
+    const kids0 = g0 && Array.isArray(g0.groups) ? g0.groups.slice() : [];
+    S.groups.stationGroups = list.filter((x) => x.id !== gid);
+    const casc = cascadeStationGroups(S.groups.stationGroups, [gid]);
     renderAll();
+    if (parent0 || kids0.length || casc.length) {
+      setStatus(`已拆组 ${gid}（直属站恢复未编组）`
+        + (parent0 ? `；已从上级组 ${parent0.id} 摘除` : '')
+        + (kids0.length ? `；子组 ${kids0.join('、')} 升为顶层组` : '')
+        + (casc.length ? `；${casc.join('、')} 因成员不足 2 已一并拆组` : '') + '。');
+    }
   });
   $('stationGroups').addEventListener('change', (e) => {
     const gid = e.target.dataset.gtype;
@@ -3579,9 +3985,10 @@
   });
 
   $('pendingBox').addEventListener('click', (e) => {
-    if (e.target.id === 'btnClearPend') { S.pending = []; renderAll(); return; }
+    if (e.target.id === 'btnClearPend') { S.pending = []; S.pendingGroups = []; renderAll(); return; }
     if (e.target.id === 'btnMkGroup') {
-      if (S.pending.length < 2) return;
+      // 待编组单位（站＋整组，嵌套组 2026-11-23）总数 ≥2 才可建
+      if (S.pending.length + S.pendingGroups.length < 2) return;
       // 一设站至多一组：冲突即拒绝（人工先拆组）
       const conflict = [];
       for (const g of S.groups.stationGroups) {
@@ -3591,23 +3998,43 @@
         setStatus('冲突：' + conflict.join('；') + '。请先拆组。', true);
         return;
       }
-      // 编组约束（planStationGroup）：出省箭头一律拒绝；线路所混选拒绝；全线路所强制 junction
-      const plan = planStationGroup(S.pending.map((sid) => stopKindOf(sid)));
+      // 待编入上层的组必须是顶层组（已有上级的先拆其上层组）
+      const nestIss = pendingGroupIssues(groupTree(S.groups.stationGroups), S.pendingGroups);
+      if (nestIss.length) {
+        setStatus('冲突：' + nestIss.map((o) => (o.reason === 'parent'
+          ? `${o.id} 已是 ${o.parent} 的子组` : `${o.id} 不存在`)).join('；') + '。请先拆其上层组。', true);
+        return;
+      }
+      // 编组约束（planStationGroup）：出省箭头一律拒绝；线路所混选拒绝；全线路所强制 junction——
+      // 只看待编组的直属站；整组不参与类型判定，仅计入成员单位总数
+      const plan = planStationGroup(S.pending.map((sid) => stopKindOf(sid)), S.pendingGroups.length);
       if (!plan.ok) {
         setStatus(plan.reason === 'arrow'
           ? '编组拒绝：待编组里含出省箭头（出省箭头不是站点、不可编组）。'
-          : '编组拒绝：待编组里线路所与普通车站混选（线路所只能与线路所编为接轨站组）。', true);
+          : plan.reason === 'mixed'
+            ? '编组拒绝：待编组里线路所与普通车站混选（线路所只能与线路所编为接轨站组）。'
+            : '编组拒绝：成员单位（站＋整组）不足 2 个。', true);
         return;
       }
       snapshot();
       const id = bumpCounter('nextG', 'g', 4);
-      S.groups.stationGroups.push({ id, stops: [...S.pending], type: plan.type, info: {} });
-      S.pending = [];
+      const gNew = { id, stops: [...S.pending] };
+      if (S.pendingGroups.length) gNew.groups = [...S.pendingGroups];   // 子组列表：为空不写该字段
+      gNew.type = plan.type;
+      gNew.info = {};
+      S.groups.stationGroups.push(gNew);
+      S.pending = []; S.pendingGroups = [];
       pageGroupIntoView(id);   // 新组在末尾：翻到其所在页（被搜索滤掉则清空搜索）
       renderAll();
+      // 状态栏反馈：嵌套组另说明子组去向；简单组文案与原先逐字相同
+      const kidNote = gNew.groups ? `含子组 ${gNew.groups.join('、')}，` : '';
       setStatus(plan.allBlock
-        ? `已建接轨站组 ${id}（全线路所：合并为普通尺寸虚线圈，描边取成员线角色最高优先级色）。`
-        : `已建换乘节点组 ${id}（默认同站：合并为一个黑边大圈；可在列表改出闸/接轨站/未定）。`);
+        ? (gNew.groups
+          ? `已建接轨站组 ${id}（${kidNote}直属站全线路所）：全部叶站合并为一个普通尺寸圈，描边取成员线角色最高优先级色。`
+          : `已建接轨站组 ${id}（全线路所：合并为普通尺寸虚线圈，描边取成员线角色最高优先级色）。`)
+        : `已建换乘节点组 ${id}（${kidNote}默认同站${gNew.groups
+          ? '：全部叶站合并为一个符号——逻辑线数 ≥3 出药丸，否则黑边大圈；可在列表改出闸（子组各按自身类型画）/接轨站/未定。'
+          : '：合并为一个黑边大圈；可在列表改出闸/接轨站/未定。'}`);
     }
   });
 
@@ -3651,7 +4078,9 @@
   const MODE_HINT = {
     select: '选择：点击设站选中（左侧改名）、点击线路选中；分段在左侧「设站」面板管理（命名/切分/并段，状态挂整段、铺满全线）；左键拖动平移、滚轮缩放；拖动改站位置请切加站模式。',
     add: '加站：点击线路附近即可加站（吸附半径 40px，自动记弧长 t）；按住已有站圈可直接拖动改位置（没按到则照常拖画布）。加站类型（车站/线路所/出省箭头）用左侧设站面板顶部按钮切换——出省箭头只能落在非环线的头/尾；可以先一路点完，再展开「批量命名」一次贴入站名（线路所/出省箭头跳过）。',
-    group: '编组：任意处拉框直接建组（框内 ≥2 站即建，已在其他组的跳过）；也可点选站圈攒待编组后点「编组」；中键拖动平移。',
+    group: '编组：任意处拉框直接建组（框内 ≥2 站即建，已在其他组的跳过）；也可点选站圈攒待编组后点「编组」；中键拖动平移。'
+      + '嵌套（把一个既有组整个编进新组）：点换乘符号＝加它的直属站；Shift＋点换乘符号＝把该组整个当一个单位加入待编组'
+      + '（组列表顶层组的「编入上层组」同效，再点取消），配一站或另一组后点「编组」。',
   };
   for (const btn of document.querySelectorAll('#toolbar [data-mode]')) {
     btn.addEventListener('click', () => {
@@ -3661,7 +4090,7 @@
       }
       setStatus(MODE_HINT[S.mode]);
       $('canvasHint').textContent = MODE_HINT[S.mode];
-      S.pending = [];
+      S.pending = []; S.pendingGroups = [];
       renderAll();
     });
   }
@@ -3679,7 +4108,7 @@
         && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) {
       deleteStop(S.activeLine, S.selStop);
     }
-    if (e.key === 'Escape') { S.selStop = null; S.pending = []; renderAll(); }
+    if (e.key === 'Escape') { S.selStop = null; S.pending = []; S.pendingGroups = []; renderAll(); }
   });
 
   // ---------- 线路显示顺序面板（查看器左栏序；2026-11-22 需求 5） ----------
@@ -3776,14 +4205,14 @@
     S.lines = new Map(lineFiles);
     // 整体替换语义要彻底：工作区缺 groups.json/manifest.json 时清空而非沿用当前值，
     // 否则旧组的 stationGroups 会悬挂引用新工作区不存在的线路/站 id
-    S.groups = groups || { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
+    S.groups = takeGroups(groups) || { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
     S.manifest = manifest || null;
     // 工作区整体替换：显示顺序随 manifest.lineOrder（缺失＝null 回退 id 升序）
     S.lineOrder = (manifest && Array.isArray(manifest.lineOrder)) ? manifest.lineOrder : null;
     if (calib) takeCalibration(calib);
     S.arcs = reuseArcs(S.arcs, S.lines);   // path 没变的线沿用旧弧；变了的丢掉重建
     if (!S.lines.has(S.activeLine)) S.activeLine = lineFiles.size ? [...lineFiles.keys()][0] : null;
-    S.selStop = null; S.pending = [];
+    S.selStop = null; S.pending = []; S.pendingGroups = [];
     syncCountersWithLoaded();
     renderAll();
     backfillTransfersOnLoad();   // 数据就绪：自动回填（工作区线路名 → 预置空缺建议）
@@ -3939,10 +4368,11 @@
     for (const l of lines) {
       const issues = lineIssues(l);
       if (issues.length) { fail++; setStatus(`保存失败 ${l.id}：${issues.join('；')}`, true); continue; }
-      try { await writeJson(linesDir, `${l.id}.json`, l); ok++; }
+      try { await writeJson(linesDir, `${l.id}.json`, lineForSave(l)); ok++; }   // 联络线不带 color 落盘（兜底）
       catch (e) { fail++; setStatus(`写入失败 ${l.id}.json：${e.message}`, true); }
     }
     if (!S.groups) S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
+    normalizeStationGroups(S.groups.stationGroups);   // 兜底：嵌套子组字段为空不写出（载入与各操作已保证）
     await writeJson(dir, 'groups.json', S.groups);
     await writeJson(dir, 'manifest.json', buildManifest());
     // 同步语义：lines/ 里已不在当前数据的线路文件删除（只认 lNNNN.json 命名，其余文件不动）
@@ -4031,11 +4461,12 @@
     for (const l of lines) {
       const issues = lineIssues(l);
       if (issues.length) { fail++; setStatus(`保存失败 ${l.id}：${issues.join('；')}`, true); continue; }
-      download(`${l.id}.json`, l); ok++; n++;
+      download(`${l.id}.json`, lineForSave(l)); ok++; n++;   // 联络线不带 color 落盘（兜底）
       setStatus(`保存工作区 ${n}/${total}：已请求 ${l.id}.json`);
       await sleep(150);
     }
     if (!S.groups) S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
+    normalizeStationGroups(S.groups.stationGroups);   // 兜底：嵌套子组字段为空不写出（载入与各操作已保证）
     download('groups.json', S.groups); n++;
     setStatus(`保存工作区 ${n}/${total}：已请求 groups.json`);
     await sleep(150);

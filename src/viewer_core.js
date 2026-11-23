@@ -38,6 +38,13 @@
 // 2026-11-22 真数据抓包（「单线站名不见了」）：删初版自设的 LABEL_CAP=800 与 cap 入参——
 // 它数整份数据的标签总数而非同屏数，用户 58 线真数据 1040 个标签单元一超限，普通站名
 // 就在一切 zoom 永不显示，与用户规则「普通站名 z≥11 显示」冲突；分级回归纯 zoom 门槛。
+// 2026-11-23 增（用户裁定·嵌套换乘组）：换乘组可再把另一个组当成员（net-index@3 的 stationGroups
+// 结构表，parseNetIndex 解读）。buildGroupTree 树化（查组/父组/子组/最外层组/叶站；未知子组、
+// 成环、无站组防御）；buildStopView 改按「节点＝最外层组」出图——同站单元全部叶站合成一个符号
+//（内层组不单独出图形与站名）、出闸单元直属站各自成圈＋各子组自成绘制单元递归套用、junction
+// 成员递归取全部叶站；药丸线数改按逻辑线计（logicalLineCount：联络线不计、同一线组算一条，一切
+// 同站单元适用）；groupRelations 嵌套关系描述（信息面板用；平铺组返回 null＝面板呈现不变）；
+// 单线导出可选补嵌套节点信息。平铺数据下 pins/pills/labels 与旧版逐项一致（单测＋真数据对拍）。
 
 (function (G) {
   'use strict';
@@ -264,6 +271,26 @@
     return { groups, ofLine, mainOf };
   }
 
+  // ---------- net/index.json 解读（fmt 严格校验；2026-11-23 增 net-index@3） ----------
+  // parseNetIndex(idx)：三版都收 lineOrder（线路自定义显示序）；@2/@3 收 lineGroups（主支线合并）；
+  // @3 另收 stationGroups（嵌套换乘组结构表，buildGroupTree 的输入）。校验风格沿用旧胶水层：
+  // fmt 不在名单内＝整份 index 视同不存在（全 null）；字段类型不符＝该字段视同不存在。
+  // 唯一例外＝@3 的 stationGroups 非数组：数据契约被破坏（嵌套组会被画成平铺），置 null 之外
+  // 另以 problem 带回一句提示交胶水层 console.warn（不抛——启动期抛错＝整页黑屏）。
+  // 返回 { indexOrder: [lineId]|null, lineGroups: []|null, stationGroups: []|null, problem: ''|提示 }。
+  function parseNetIndex(idx) {
+    const out = { indexOrder: null, lineGroups: null, stationGroups: null, problem: '' };
+    const fmt = idx && typeof idx === 'object' ? idx.fmt : null;
+    if (fmt !== 'net-index@1' && fmt !== 'net-index@2' && fmt !== 'net-index@3') return out;
+    if (Array.isArray(idx.lineOrder)) out.indexOrder = idx.lineOrder.map(String);
+    if (fmt !== 'net-index@1' && Array.isArray(idx.lineGroups)) out.lineGroups = idx.lineGroups;
+    if (fmt === 'net-index@3') {
+      if (Array.isArray(idx.stationGroups)) out.stationGroups = idx.stationGroups;
+      else out.problem = 'fmt=net-index@3 但 stationGroups 不是数组，按无嵌套（各组顶层）处理';
+    }
+    return out;
+  }
+
   // stops.geojson → 站点平表（非 Point / 坐标缺失跳过；groupId 空串归 null；groupType 未知归 null；
   // kind 缺省归 'stop'——flatten 侧 arrow 站保留输出（block 已在上游剔除））
   function stopList(fc) {
@@ -433,34 +460,190 @@
     return I.concat([0, fade, hh, hex, 1 - tt, hex, 1, fade]);
   }
 
-  // 换乘组归并 + 渲染/标签视图：
+  // ---------- 嵌套换乘组结构（2026-11-23 用户裁定：换乘组可再把另一个组当成员） ----------
+  // 数据契约：net/index.json（fmt net-index@3）顶层 stationGroups＝[{id, type, stops, groups}]——
+  // groups＝子组 id 列表（缺省 []；type 可为 null；表内可含当前没有任何输出站点的组，如成员线
+  // 已归档、全线路所组被上游剔除）。站 feature 的 groupId/groupType 仍＝直属组（不变）。
+  // 旧产物（net-index@1/@2 无 stationGroups）传 null＝全部组都是顶层、无子组＝现行行为。
+  // 成员归属一律取站 feature 的 groupId（直属组），结构表只提供层级与类型：站指向了、表里却
+  // 没有的组＝合成一条记录（类型取首个成员站的 groupType；被某父组声明则挂其下，否则顶层）
+  // ——站点不因表缺漏而丢；表里列了、却没有站指向它的组＝无成员，不出图形。
+  // buildGroupTree(stationGroups, stops) → tree：
+  //   order           全部组 id 的稳定序＝按「子树首个叶站在站表中的下标」升序（无叶站者排最后、
+  //                   按 id 序）——与旧实现 byGroup 的插入序同构（平铺数据下 pins/labels 逐项同序）
+  //   group(id)       组记录 {id, type, children, parentId}｜未知 id → null
+  //   typeOf(id)      有效类型（未知/null → 'same-station'，沿用旧代码对 null 的处理）
+  //   parentOf(id)    父组 id｜null（一子至多一父：多父脏数据取表序首个声明它的父）
+  //   childrenOf(id)  子组 id 列表（声明序去重，只收「父组确为本组」者——与 parentOf 自洽）
+  //   rootOf(id)      最外层组 id｜null（未知 id → null）
+  //   subtreeIds(id)  自身＋全部子孙组 id（深度优先、每组至多一次——防重复声明/防环）
+  //   directStops(id) 直属站数组（站表序；arrow 非站不入）
+  //   leafStops(id)   全部叶站＝子树各组的直属站（站表序＝旧「成员序」，均值/链序/取名沿用旧算法）
+  // 防御：成环（A∋B∋A）时 rootOf 取环上 id 最小者当根——环上各组仍只出一套图形、站不丢；
+  // 表条目/类型/子组引用逐项判型，脏项跳过不抛（启动期抛错＝整页黑屏）。
+  function buildGroupTree(stationGroups, stops) {
+    const byId = new Map();       // id → {id, type, children:[id], parentId:id|null, listed, typed}
+    const tableOrder = [];        // 表内组 id（表序）
+    const ensure = (id) => {
+      let n = byId.get(id);
+      if (!n) { n = { id, type: null, children: [], parentId: null, listed: false, typed: false }; byId.set(id, n); }
+      return n;
+    };
+    // ① 表内记录（重复 id 首条为准；type 非字符串按 null；groups 非数组按缺省 []）
+    const listed = [];
+    for (const g of Array.isArray(stationGroups) ? stationGroups : []) {
+      if (!g || typeof g !== 'object' || g.id == null) continue;
+      const id = String(g.id);
+      if (!id) continue;
+      const n = ensure(id);
+      if (n.listed) continue;
+      n.listed = true;
+      n.type = typeof g.type === 'string' ? g.type : null;
+      listed.push([n, Array.isArray(g.groups) ? g.groups : []]);
+      tableOrder.push(id);
+    }
+    // ② 父子关系：子组至多一个父——多父脏数据取表序首个声明它的父；自指忽略
+    for (const [n, refs] of listed) {
+      for (const raw of refs) {
+        if (raw == null) continue;
+        const c = String(raw);
+        if (!c || c === n.id) continue;
+        ensure(c);
+        if (n.children.indexOf(c) < 0) n.children.push(c);
+        const cn = byId.get(c);
+        if (cn.parentId == null) cn.parentId = n.id;
+      }
+    }
+    // ③ 站表：直属站归组；站指向了、表里却没有的组＝合成记录（类型取首个成员站的 groupType）
+    const direct = new Map();     // groupId → 直属站数组（站表序）
+    const idxOf = new Map();      // sid → 站表下标
+    const list = Array.isArray(stops) ? stops : [];
+    for (let i = 0; i < list.length; i++) {
+      const s = list[i];
+      if (!s) continue;
+      if (s.sid != null && !idxOf.has(s.sid)) idxOf.set(s.sid, i);
+      const gid = s.groupId != null && s.groupId !== '' ? String(s.groupId) : null;
+      if (s.kind === 'arrow' || !gid) continue;   // arrow 非站不入组（同 buildStopView）
+      let arr = direct.get(gid);
+      if (!arr) { arr = []; direct.set(gid, arr); }
+      arr.push(s);
+      const n = ensure(gid);
+      if (!n.listed && !n.typed) { n.type = s.groupType || null; n.typed = true; }
+    }
+    const group = (id) => byId.get(id) || null;
+    // 有效类型：未知/null → 'same-station'（沿用旧代码对 null 的处理）
+    const typeOf = (id) => {
+      const n = byId.get(id);
+      return n && Object.prototype.hasOwnProperty.call(GROUP_TYPE_ZH, n.type) ? n.type : 'same-station';
+    };
+    const parentOf = (id) => { const n = byId.get(id); return n ? n.parentId : null; };
+    // 子组列表只收「父组确为本组」者——与 parentOf 自洽（多父脏数据下子组不重复出图）
+    const childrenOf = (id) => {
+      const n = byId.get(id);
+      return n ? n.children.filter((c) => byId.get(c).parentId === id) : [];
+    };
+    // 最外层组：沿父链上溯到头。成环（A∋B∋A）时取环上 id 最小者当根——环上各组仍只出一套
+    // 图形、站不丢；未知 id → null
+    function rootOf(id) {
+      if (!byId.has(id)) return null;
+      const path = [], seen = new Set();
+      let cur = id;
+      while (cur != null) {
+        if (seen.has(cur)) return path.slice(path.indexOf(cur)).reduce((a, b) => (a < b ? a : b));
+        seen.add(cur); path.push(cur);
+        const n = byId.get(cur);
+        cur = n && n.parentId != null && byId.has(n.parentId) ? n.parentId : null;
+      }
+      return path[path.length - 1];
+    }
+    // 自身＋全部子孙组（深度优先、每组至多一次——防重复声明/防环）
+    function subtreeIds(id) {
+      const out = [];
+      const walk = (g) => {
+        if (out.indexOf(g) >= 0) return;
+        out.push(g);
+        for (const c of childrenOf(g)) walk(c);
+      };
+      if (byId.has(id)) walk(id);
+      return out;
+    }
+    const directStops = (id) => direct.get(id) || [];
+    // 叶站＝子树各组的直属站，按站表序（＝旧实现的成员序：均值/取名/药丸链序沿用旧算法）
+    const leafStops = (id) => {
+      const out = [];
+      for (const g of subtreeIds(id)) { const arr = direct.get(g); if (arr) for (const s of arr) out.push(s); }
+      return out.length > 1 ? out.sort((a, b) => num(idxOf.get(a.sid)) - num(idxOf.get(b.sid))) : out;
+    };
+    // 稳定序＝按「子树首个叶站的站表下标」升序（无叶站者排最后、按 id 序）——与旧实现 byGroup
+    // 的插入序同构（平铺数据下 pins/labels 逐项同序，标签叠放次序不因结构表而变）
+    const order = [...byId.keys()]
+      .map((id) => { const lf = leafStops(id); return { id, at: lf.length ? num(idxOf.get(lf[0].sid)) : Infinity }; })
+      .sort((a, b) => (a.at - b.at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .map((x) => x.id);
+    return { byId, order, group, typeOf, parentOf, childrenOf, rootOf, subtreeIds, directStops, leafStops };
+  }
+
+  // ---------- 逻辑线数（药丸线数口径；2026-11-23 用户裁定「支线算一条，联络线不算线」） ----------
+  // logicalLineCount(lineIds, linesMap, lineGroups)：按逻辑线去重计数——role === 'connector' 的线
+  // 不计（联络线不算线）；同一有效线组（buildLineGroups 的 ofLine 归并——主线＋支线）内的线算
+  // 一条；其余线各算一条。适用于一切 same-station 单元（含不嵌套的普通同站组），取代旧「按
+  // distinct lineId 计」。linesMap 缺省、或线不在其中（孤站，角色未知）＝按独立一条计；
+  // lineGroups 缺省＝不归并。
+  function logicalLineCount(lineIds, linesMap, lineGroups) {
+    const lg = lineGroups && lineGroups.ofLine instanceof Map ? lineGroups : null;
+    const keys = new Set();
+    for (const raw of Array.isArray(lineIds) ? lineIds : []) {
+      const id = raw != null ? String(raw) : '';
+      if (!id) continue;
+      const line = linesMap instanceof Map ? linesMap.get(id) : null;
+      if (line && line.role === 'connector') continue;
+      const grp = lg ? lg.ofLine.get(id) : null;
+      keys.add(grp ? 'g:' + grp.id : 'l:' + id);
+    }
+    return keys.size;
+  }
+
+  // 换乘组归并 + 渲染/标签视图（2026-11-23 改嵌套组规则；平铺数据下输出与旧版逐项一致）：
+  //   节点＝最外层组（没有上级的组），画法由节点 type 决定；出闸节点的每个子组自成绘制单元、
+  //   按它自己的 type 递归套用本规则。
   //   pins —— circle 图层的渲染与点击单元：
   //     无组站：kind 'stop'（白填充、线色描边）；
-  //     same-station 组恰 2 线及以下：合并一个「大圈」（成员坐标均值，big=true，黑边）——现状不动；
-  //     same-station 组 ≥3 线：改画药丸（见 pills），成员个人小圈不再出现（药丸即换乘标识）；
-  //     junction 组：合并普通尺寸圈（big=false 不放大——接轨站不出大圈；描边色由渲染层按成员线角色优先级取，不用黑边）；
-  //     out-of-station 组：成员各自普通尺寸圈（出闸换乘物理上是两个站，不并点，黑边）；
-  //     除出闸组外，组成员的个人小圈一律不再单独出现。
-  //   pills —— ≥3 线 same-station 组的胶囊折线：成员 geo 按 planGroupPillChain 链序串联
-  //（渲染层双层 line＋圆头端帽即得白底黑边胶囊；恰 2 线组不出药丸）。条目自带 pin
-  //（组级信息面板/hover 单元，key 'g:<id>'，渲染层并入 pinByKey；不进 pins＝不渲染成圈）。
-  //   labels —— HTML 标签与搜索条目单元：无组站各一；组（三种类型）各一（均值位置，同名取首个非空）。
+  //     same-station 单元（type null 同此）：全部叶站合成一个——逻辑线 ≥3 改画药丸（见 pills），
+  //       否则合并一个「大圈」（叶站坐标均值，big=true，黑边）；内层组不单独出图形；
+  //     junction 单元：合并普通尺寸圈（big=false 不放大——接轨站不出大圈；描边色由渲染层按
+  //       成员线角色优先级取，不用黑边），成员递归取全部叶站；
+  //     out-of-station 单元：直属站各自普通尺寸圈（出闸换乘物理上是两个站，不并点，黑边），
+  //       子组各自成单元；
+  //     除出闸单元的直属站外，成员的个人小圈一律不再单独出现。
+  //   pills —— 逻辑线 ≥3 的 same-station 单元的胶囊折线：叶站 geo 按 planGroupPillChain 链序
+  //（渲染层双层 line＋圆头端帽即得白底黑边胶囊）。条目自带 pin（组级信息面板/hover 单元，
+  // key 'g:<id>'，渲染层并入 pinByKey；不进 pins＝不渲染成圈）。
+  //   labels —— HTML 标签与搜索条目单元：无组站各一；每个单元各一（均值位置，名取首个非空）；
+  // 出闸单元的标签只对其直属站计算（无直属站则本单元不出自己的标签），子组另有自己的标签。
+  //   lineIds —— pin/label 一律收单元内全部成员线的 lineId（调光/聚焦/站名可见性口径不变）。
   //（arrow 非站：此处一律跳过——不进组、不进 pin/label；其出省端属判定走 arrowFadePlan。）
-  function buildStopView(stops) {
-    const byGroup = new Map();   // groupId → {groupId,type,members}
+  // opts（均可缺省）：{ linesMap, lineGroups, tree }——linesMap/lineGroups 供药丸逻辑线数判定
+  //（缺省＝按 distinct lineId 计，旧行为）；tree＝buildGroupTree 产物（缺省＝按站的直属组现搭
+  // 平铺树＝旧行为）。
+  function buildStopView(stops, opts) {
+    const o = opts || {};
+    const list = Array.isArray(stops) ? stops : [];
+    const linesMap = o.linesMap instanceof Map ? o.linesMap : null;
+    const lineGroups = o.lineGroups && o.lineGroups.ofLine instanceof Map ? o.lineGroups : null;
+    // 结构树：调用方给的是 buildGroupTree 产物就用它（面板的关系描述共用同一棵），否则按站的
+    // 直属组现搭平铺树＝旧行为（全部组顶层、无子组）
+    const tree = (o.tree && typeof o.tree.typeOf === 'function' && typeof o.tree.rootOf === 'function')
+      ? o.tree : buildGroupTree(null, list);
     const singles = [];
-    for (const s of stops) {
-      if (s.kind === 'arrow') continue;   // 箭头不是站：不进组、不进 pin/label
-      if (!s.groupId) { singles.push(s); continue; }
-      let grp = byGroup.get(s.groupId);
-      if (!grp) { grp = { groupId: s.groupId, type: s.groupType || 'same-station', members: [] }; byGroup.set(s.groupId, grp); }
-      grp.members.push(s);
+    for (const s of list) {
+      if (!s || s.kind === 'arrow') continue;   // 箭头不是站：不进组、不进 pin/label
+      if (!s.groupId) singles.push(s);
     }
     const pins = [], pills = [], labels = [];
     const pinOfStop = (s, groupType) => ({
       kind: 'stop', key: s.sid, name: s.name, lineId: s.lineId,
       lineNames: s.lineName ? [s.lineName] : [], groupType: groupType || null,
-      groupId: s.groupId || null,   // 出闸组/药丸组成员各自成圈，但保留组号供「组内车站」查询
+      groupId: s.groupId || null,   // 出闸组成员各自成圈，但保留组号供「组内车站」查询
       // 联络线站描边色透传（stopList 保留字段，见其注；组 pin 不携带——组符号
       // 描边另有 junction 角色优先级色/黑边规则，不与联络线站圈规则混流）
       stroke: s.stroke || null,
@@ -472,39 +655,123 @@
       labels.push({ key: s.sid, name: s.name, lon: s.lon, lat: s.lat, group: false, groupType: null,
         lineNames: s.lineName ? [s.lineName] : [], lineIds: s.lineId ? [s.lineId] : [] });
     }
-    for (const grp of byGroup.values()) {
-      const n = grp.members.length || 1;
-      const lon = grp.members.reduce((a, s) => a + num(s.lon), 0) / n;
-      const lat = grp.members.reduce((a, s) => a + num(s.lat), 0) / n;
-      const name = (grp.members.find((s) => s.name) || {}).name || '';
-      const lineNames = [...new Set(grp.members.map((s) => s.lineName).filter(Boolean))];
-      const lineIds = [...new Set(grp.members.map((s) => s.lineId).filter(Boolean))];
-      if (grp.type === 'out-of-station') {
-        for (const s of grp.members) pins.push(pinOfStop(s, 'out-of-station'));
-      } else if (grp.type === 'same-station' && lineIds.length >= 3) {
-        // ≥3 线：药丸替代一切成员图形——成员个人小圈不再出现（药丸即换乘标识，
+    // 单元公共量（旧算法原样，成员改喂叶站）：坐标＝成员均值；名取首个非空；成员线去重
+    const unitOf = (members) => {
+      const n = members.length || 1;
+      return {
+        lon: members.reduce((a, s) => a + num(s.lon), 0) / n,
+        lat: members.reduce((a, s) => a + num(s.lat), 0) / n,
+        name: (members.find((s) => s.name) || {}).name || '',
+        lineNames: [...new Set(members.map((s) => s.lineName).filter(Boolean))],
+        lineIds: [...new Set(members.map((s) => s.lineId).filter(Boolean))],
+      };
+    };
+    const unitLabel = (gid, type, u) => ({
+      key: 'g:' + gid, name: u.name, lon: u.lon, lat: u.lat, group: true, groupType: type,
+      lineNames: u.lineNames, lineIds: u.lineIds,
+    });
+    // 一个组至多出一个绘制单元（成环/多父脏数据防御：重复到达直接返回）
+    const emitted = new Set();
+    const emitUnit = (gid) => {
+      if (emitted.has(gid)) return;
+      emitted.add(gid);
+      const type = tree.typeOf(gid);
+      const direct = tree.directStops(gid);
+      if (type === 'out-of-station') {
+        // 出闸单元：直属站各自成圈（不并点）；标签只对直属站算——无直属站则本单元不出标签；
+        // 每个子组是它自己的绘制单元，按它自己的 type 递归
+        for (const s of direct) pins.push(pinOfStop(s, 'out-of-station'));
+        if (direct.length) labels.push(unitLabel(gid, type, unitOf(direct)));
+        for (const c of tree.childrenOf(gid)) emitUnit(c);
+        return;
+      }
+      const leaves = tree.leafStops(gid);
+      if (!leaves.length) return;   // 无站组（成员线已归档、全线路所组被上游剔除等）：不出图形不出标签
+      const u = unitOf(leaves);
+      if (type === 'same-station' && logicalLineCount(u.lineIds, linesMap, lineGroups) >= 3) {
+        // 逻辑线 ≥3：药丸替代一切成员图形——成员个人小圈不再出现（药丸即换乘标识，
         // 2026-11-22 用户裁定）；组 pin 挂在药丸条目上（不进 pins＝不被渲染成圈），
         // 渲染层在药丸线上挂点选/hover，用同一 key 查 pinByKey
-        const lat0 = grp.members.reduce((acc, s) => acc + num(s.lat), 0) / n;   // 组内共享参考纬度
-        const order = planGroupPillChain(grp.members.map((s) => planarOf(s.lon, s.lat, lat0)));
+        const order = planGroupPillChain(leaves.map((s) => planarOf(s.lon, s.lat, u.lat)));   // 共享参考纬度＝叶站均值
         pills.push({
-          key: 'g:' + grp.groupId, groupId: grp.groupId, lineIds,
-          chain: order.map((i) => [grp.members[i].lon, grp.members[i].lat]),
+          key: 'g:' + gid, groupId: gid, lineIds: u.lineIds,
+          chain: order.map((i) => [leaves[i].lon, leaves[i].lat]),
           pin: {
-            kind: 'group', key: 'g:' + grp.groupId, groupId: grp.groupId, name, lineNames,
-            lineIds, groupType: grp.type, big: true, lon, lat,
+            kind: 'group', key: 'g:' + gid, groupId: gid, name: u.name, lineNames: u.lineNames,
+            lineIds: u.lineIds, groupType: type, big: true, lon: u.lon, lat: u.lat,
           },
         });
       } else {
         pins.push({
-          kind: 'group', key: 'g:' + grp.groupId, groupId: grp.groupId, name, lineNames,
-          lineIds,
-          groupType: grp.type, big: grp.type === 'same-station', lon, lat,
+          kind: 'group', key: 'g:' + gid, groupId: gid, name: u.name, lineNames: u.lineNames,
+          lineIds: u.lineIds,
+          groupType: type, big: type === 'same-station', lon: u.lon, lat: u.lat,
         });
       }
-      labels.push({ key: 'g:' + grp.groupId, name, lon, lat, group: true, groupType: grp.type, lineNames, lineIds });
+      labels.push(unitLabel(gid, type, u));
+    };
+    // 只从最外层组出发（子组由出闸单元递归带入；同站/junction 单元的内层组并入叶站不出图）
+    for (const gid of tree.order) {
+      if (tree.rootOf(gid) === gid) emitUnit(gid);
     }
     return { pins, pills, labels };
+  }
+
+  // ---------- 嵌套关系描述（信息面板用；2026-11-23 用户裁定·嵌套换乘组） ----------
+  // groupRelations(groupId, isStop, tree, linesMap, lineGroups)：groupId＝pin 的所属组（直属组），
+  // isStop＝点开的是直属站 pin（出闸单元的成员站）而非绘制单元（合并圈/药丸）的组 pin。
+  // 返回 null（平铺组：所属组既是节点又无子组——面板呈现与旧版完全一致）或
+  //   { nodeChain  换乘节点：自最外层组向下的链，每项「类型（组 id）」、' › ' 连接——它在哪个
+  //                节点、哪一层。直属站视角链到所在组为止；组 pin 视角到直属上级为止（自身组
+  //                的类型与 id 已有「换乘关系」「组 ID」两行，不重复）；直属节点本身时为空；
+  //     nodeMembers 节点成员：节点的直属站「站名（线名）」＋各子组「类型：线路、线路」、'；'
+  //                连接——仅组 pin 且节点含子组时非空（同节点还有谁、自己在哪一部分）；
+  //     partners   换乘对端：出闸关系的另一端——直属站视角＝所在出闸单元的各子组「类型：
+  //                线路、线路」（同单元其余直属站走既有「组内车站」行，不重复）；子组视角＝
+  //                上级出闸单元的直属站「站名（线名）」＋其余兄弟子组；'；' 连接 }。
+  // 类型名一律取 GROUP_TYPE_ZH（不新造术语）；线路显示名与「所属线路」行同源（linesOfPin——
+  // 主支线合并后显示组名并去重）；没有输出站点的子组不出现在任何描述里。
+  function groupRelations(groupId, isStop, tree, linesMap, lineGroups) {
+    if (!tree || typeof tree.childrenOf !== 'function' || !groupId || !tree.group(groupId)) return null;
+    const kids = tree.childrenOf(groupId).filter((c) => tree.leafStops(c).length > 0);   // 有输出站点的子组
+    const parent = tree.parentOf(groupId);
+    if (!kids.length && parent == null) return null;   // 平铺组
+    const typeZh = (id) => GROUP_TYPE_ZH[tree.typeOf(id)] || tree.typeOf(id);
+    const unitText = (id) => {
+      const ids = [...new Set(tree.leafStops(id).map((s) => s.lineId).filter(Boolean))];
+      return typeZh(id) + '：' + linesOfPin({ kind: 'group', lineIds: ids }, linesMap, lineGroups).join('、');
+    };
+    const stopsText = (sts) => sts
+      .map((s) => stopDisplayName(s.name) + (s.lineName ? '（' + s.lineName + '）' : '')).join('、');
+    const out = { nodeChain: '', nodeMembers: '', partners: '' };
+    // 换乘节点链：自所属组向上收集（indexOf 防环），截到最外层组后倒成正序（自上而下）
+    const up = [];
+    for (let p = groupId; p != null && up.indexOf(p) < 0; p = tree.parentOf(p)) up.push(p);
+    const at = up.indexOf(tree.rootOf(groupId));
+    const chain = (at >= 0 ? up.slice(0, at + 1) : up).reverse();
+    if (!isStop) chain.pop();
+    out.nodeChain = chain.map((id) => typeZh(id) + '（组 ' + id + '）').join(' › ');
+    // 节点成员（组 pin 且节点含子组）
+    if (!isStop && kids.length) {
+      const parts = [];
+      const direct = tree.directStops(groupId);
+      if (direct.length) parts.push(stopsText(direct));
+      for (const c of kids) parts.push(unitText(c));
+      out.nodeMembers = parts.join('；');
+    }
+    // 出闸对端
+    if (isStop && tree.typeOf(groupId) === 'out-of-station') {
+      out.partners = kids.map(unitText).join('；');
+    } else if (!isStop && parent != null && tree.typeOf(parent) === 'out-of-station') {
+      const parts = [];
+      const ds = tree.directStops(parent);
+      if (ds.length) parts.push(stopsText(ds));
+      for (const c of tree.childrenOf(parent)) {
+        if (c !== groupId && tree.leafStops(c).length > 0) parts.push(unitText(c));
+      }
+      out.partners = parts.join('；');
+    }
+    return out.nodeChain || out.nodeMembers || out.partners ? out : null;
   }
 
   // 线路摘要（信息面板/搜索用）：站按 t 升序（t 缺失排最后），环线 terminals=null（无起讫）。
@@ -1027,8 +1294,20 @@
   }
 
   // ---------- 单线导出 ----------
+  // 嵌套节点补注（2026-11-23）：导出函数的 tree 入参可选——传入且该站所属组处在嵌套节点
+  //（有上级，或有带输出站点的子组）时，GeoJSON 站属性补 nodeGroupId/nodeGroupType（最外层组
+  // id/有效类型）、KML 描述追加「换乘节点：类型（组 id）」；平铺组或不传 tree＝导出与旧版
+  // 逐字节一致。直属组 groupId/groupType 两字段照旧（如实＝直属关系，不改动）。
+  function stopNodeOf(stop, tree) {
+    if (!tree || typeof tree.rootOf !== 'function' || !stop || !stop.groupId || !tree.group(stop.groupId)) return null;
+    const nested = tree.parentOf(stop.groupId) != null
+      || tree.childrenOf(stop.groupId).some((c) => tree.leafStops(c).length > 0);
+    if (!nested) return null;
+    const root = tree.rootOf(stop.groupId);
+    return root == null ? null : { id: root, type: tree.typeOf(root) };
+  }
   // GeoJSON：线一条 Feature（MultiLineString，段序＝segIndex）＋每站一个 Point（站序＝t 升序）。
-  function buildLineGeoJSON(lineId, linesMap, stops) {
+  function buildLineGeoJSON(lineId, linesMap, stops, tree) {
     const line = linesMap.get(lineId != null ? String(lineId) : '');
     if (!line) return null;
     const sts = stops.filter((s) => s.kind !== 'arrow' && s.lineId === line.lineId)
@@ -1042,11 +1321,12 @@
         segStatuses: line.segments.map((sg) => sg.segStatus),
       },
     }];
-    for (const s of sts) features.push({
-      type: 'Feature',
-      geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
-      properties: { sid: s.sid, name: s.name, lineId: s.lineId, t: s.t, groupId: s.groupId, groupType: s.groupType },
-    });
+    for (const s of sts) {
+      const node = stopNodeOf(s, tree);
+      const props = { sid: s.sid, name: s.name, lineId: s.lineId, t: s.t, groupId: s.groupId, groupType: s.groupType };
+      if (node) { props.nodeGroupId = node.id; props.nodeGroupType = node.type; }   // 仅嵌套节点补两键
+      features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [s.lon, s.lat] }, properties: props });
+    }
     return { type: 'FeatureCollection', features };
   }
 
@@ -1054,6 +1334,7 @@
   // 单一样式（线色 alpha=1），不再按三种分段状态拆 Style；Placemark 仍按段拆分、段名保留
   // 状态文字（信息性文字非样式，段状态数据同时保留在 GeoJSON 导出的 segStatuses）。
   // 所有文本经 xmlEscape；坐标 6 位小数。未知 lineId → null。坐标恒 WGS84 不动。
+  // opts.tree（可选）＝嵌套节点补注，见 stopNodeOf。
   function buildLineKML(lineId, linesMap, stops, opts) {
     const line = linesMap.get(lineId != null ? String(lineId) : '');
     if (!line) return null;
@@ -1080,6 +1361,8 @@
       const rel = [];
       if (s.lineName) rel.push('所属：' + s.lineName);
       if (s.groupType) rel.push(GROUP_TYPE_ZH[s.groupType]);
+      const node = stopNodeOf(s, o.tree);   // 嵌套节点才补注（平铺组/不传 tree＝旧版输出不变）
+      if (node) rel.push('换乘节点：' + (GROUP_TYPE_ZH[node.type] || node.type) + '（组 ' + node.id + '）');
       if (rel.length) L.push('<description>' + xmlEscape(rel.join('；')) + '</description>');
       L.push('<Point><coordinates>' + num(s.lon).toFixed(6) + ',' + num(s.lat).toFixed(6) + ',0</coordinates></Point></Placemark>');
     }
@@ -1096,6 +1379,7 @@
     UNNAMED_STOP_ZH, stopDisplayName, formatTerminals,
     xmlEscape, normalizeHex, hexToKmlColor,
     normalizeLines, lineBboxOf, stopList, buildStopView,
+    parseNetIndex, buildGroupTree, logicalLineCount, groupRelations,
     planGroupPillChain, planarOf, lineSummaries, layerGroups, visibleListGroups,
     linePhaseOf, lineLayerRank, computeDimmedSet, nextPhase, connectorFadePlan,
     connectorBlendPlan, arrowFadePlan, arrowFadeGradient, ARROW_FADE_M,

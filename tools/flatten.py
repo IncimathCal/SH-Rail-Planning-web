@@ -39,9 +39,11 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
                         非真正站点）保留输出并额外带 kind:"arrow" 键，
                         普通站不写该键（geo 定位与其他站同口径）；
                         kind:"block"（线路所）整条剔除——正式网页隐藏。
-  <out>/index.json     查看器左栏线路显示顺序＋线组索引（net-index@2）：
-                        {"fmt":"net-index@2","lineOrder":[线id,...],
-                         "lineGroups":[{id,name,mainId,members}]}。
+  <out>/index.json     查看器左栏线路显示顺序＋线组索引＋换乘节点组结构表
+                        （net-index@3）：
+                        {"fmt":"net-index@3","lineOrder":[线id,...],
+                         "lineGroups":[{id,name,mainId,members}],
+                         "stationGroups":[{id,type,stops,groups}]}。
                         lineOrder 顺序来源＝<data>/manifest.json 可选字段
                         lineOrder（编辑器顶栏「排序」面板维护）：列出的线
                         在前（按其顺序），未列出的按现有顺序排后；数组为
@@ -56,7 +58,15 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
                         不合并，组员照旧独立显示）。线携带孤儿 groupId（组
                         记录不存在）无法得知组名，不产出组记录。@2 升版
                         原因：查看器对 fmt 有严格校验（=== 比对），加字段
-                        随版本走、消费端同步收 @1（旧快照）/@2 两版。
+                        随版本走。
+                        stationGroups＝groups.json 全部换乘节点组的**原样
+                        结构表**（@3，2026-11-23 嵌套组增补）：每项
+                        {id, type, stops, groups}——type 为 null 输出 null；
+                        stops＝该组**直属**设站；groups＝子组 id 列表
+                        （可选字段，缺省输出 []）；不按归档线过滤，如实反映
+                        groups.json。设站经子组间接属于上层节点，stops.geojson
+                        的 groupId/groupType 仍只带直属组，节点归属由消费端据
+                        本表自最外层组还原。消费端同步收 @1（旧快照）/@2/@3。
 
 复用（绝不重推导）：
   - tools/svg_parse.py  path_from_d（= parse_path + flatten + ArcPath）：
@@ -181,12 +191,12 @@ def read_manifest_order(data_dir):
 
 
 def load_groups(data_dir):
-    """读 groups.json → (线组色映射, 设站→节点组映射, 线组记录列表)。缺文件则空。"""
+    """读 groups.json → (线组色映射, 设站→节点组映射, 线组记录列表, 换乘节点组结构表)。缺文件则空。"""
     data = Path(data_dir)
     gp = data / "groups.json"
     if not gp.is_file():
         print("提示：未找到 groups.json，groupId/groupType 全为 null、组色兜底不可用")
-        return {}, {}, []
+        return {}, {}, [], []
     g = json.loads(gp.read_text(encoding="utf-8"))
     line_groups = [lg for lg in (g.get("lineGroups") or [])
                    if isinstance(lg, dict) and lg.get("id")]
@@ -196,7 +206,23 @@ def load_groups(data_dir):
         for sid in (sg.get("stops") or []):
             # 一设站至多一组（validate 门禁保证），此处重复时后者覆盖不致命
             stop_group[sid] = (sg.get("id"), sg.get("type"))
-    return group_color, stop_group, line_groups
+    # 换乘节点组结构表（index.json 顶层 stationGroups，net-index@3）：全部组原样输出
+    # {id, type, stops（直属设站）, groups（子组 id，缺省 []）}，不按归档线过滤。
+    # 嵌套组（2026-11-23）：设站经子组间接属于上层节点，消费端据本表自最外层组
+    # 还原节点。非字典/无 id 的坏项跳过、非数组按 []（validate 门禁另行报错）
+    station_groups = []
+    for sg in (g.get("stationGroups") or []):
+        if not isinstance(sg, dict) or not sg.get("id"):
+            continue
+        stops = sg.get("stops")
+        subs = sg.get("groups")
+        station_groups.append({
+            "id": sg["id"],
+            "type": sg.get("type"),
+            "stops": list(stops) if isinstance(stops, list) else [],
+            "groups": list(subs) if isinstance(subs, list) else [],
+        })
+    return group_color, stop_group, line_groups, station_groups
 
 
 # ------------------------------------------------------------- 单线展开 --
@@ -386,7 +412,7 @@ def main():
 
     calib_path = args.calib or default_calib(args.data)
     tps = load_calibration(calib_path)          # 复用 ge_convert（含格式校验）
-    group_color, stop_group, line_groups = load_groups(args.data)
+    group_color, stop_group, line_groups, station_groups = load_groups(args.data)
 
     line_feats, stop_feats = [], []
     n_archived = 0
@@ -483,11 +509,13 @@ def main():
             "members": members,
         })
     # 顺序索引（结构字段全英文；线 id 本身为英文）——查看器左栏排序＋线组归并数据源。
-    # fmt 升 net-index@2（加 lineGroups；查看器对 fmt 严格校验故随版本走，消费端收 @1/@2）
+    # fmt 升 net-index@3（加顶层 stationGroups 换乘节点组结构表，2026-11-23 嵌套组；
+    # 查看器对 fmt 严格校验故随版本走，消费端收 @1/@2/@3）
     out.mkdir(parents=True, exist_ok=True)
     (out / "index.json").write_text(
-        json.dumps({"fmt": "net-index@2", "lineOrder": emitted_order,
-                    "lineGroups": index_line_groups},
+        json.dumps({"fmt": "net-index@3", "lineOrder": emitted_order,
+                    "lineGroups": index_line_groups,
+                    "stationGroups": station_groups},
                    ensure_ascii=False, separators=(",", ":")) + "\n",
         encoding="utf-8")
     sz3 = (out / "index.json").stat().st_size
@@ -506,6 +534,7 @@ def main():
     print(f"written: {out / 'stops.geojson'}（{sz2 / 1024:.0f} KB）")
     print(f"written: {out / 'index.json'}（{sz3} B，lineOrder {len(emitted_order)} 线、"
           + f"lineGroups {len(index_line_groups)} 组（其中含 main {sum(1 for g in index_line_groups if g['mainId'])} 组）"
+          + f"、stationGroups {len(station_groups)} 组"
           + (f"，自定义序前 {len(set(manifest_order or []))} 列" if manifest_order else "，无自定义顺序") + "）")
     return 0
 

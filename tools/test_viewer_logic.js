@@ -25,6 +25,10 @@
 // 2026-11-22 真数据抓包（「单线站名不见了」）：删初版自设的 LABEL_CAP=800 与 cap 入参——
 // 它数整份数据的标签总数，用户 58 线真数据 1040 个标签单元一超限，普通站名在一切 zoom
 // 全灭；用例改写为纯 zoom 门槛＋千级规模全链路回归（scaleLabels）。
+// 2026-11-23 增：嵌套换乘组（parseNetIndex 三版放行与字段判型／buildGroupTree 查组·父组·子组·
+// 最外层组·叶站／buildStopView 节点出图：中辰路·上海金山·中华艺术宫三形态＋出闸递归＋junction
+// 递归取叶站／logicalLineCount 药丸线数口径／groupRelations 关系描述／导出补注；回归＝旧实现
+// 对干净夹具的输出快照逐字段冻结；防御＝未知子组 id、无站组、成环、自指、多父、表外组、脏条目）。
 // 用法：node tools/test_viewer_logic.js（纯 node，不引 jsdom/DOM/maplibre）
 
 const V = require(path_join('src', 'viewer_core.js'));
@@ -925,6 +929,432 @@ eq(V.makeDispCoord('osm')(121.47, 31.23), [121.47, 31.23], 'makeDispCoord(osm) �
 eq(V.makeDispCoord('gaode')(121.47, 31.23), V.wgs84ToGcj02(121.47, 31.23), 'makeDispCoord(gaode)＝wgs84ToGcj02');
 eq(V.makeDispCoord('gaode')(0, 0), [0, 0], 'makeDispCoord(gaode) 境外恒等（outOfChina 内部守卫）');
 eq(V.makeDispCoord('weird')(1, 2), [1, 2], '未知 mode 兜恒等（防御）');
+
+// ---------- 嵌套换乘组（2026-11-23 用户裁定：换乘组可再把另一个组当成员） ----------
+// 数据契约：index.json（fmt net-index@3）顶层 stationGroups＝[{id, type, stops, groups}]；站 feature 的
+// groupId/groupType 仍＝直属组。节点＝最外层组；同站单元全部叶站合成一个符号（逻辑线 ≥3 药丸、否则
+// 合并黑边大圈）；出闸单元直属站各自成圈、各子组自成绘制单元递归；junction 成员递归取全部叶站。
+console.log('nested station groups:');
+// parseNetIndex：三版放行＋字段判型（胶水层 fetchNetFiles 只调它）
+{
+  const EMPTY_IDX = { indexOrder: null, lineGroups: null, stationGroups: null, problem: '' };
+  eq(V.parseNetIndex({ fmt: 'net-index@1', lineOrder: ['l0002', 'l0001'], lineGroups: [{ id: 'lg1' }], stationGroups: [{ id: 'g1' }] }),
+    { indexOrder: ['l0002', 'l0001'], lineGroups: null, stationGroups: null, problem: '' }, '@1＝仅 lineOrder（lineGroups/stationGroups 即便有也不收）');
+  const p2 = V.parseNetIndex({ fmt: 'net-index@2', lineOrder: ['l0001'], lineGroups: [{ id: 'lg1', members: ['l0001'] }] });
+  eq([p2.indexOrder, p2.lineGroups, p2.stationGroups, p2.problem], [['l0001'], [{ id: 'lg1', members: ['l0001'] }], null, ''], '@2＝lineOrder＋lineGroups（无 stationGroups＝各组顶层旧行为）');
+  const p3 = V.parseNetIndex({ fmt: 'net-index@3', lineOrder: [1], lineGroups: 'bad', stationGroups: [{ id: 'g1', type: null, stops: [], groups: [] }] });
+  eq([p3.indexOrder, p3.lineGroups, p3.stationGroups, p3.problem], [['1'], null, [{ id: 'g1', type: null, stops: [], groups: [] }], ''], '@3＝＋stationGroups；lineGroups 非数组按缺省；lineOrder 逐项 String');
+  const p3bad = V.parseNetIndex({ fmt: 'net-index@3', lineOrder: [], stationGroups: { id: 'g1' } });
+  eq([p3bad.indexOrder, p3bad.lineGroups, p3bad.stationGroups === null, p3bad.problem !== ''], [[], null, true, true],
+    '@3 而 stationGroups 非数组 → 置 null（按无嵌套）＋problem 带回提示（胶水层告警不抛）');
+  eq([V.parseNetIndex({ fmt: 'net-index@3' }).stationGroups, V.parseNetIndex({ fmt: 'net-index@3' }).problem !== ''], [null, true], '@3 缺 stationGroups 键同上');
+  eq(V.parseNetIndex({ fmt: 'net-index@4', lineOrder: ['l1'], stationGroups: [] }), EMPTY_IDX, 'fmt 不在名单＝整份视同不存在（全 null）——既有严格校验风格');
+  eq(V.parseNetIndex(null), EMPTY_IDX, 'null 不抛');
+  eq([V.parseNetIndex('net-index@3').stationGroups, V.parseNetIndex({ fmt: 'net-index@3', lineOrder: 'x', lineGroups: 7 }).lineGroups],
+    [null, null], '非对象/字段非数组不抛且按缺省');
+}
+
+// ① 回归：旧形态数据（无嵌套、组内不含主支线/联络线）下 pins/pills/labels 与改前逐字段一致
+//（SV_R_SNAPSHOT＝改前实现对本夹具的输出原样冻结，键序即输出序）
+const lmR = V.normalizeLines(fc(
+  lineFeat('ld', 0, 'existing', [[0, 0], [1, 0]], { name: '丁线', role: 'standalone' }),
+  lineFeat('le', 0, 'future', [[0, 0], [0, 1]], { name: '戊线', role: 'standalone' }),
+  lineFeat('lf', 0, 'future', [[0, 0], [1, 1]], { name: '己线', role: 'standalone' }),
+));
+const lgR = V.buildLineGroups(lmR, []);   // 无线组
+const stR = V.stopList(fc(
+  stopFeat('r1', '单站', 'ld', '丁线', 0.1, 0, 0),
+  stopFeat('r2', '三线汇', 'ld', '丁线', 0.5, 1, 1, 'gA', 'same-station'),
+  stopFeat('r3', '三线汇', 'le', '戊线', 0.5, 1.01, 1, 'gA', 'same-station'),
+  stopFeat('r4', '三线汇', 'lf', '己线', 0.5, 1, 1.01, 'gA', 'same-station'),
+  stopFeat('r5', '双线汇', 'ld', '丁线', 0.6, 2, 2, 'gB', 'same-station'),
+  stopFeat('r6', '双线汇', 'le', '戊线', 0.4, 2, 2, 'gB', 'same-station'),
+  stopFeat('r7', '接轨', 'ld', '丁线', 0.7, 3, 3, 'gC', 'junction'),
+  stopFeat('r8', '接轨', 'lf', '己线', 0.3, 3, 3, 'gC', 'junction'),
+  stopFeat('r9', '出闸西', 'ld', '丁线', 0.8, 4, 4, 'gD', 'out-of-station'),
+  stopFeat('r10', '出闸东', 'le', '戊线', 0.9, 4.01, 4, 'gD', 'out-of-station'),
+));
+const tableR = [
+  { id: 'gA', type: 'same-station', stops: ['r2', 'r3', 'r4'], groups: [] },
+  { id: 'gB', type: 'same-station', stops: ['r5', 'r6'], groups: [] },
+  { id: 'gC', type: 'junction', stops: ['r7', 'r8'], groups: [] },
+  { id: 'gD', type: 'out-of-station', stops: ['r9', 'r10'], groups: [] },
+];
+const SV_R_SNAPSHOT = {
+  pins: [
+    { kind: 'stop', key: 'r1', name: '单站', lineId: 'ld', lineNames: ['丁线'], groupType: null, groupId: null, stroke: null, big: false, lon: 0, lat: 0 },
+    { kind: 'group', key: 'g:gB', groupId: 'gB', name: '双线汇', lineNames: ['丁线', '戊线'], lineIds: ['ld', 'le'], groupType: 'same-station', big: true, lon: 2, lat: 2 },
+    { kind: 'group', key: 'g:gC', groupId: 'gC', name: '接轨', lineNames: ['丁线', '己线'], lineIds: ['ld', 'lf'], groupType: 'junction', big: false, lon: 3, lat: 3 },
+    { kind: 'stop', key: 'r9', name: '出闸西', lineId: 'ld', lineNames: ['丁线'], groupType: 'out-of-station', groupId: 'gD', stroke: null, big: false, lon: 4, lat: 4 },
+    { kind: 'stop', key: 'r10', name: '出闸东', lineId: 'le', lineNames: ['戊线'], groupType: 'out-of-station', groupId: 'gD', stroke: null, big: false, lon: 4.01, lat: 4 },
+  ],
+  pills: [
+    { key: 'g:gA', groupId: 'gA', lineIds: ['ld', 'le', 'lf'], chain: [[1.01, 1], [1, 1], [1, 1.01]],
+      pin: { kind: 'group', key: 'g:gA', groupId: 'gA', name: '三线汇', lineNames: ['丁线', '戊线', '己线'], lineIds: ['ld', 'le', 'lf'], groupType: 'same-station', big: true, lon: 1.0033333333333332, lat: 1.0033333333333332 } },
+  ],
+  labels: [
+    { key: 'r1', name: '单站', lon: 0, lat: 0, group: false, groupType: null, lineNames: ['丁线'], lineIds: ['ld'] },
+    { key: 'g:gA', name: '三线汇', lon: 1.0033333333333332, lat: 1.0033333333333332, group: true, groupType: 'same-station', lineNames: ['丁线', '戊线', '己线'], lineIds: ['ld', 'le', 'lf'] },
+    { key: 'g:gB', name: '双线汇', lon: 2, lat: 2, group: true, groupType: 'same-station', lineNames: ['丁线', '戊线'], lineIds: ['ld', 'le'] },
+    { key: 'g:gC', name: '接轨', lon: 3, lat: 3, group: true, groupType: 'junction', lineNames: ['丁线', '己线'], lineIds: ['ld', 'lf'] },
+    { key: 'g:gD', name: '出闸西', lon: 4.005, lat: 4, group: true, groupType: 'out-of-station', lineNames: ['丁线', '戊线'], lineIds: ['ld', 'le'] },
+  ],
+};
+eq(V.buildStopView(stR), SV_R_SNAPSHOT, '① 旧调用（不传 opts＝@1/@2 旧产物路径）输出＝改前快照');
+eq(V.buildStopView(stR, { linesMap: lmR, lineGroups: lgR }), SV_R_SNAPSHOT, '① 传 linesMap/lineGroups 不传结构表（@2 路径）＝改前快照');
+eq(V.buildStopView(stR, { linesMap: lmR, lineGroups: lgR, tree: V.buildGroupTree(tableR, stR) }), SV_R_SNAPSHOT,
+  '① 传 @3 平铺结构表（各组顶层、groups:[]）＝改前快照——单元数、字段、次序逐项一致');
+eq(V.buildStopView(stR, { linesMap: lmR, lineGroups: lgR, tree: {} }), SV_R_SNAPSHOT, 'opts.tree 非法对象 → 现搭平铺树，不抛（防御）');
+eq(V.buildStopView([]), { pins: [], pills: [], labels: [] }, '空输入不崩（嵌套改版后返回结构不变）');
+eq(V.buildStopView(null), { pins: [], pills: [], labels: [] }, 'null 输入不崩');
+eq(V.buildStopView('not-array'), { pins: [], pills: [], labels: [] }, '非数组输入不崩');
+// 明确按新口径断言：上方旧夹具 g1＝甲线(main)＋乙线(standalone)＋丙线(connector) → 逻辑线 2 → 合并大圈
+{
+  const svNew1 = V.buildStopView(st, { linesMap: lm, lineGroups: V.buildLineGroups(lm, []) });
+  ok(!svNew1.pills.some((p) => p.groupId === 'g1'), '① 新口径：g1 含联络线丙线 → 逻辑线 2 → 不出药丸');
+  const g1new = svNew1.pins.find((p) => p.key === 'g:g1');
+  ok(g1new && g1new.kind === 'group' && g1new.big === true && g1new.groupType === 'same-station' && g1new.lineIds.join(',') === 'la,lb,lc',
+    '① 新口径：g1 改合并黑边大圈，lineIds 仍收全部三条成员线');
+}
+
+// 三形态夹具（线 id/线名/站况取自用户 2026-11-23 裁定所举站例；坐标手造）
+const lmNx = V.normalizeLines(fc(
+  lineFeat('l0058', 0, 'future', [[121.20, 31.10], [121.21, 31.11]], { name: '嘉松路线', role: 'standalone' }),
+  lineFeat('l0075', 0, 'future', [[121.20, 31.00], [121.21, 31.00]], { name: '松江快线', role: 'main', groupId: 'lg06' }),
+  lineFeat('l0076', 0, 'future', [[121.20, 31.00], [121.20, 31.01]], { name: '松江快线支线', role: 'branch', groupId: 'lg06' }),
+  lineFeat('l0007', 0, 'future', [[121.30, 30.90], [121.31, 30.91]], { name: '沪乍线', role: 'standalone' }),
+  lineFeat('l0008', 0, 'existing', [[121.30, 30.90], [121.32, 30.92]], { name: '金铁-金山站联络线', role: 'connector', layer: '联络线' }),
+  lineFeat('l0057', 0, 'future', [[121.30, 30.95], [121.31, 30.96]], { name: '嘉青松金线', role: 'standalone' }),
+  lineFeat('l0034', 0, 'future', [[121.48, 31.18], [121.49, 31.19]], { name: '19号线', role: 'standalone' }),
+  lineFeat('l0051', 0, 'future', [[121.47, 31.17], [121.48, 31.18]], { name: '奉贤线', role: 'standalone' }),
+  lineFeat('l0054', 0, 'future', [[121.48, 31.17], [121.49, 31.18]], { name: '机场快线', role: 'standalone' }),
+  lineFeat('l0022', 0, 'existing', [[121.47, 31.18], [121.48, 31.19]], { name: '8号线', role: 'standalone' }),
+));
+const lgNx = V.buildLineGroups(lmNx, [{ id: 'lg06', name: '松江快线', members: ['l0075', 'l0076'] }]);
+const stNx = V.stopList(fc(
+  stopFeat('l0058-s11', '中辰路', 'l0058', '嘉松路线', 0.5, 121.205, 31.005, 'g9001', 'same-station'),      // 中辰路：外层同站组直属站
+  stopFeat('l0075-s11', '中辰路', 'l0075', '松江快线', 0.5, 121.2, 31.0, 'g0148', 'junction'),             // 中辰路：内层 junction（既有 g0148 不动）
+  stopFeat('l0076-s01', '中辰路', 'l0076', '松江快线支线', 0, 121.21, 31.01, 'g0148', 'junction'),
+  stopFeat('l0057-s15', '上海金山', 'l0057', '嘉青松金线', 0.5, 121.305, 30.955, 'g9002', 'same-station'),   // 上海金山：外层同站组直属站
+  stopFeat('l0007-s04', '上海金山', 'l0007', '沪乍线', 0.5, 121.3, 30.9, 'g0017', 'junction'),               // 上海金山：内层 junction（既有 g0017 不动）
+  stopFeat('l0008-s01', '上海金山', 'l0008', '金铁-金山站联络线', 0.5, 121.31, 30.91, 'g0017', 'junction'),
+  stopFeat('l0022-s20', '中华艺术宫', 'l0022', '8号线', 0.5, 121.475, 31.185, 'g9003', 'out-of-station'),   // 中华艺术宫：外层出闸组直属站
+  stopFeat('l0034-s16', '中华艺术宫', 'l0034', '19号线', 0.5, 121.48, 31.18, 'g9004', 'same-station'),       // 中华艺术宫：内层同站组
+  stopFeat('l0051-s03', '中华艺术宫', 'l0051', '奉贤线', 0.5, 121.47, 31.17, 'g9004', 'same-station'),
+  stopFeat('l0054-s06', '中华艺术宫', 'l0054', '机场快线', 0.5, 121.475, 31.175, 'g9004', 'same-station'),
+));
+const nxTable = [
+  { id: 'g9001', type: 'same-station', stops: ['l0058-s11'], groups: ['g0148'] },
+  { id: 'g0148', type: 'junction', stops: ['l0075-s11', 'l0076-s01'], groups: [] },
+  { id: 'g9002', type: 'same-station', stops: ['l0057-s15'], groups: ['g0017'] },
+  { id: 'g0017', type: 'junction', stops: ['l0007-s04', 'l0008-s01'], groups: [] },
+  { id: 'g9003', type: 'out-of-station', stops: ['l0022-s20'], groups: ['g9004'] },
+  { id: 'g9004', type: 'same-station', stops: ['l0034-s16', 'l0051-s03', 'l0054-s06'], groups: [] },
+  { id: 'g9009', type: 'junction', stops: ['l0007-s99'], groups: [] },   // 无输出站点的组（成员已被上游剔除的形态）
+];
+const treeNx = V.buildGroupTree(nxTable, stNx);
+const meanOf = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;   // 与实现同式同序（逐位一致）
+
+// buildGroupTree：查组/父组/子组/最外层组/叶站
+eq(treeNx.group('g9001').id, 'g9001', '树：按 id 查组');
+ok(treeNx.group('nope') === null, '树：未知 id → null');
+eq([treeNx.parentOf('g0148'), treeNx.parentOf('g9001'), treeNx.childrenOf('g9001'), treeNx.childrenOf('g0148'), treeNx.parentOf('nope'), treeNx.childrenOf('nope')],
+  ['g9001', null, ['g0148'], [], null, []], '树：父组/子组（结构表 groups 列表）');
+eq([treeNx.rootOf('g0148'), treeNx.rootOf('g9001'), treeNx.rootOf('g9004'), treeNx.rootOf('nope')],
+  ['g9001', 'g9001', 'g9003', null], '树：最外层组（子组上溯到节点；未知 → null）');
+eq(treeNx.subtreeIds('g9003'), ['g9003', 'g9004'], '树：自身＋全部子孙组（深度优先）');
+eq(treeNx.directStops('g9001').map((s) => s.sid), ['l0058-s11'], '树：直属站');
+eq(treeNx.leafStops('g9001').map((s) => s.sid), ['l0058-s11', 'l0075-s11', 'l0076-s01'], '树：叶站＝自身直属站＋子孙组直属站（站表序）');
+eq(treeNx.leafStops('g9009'), [], '树：无站组叶站为空');
+eq(treeNx.typeOf('g9001') + ',' + treeNx.typeOf('g0148') + ',' + treeNx.typeOf('g9003'), 'same-station,junction,out-of-station', '树：有效类型取结构表');
+eq(treeNx.order, ['g9001', 'g0148', 'g9002', 'g0017', 'g9003', 'g9004', 'g9009'], '树：稳定序＝子树首个叶站的站表下标，无站组排最后');
+
+const svNx = V.buildStopView(stNx, { linesMap: lmNx, lineGroups: lgNx, tree: treeNx });
+// ② 中辰路：外层 same-station｛直属 1 站＋junction 子组 2 站｝——子组两条线属同一线组 → 逻辑线 2 → 一个合并黑边大圈、一个标签
+{
+  const pin = svNx.pins.find((p) => p.key === 'g:g9001');
+  ok(pin && pin.kind === 'group' && pin.big === true && pin.groupType === 'same-station', '② 中辰路：整个节点一个合并黑边大圈');
+  ok(!svNx.pills.some((p) => p.groupId === 'g9001' || p.groupId === 'g0148'), '② 中辰路：不出药丸');
+  ok(!svNx.pins.some((p) => ['g:g0148', 'l0058-s11', 'l0075-s11', 'l0076-s01'].includes(p.key)), '② 中辰路：内层 junction 组与各叶站都不单独出圈');
+  const lb = svNx.labels.find((l) => l.key === 'g:g9001');
+  const lon = meanOf([121.205, 121.2, 121.21]), lat = meanOf([31.005, 31, 31.01]);
+  eq(lb, { key: 'g:g9001', name: '中辰路', lon, lat, group: true, groupType: 'same-station', lineNames: ['嘉松路线', '松江快线', '松江快线支线'], lineIds: ['l0058', 'l0075', 'l0076'] },
+    '② 中辰路：一个标签——位置＝三叶站均值、名取首个非空、lineIds 收全部成员线（含支线）');
+  eq(pin ? [pin.lon, pin.lat] : null, [lon, lat], '② 中辰路：并点位置＝叶站均值（与标签同位）');
+  eq(svNx.labels.filter((l) => l.lineIds.some((id) => id === 'l0058' || id === 'l0075' || id === 'l0076')), [lb], '② 中辰路：整个节点只有一个标签');
+  // 对照：不嵌套时是两个符号（单成员同站组＋junction 组各一）
+  const flatNx = V.buildGroupTree(nxTable.map((g) => Object.assign({}, g, { groups: [] })), stNx);
+  eq(V.buildStopView(stNx, { linesMap: lmNx, lineGroups: lgNx, tree: flatNx }).pins.filter((p) => p.groupId === 'g9001' || p.groupId === 'g0148').map((p) => p.key),
+    ['g:g9001', 'g:g0148'], '② 对照：不嵌套＝两个符号');
+}
+// ③ 上海金山：直属 1 站＋junction 子组 2 站（其中一条是 connector）→ 联络线不计 → 逻辑线 2 → 一个合并大黑圈
+{
+  const pin = svNx.pins.find((p) => p.key === 'g:g9002');
+  ok(pin && pin.kind === 'group' && pin.big === true && pin.groupType === 'same-station', '③ 上海金山：联络线不计 → 逻辑线 2 → 合并黑边大圈');
+  ok(!svNx.pills.some((p) => p.groupId === 'g9002'), '③ 上海金山：不出药丸');
+  eq((pin || {}).lineIds, ['l0057', 'l0007', 'l0008'], '③ 上海金山：pin.lineIds 仍收全部成员线（含联络线——调光/聚焦口径不变）');
+  ok(!svNx.pins.some((p) => ['g:g0017', 'l0057-s15', 'l0007-s04', 'l0008-s01'].includes(p.key)), '③ 上海金山：内层 junction 组与各叶站不单独出圈');
+  const lb = svNx.labels.find((l) => l.key === 'g:g9002') || {};
+  eq([lb.name, lb.lon, lb.lat], ['上海金山', meanOf([121.305, 121.3, 121.31]), meanOf([30.955, 30.9, 30.91])], '③ 上海金山：一个标签（叶站均值）');
+  // 反证：同形态但子组无联络线（沪乍线＋原联络线各算一条）→ 逻辑线 3 → 药丸
+  const lmNx2 = new Map(lmNx);
+  lmNx2.set('l0008', Object.assign({}, lmNx.get('l0008'), { role: 'standalone' }));
+  const pill2 = V.buildStopView(stNx, { linesMap: lmNx2, lineGroups: lgNx, tree: treeNx }).pills.find((p) => p.groupId === 'g9002');
+  eq([pill2 ? pill2.chain.length : 0, pill2 ? pill2.pin.lineIds : null], [3, ['l0057', 'l0007', 'l0008']], '③ 反证：联络线改独立线后同节点逻辑线 3 → 药丸（叶站链）');
+}
+// ④ 中华艺术宫：外层 out-of-station｛直属 8 号线 1 站＋same-station 子组 3 站｝
+{
+  const p8 = svNx.pins.find((p) => p.key === 'l0022-s20');
+  ok(p8 && p8.kind === 'stop' && p8.big === false && p8.groupType === 'out-of-station' && p8.groupId === 'g9003' && p8.lineId === 'l0022',
+    '④ 中华艺术宫：8 号线直属站一个普通尺寸黑边圈');
+  ok(!svNx.pins.some((p) => ['g:g9003', 'g:g9004', 'l0034-s16', 'l0051-s03', 'l0054-s06'].includes(p.key)), '④ 中华艺术宫：内层同站组成员圈与合并圈都不出（药丸即换乘标识）');
+  const pill = svNx.pills.find((p) => p.key === 'g:g9004');
+  ok(pill && pill.pin && pill.pin.kind === 'group' && pill.pin.big === true && pill.pin.groupType === 'same-station' && pill.pin.groupId === 'g9004',
+    '④ 中华艺术宫：内层同站子组自成绘制单元——一枚药丸（逻辑线 3）');
+  eq(pill.chain, [[121.48, 31.18], [121.475, 31.175], [121.47, 31.17]], '④ 中华艺术宫：药丸链序＝三叶站贪心最近邻');
+  eq(svNx.labels.find((l) => l.key === 'g:g9003'),
+    { key: 'g:g9003', name: '中华艺术宫', lon: 121.475, lat: 31.185, group: true, groupType: 'out-of-station', lineNames: ['8号线'], lineIds: ['l0022'] },
+    '④ 中华艺术宫：出闸单元自己的标签只对直属站算（均值＝该站自身）');
+  eq(svNx.labels.find((l) => l.key === 'g:g9004'),
+    { key: 'g:g9004', name: '中华艺术宫', lon: meanOf([121.48, 121.47, 121.475]), lat: meanOf([31.18, 31.17, 31.175]), group: true, groupType: 'same-station',
+      lineNames: ['19号线', '奉贤线', '机场快线'], lineIds: ['l0034', 'l0051', 'l0054'] },
+    '④ 中华艺术宫：子组自己的标签');
+  eq(svNx.pins.map((p) => p.key), ['g:g9001', 'g:g9002', 'l0022-s20'], '④ 全视图 pins（无站组 g9009 不出图形）');
+  eq(svNx.pills.map((p) => p.key), ['g:g9004'], '④ 全视图药丸');
+  eq(svNx.labels.map((l) => l.key), ['g:g9001', 'g:g9002', 'g:g9003', 'g:g9004'], '④ 全视图标签：每个单元各一');
+  // 出闸单元无直属站 → 不出自己的标签（把 8 号线站挪出直属表）
+  const noDirect = nxTable.map((g) => (g.id === 'g9003' ? Object.assign({}, g, { stops: [] }) : g));
+  const stNo = stNx.filter((s) => s.sid !== 'l0022-s20');
+  eq(V.buildStopView(stNo, { linesMap: lmNx, lineGroups: lgNx, tree: V.buildGroupTree(noDirect, stNo) }).labels.map((l) => l.key),
+    ['g:g9001', 'g:g9002', 'g:g9004'], '④ 出闸单元没有直属站则本单元不出自己的标签（子组标签照出）');
+  // 站名门槛规则不动：嵌套单元的标签一律 group 标签（z≥10 显示、再拉远不显示）
+  eq([V.filterLabels(svNx.labels, 10).length, V.filterLabels(svNx.labels, 9.99).length], [4, 0], '嵌套单元标签沿用组门槛 z≥10');
+  // 调光口径不变：单元标签收全部成员线，全成员被调光才隐藏
+  eq([V.visibleLabels(svNx.labels, 12, { dimmedSet: ['l0008'] }).some((l) => l.key === 'g:g9002'),
+    V.visibleLabels(svNx.labels, 12, { dimmedSet: ['l0057', 'l0007', 'l0008'] }).some((l) => l.key === 'g:g9002')],
+  [true, false], '调光口径不变：联络线被调光不隐藏上海金山标签，三成员全调光才隐藏');
+}
+// junction 节点：成员递归取全部叶站、画法不变（合并普通尺寸圈、不出大圈不出药丸）
+{
+  const stJ = V.stopList(fc(
+    stopFeat('j1', '接轨枢纽', 'l0007', '沪乍线', 0.5, 10, 10, 'jN', 'junction'),
+    stopFeat('j2', '接轨枢纽', 'l0034', '19号线', 0.5, 10.1, 10, 'jI', 'same-station'),
+    stopFeat('j3', '接轨枢纽', 'l0051', '奉贤线', 0.5, 10, 10.1, 'jI', 'same-station'),
+  ));
+  const svJ = V.buildStopView(stJ, { linesMap: lmNx, lineGroups: lgNx, tree: V.buildGroupTree([
+    { id: 'jN', type: 'junction', stops: ['j1'], groups: ['jI'] }, { id: 'jI', type: 'same-station', stops: ['j2', 'j3'], groups: [] }], stJ) });
+  eq(svJ.pins.map((p) => [p.key, p.kind, p.big, p.groupType, p.lineIds.join(',')]), [['g:jN', 'group', false, 'junction', 'l0007,l0034,l0051']],
+    'junction 节点：一个合并普通尺寸圈，成员线递归取全部叶站（渲染层按角色优先级取描边色不变）');
+  eq(svJ.pills, [], 'junction 节点：不出药丸');
+  eq(svJ.labels.map((l) => l.key), ['g:jN'], 'junction 节点：一个标签');
+}
+// 出闸套出闸（三层）：子组按自身 type 递归
+{
+  const stO = V.stopList(fc(
+    stopFeat('o1', '闸甲', 'l0007', '沪乍线', 0.1, 20, 20, 'oA', 'out-of-station'),
+    stopFeat('o2', '闸乙', 'l0034', '19号线', 0.1, 20.01, 20, 'oB', 'out-of-station'),
+    stopFeat('o3', '闸丙', 'l0051', '奉贤线', 0.1, 20.02, 20, 'oC', 'same-station'),
+    stopFeat('o4', '闸丙', 'l0054', '机场快线', 0.1, 20.02, 20, 'oC', 'same-station'),
+  ));
+  const svO = V.buildStopView(stO, { linesMap: lmNx, lineGroups: lgNx, tree: V.buildGroupTree([
+    { id: 'oA', type: 'out-of-station', stops: ['o1'], groups: ['oB'] },
+    { id: 'oB', type: 'out-of-station', stops: ['o2'], groups: ['oC'] },
+    { id: 'oC', type: 'same-station', stops: ['o3', 'o4'], groups: [] }], stO) });
+  eq(svO.pins.map((p) => [p.key, p.big, p.groupType]), [['o1', false, 'out-of-station'], ['o2', false, 'out-of-station'], ['g:oC', true, 'same-station']],
+    '出闸套出闸：两层直属站各自成圈，孙组按自身同站类型合成大圈（逻辑线 2）');
+  eq(svO.labels.map((l) => l.key), ['g:oA', 'g:oB', 'g:oC'], '出闸套出闸：三个单元各一标签');
+  const relO = V.groupRelations('oC', false, V.buildGroupTree([
+    { id: 'oA', type: 'out-of-station', stops: ['o1'], groups: ['oB'] },
+    { id: 'oB', type: 'out-of-station', stops: ['o2'], groups: ['oC'] },
+    { id: 'oC', type: 'same-station', stops: ['o3', 'o4'], groups: [] }], stO), lmNx, lgNx);
+  eq([relO.nodeChain, relO.partners], ['出闸换乘（组 oA） › 出闸换乘（组 oB）', '闸乙（19号线）'], '出闸套出闸：换乘节点链自最外层组向下；对端＝直属上级的直属站');
+}
+// type null／未知类型：沿用旧代码对 null 的处理（按同站换乘）；结构表类型优先于站 groupType
+{
+  const stN = V.stopList(fc(
+    stopFeat('n1', '未定甲', 'l0007', '沪乍线', 0.1, 30, 30, 'nA', null),
+    stopFeat('n2', '未定甲', 'l0034', '19号线', 0.1, 30, 30, 'nA', null),
+    stopFeat('n3', '未定甲', 'l0051', '奉贤线', 0.1, 30, 30, 'nA', null),
+    stopFeat('n4', '怪类', 'l0054', '机场快线', 0.1, 31, 31, 'nB', 'weird'),
+    stopFeat('n5', '怪类', 'l0057', '嘉青松金线', 0.1, 31, 31, 'nB', 'weird'),
+    stopFeat('n6', '表定', 'l0022', '8号线', 0.1, 32, 32, 'nC', 'same-station'),
+  ));
+  const trN = V.buildGroupTree([{ id: 'nA', type: null, stops: ['n1', 'n2', 'n3'], groups: [] }, { id: 'nC', type: 'junction', stops: ['n6'], groups: [] }], stN);
+  const svN = V.buildStopView(stN, { linesMap: lmNx, lineGroups: lgNx, tree: trN });
+  eq([svN.pills.map((p) => p.groupId), svN.pills[0].pin.groupType, svN.pins.map((p) => [p.key, p.big])],
+    [['nA'], 'same-station', [['g:nB', true], ['g:nC', false]]],
+    'type null／未知 → 按同站换乘（三线出药丸、两线出大圈）；结构表类型优先于站 groupType（nC 站写 same-station、表定 junction → junction 圈）');
+}
+
+// ⑤ 药丸线数口径：按逻辑线去重——联络线不计；同一有效线组算一条；其余各算一条
+const lmCnt = V.normalizeLines(fc(
+  lineFeat('cm', 0, 'future', [[0, 0], [1, 0]], { name: '主线甲', role: 'main', groupId: 'lgC' }),
+  lineFeat('cb', 0, 'future', [[0, 0], [0, 1]], { name: '支线甲', role: 'branch', groupId: 'lgC' }),
+  lineFeat('cd', 0, 'future', [[0, 0], [1, 1]], { name: '独立乙', role: 'standalone' }),
+  lineFeat('ce', 0, 'future', [[0, 0], [2, 1]], { name: '独立丙', role: 'standalone' }),
+  lineFeat('ch', 0, 'future', [[0, 0], [3, 1]], { name: '独立己', role: 'standalone' }),
+  lineFeat('cf', 0, 'future', [[0, 0], [4, 1]], { name: '联络丁', role: 'connector' }),
+  lineFeat('cg', 0, 'future', [[0, 0], [5, 1]], { name: '联络戊', role: 'connector' }),
+  lineFeat('x1', 0, 'future', [[0, 0], [6, 1]], { name: '无主组员甲', role: 'standalone', groupId: 'lgX' }),   // 无 main 的线组（不归并）
+  lineFeat('x2', 0, 'future', [[0, 0], [7, 1]], { name: '无主组员乙', role: 'branch', groupId: 'lgX' }),
+));
+const lgCnt = V.buildLineGroups(lmCnt, [{ id: 'lgC', name: '主线甲', members: ['cm', 'cb'] }, { id: 'lgX', name: '坏组', members: ['x1', 'x2'] }]);
+console.log('logical line count:');
+eq(V.logicalLineCount(['cm', 'cb', 'cd'], lmCnt, lgCnt), 2, '⑤ 主线＋支线＋另一线＝2（支线算一条）');
+eq(V.logicalLineCount(['cd', 'ce', 'ch'], lmCnt, lgCnt), 3, '⑤ 三条互不隶属的线＝3');
+eq(V.logicalLineCount(['cd', 'ce', 'cf'], lmCnt, lgCnt), 2, '⑤ 联络线不计（三线含一联络线＝2）');
+eq(V.logicalLineCount(['cf', 'cg'], lmCnt, lgCnt), 0, '⑤ 全是联络线＝0');
+eq(V.logicalLineCount(['cm', 'cb'], lmCnt, lgCnt), 1, '⑤ 只有一条逻辑线（同一线组）＝1');
+eq(V.logicalLineCount(['cm', 'cb', 'cd'], lmCnt, null), 3, '⑤ 不传 lineGroups＝不归并（各自一条）');
+eq(V.logicalLineCount(['cd', 'ce', 'cf'], null, lgCnt), 3, '⑤ 不传 linesMap＝角色未知，联络线照计（旧行为）');
+eq(V.logicalLineCount(['cd', 'ce', 'zz'], lmCnt, lgCnt), 3, '⑤ 线不在 linesMap（孤站）＝按独立一条计');
+eq(V.logicalLineCount(['x1', 'x2', 'cd'], lmCnt, lgCnt), 3, '⑤ 无 main 的线组不归并（各算一条）');
+eq([V.logicalLineCount([], lmCnt, lgCnt), V.logicalLineCount(['cd', 'cd', null, ''], lmCnt, lgCnt), V.logicalLineCount(null, lmCnt, lgCnt)], [0, 1, 0], '⑤ 空/重复/脏输入');
+const cntStops = V.stopList(fc(
+  stopFeat('cm-s1', '汇甲', 'cm', '主线甲', 0.5, 1, 1, 'kA', 'same-station'),
+  stopFeat('cb-s1', '汇甲', 'cb', '支线甲', 0.5, 1, 1, 'kA', 'same-station'),
+  stopFeat('cd-s1', '汇甲', 'cd', '独立乙', 0.5, 1, 1, 'kA', 'same-station'),     // kA＝主线＋支线＋另一线 → 2
+  stopFeat('cd-s2', '汇乙', 'cd', '独立乙', 0.6, 2, 2, 'kB', 'same-station'),
+  stopFeat('ce-s1', '汇乙', 'ce', '独立丙', 0.6, 2, 2, 'kB', 'same-station'),
+  stopFeat('cf-s1', '汇乙', 'cf', '联络丁', 0.6, 2, 2, 'kB', 'same-station'),     // kB＝两独立线＋联络线 → 2
+  stopFeat('cd-s3', '汇丙', 'cd', '独立乙', 0.7, 3, 3, 'kC', 'same-station'),
+  stopFeat('ce-s2', '汇丙', 'ce', '独立丙', 0.7, 3, 3, 'kC', 'same-station'),
+  stopFeat('ch-s1', '汇丙', 'ch', '独立己', 0.7, 3, 3, 'kC', 'same-station'),     // kC＝三条互不隶属 → 3
+  stopFeat('cf-s2', '汇丁', 'cf', '联络丁', 0.8, 4, 4, 'kD', 'same-station'),
+  stopFeat('cg-s1', '汇丁', 'cg', '联络戊', 0.8, 4, 4, 'kD', 'same-station'),     // kD＝全是联络线 → 0
+  stopFeat('cm-s2', '汇戊', 'cm', '主线甲', 0.9, 5, 5, 'kE', 'same-station'),
+  stopFeat('cb-s2', '汇戊', 'cb', '支线甲', 0.9, 5, 5, 'kE', 'same-station'),     // kE＝同一线组 → 1
+));
+const svCnt = V.buildStopView(cntStops, { linesMap: lmCnt, lineGroups: lgCnt });
+eq(svCnt.pills.map((p) => p.groupId), ['kC'], '⑤ 只有「三条互不隶属的线」出药丸');
+eq(svCnt.pins.filter((p) => p.kind === 'group').map((p) => p.groupId), ['kA', 'kB', 'kD', 'kE'], '⑤ 主线＋支线＋另一线／含联络线／全是联络线／只有一条逻辑线 → 一律合并黑边大圈');
+ok(svCnt.pins.filter((p) => p.kind === 'group').every((p) => p.big === true && p.groupType === 'same-station'), '⑤ 大圈 pin 的 big/groupType');
+eq(svCnt.pins.find((p) => p.groupId === 'kB').lineIds, ['cd', 'ce', 'cf'], '⑤ 大圈 pin.lineIds 仍收全部成员线（含联络线）');
+eq(svCnt.labels.find((l) => l.key === 'g:kA').lineIds, ['cm', 'cb', 'cd'], '⑤ 标签 lineIds 同口径（含支线）');
+// 口径适用于一切同站单元（含不嵌套的普通同站组）：不传 linesMap 的旧调用对同一夹具仍按 distinct 计
+eq(V.buildStopView(cntStops).pills.map((p) => p.groupId), ['kA', 'kB', 'kC'], '⑤ 对照：旧调用（无 linesMap）按 distinct lineId 计 → kA/kB 也出药丸（旧行为，仅旧产物路径）');
+
+// ⑥ 防御：未知子组 id、无站组、成环、自指、多父、表外组、脏条目——不死循环、不抛错
+const stD = V.stopList(fc(
+  stopFeat('d1', '环甲', 'cd', '独立乙', 0.1, 0, 0, 'cA', 'out-of-station'),
+  stopFeat('d2', '环乙', 'cd', '独立乙', 0.2, 1, 0, 'cB', 'out-of-station'),
+  stopFeat('d3', '环丙', 'cd', '独立乙', 0.3, 2, 0, 'cC', 'out-of-station'),
+  stopFeat('d4', '环尾', 'cd', '独立乙', 0.4, 3, 0, 'rX', 'same-station'),
+  stopFeat('d5', '多父子', 'cd', '独立乙', 0.5, 4, 0, 'mC', 'same-station'),
+  stopFeat('d6', '自指', 'cd', '独立乙', 0.6, 5, 0, 'sS', 'same-station'),
+  stopFeat('d7', '表外组', 'cd', '独立乙', 0.7, 6, 0, 'uG', 'junction'),
+  stopFeat('d8', '幽灵父', 'cd', '独立乙', 0.8, 7, 0, 'gP', 'out-of-station'),
+));
+const dirtyTable = [
+  { id: 'cA', type: 'out-of-station', stops: ['d1'], groups: ['cB', 'rX'] },
+  { id: 'cB', type: 'out-of-station', stops: ['d2'], groups: ['cC'] },
+  { id: 'cC', type: 'out-of-station', stops: ['d3'], groups: ['cA'] },      // 三环 cA→cB→cC→cA；rX 挂环上（rho 形）
+  { id: 'rX', type: 'same-station', stops: ['d4'], groups: [] },
+  { id: 'mP1', type: 'out-of-station', stops: [], groups: ['mC'] },         // 多父：mC 同时被 mP1/mP2 声明
+  { id: 'mP2', type: 'out-of-station', stops: [], groups: ['mC'] },
+  { id: 'mC', type: 'same-station', stops: ['d5'], groups: [] },
+  { id: 'sS', type: 'same-station', stops: ['d6'], groups: ['sS'] },        // 自指
+  { id: 'gP', type: 'out-of-station', stops: ['d8'], groups: ['ghost'] },   // 未知子组 id（表里没有、也无站指向）
+  { id: 'empty', type: 'junction', stops: [], groups: [] },                  // 无站组
+];
+const treeD = V.buildGroupTree(dirtyTable, stD);
+eq([treeD.rootOf('cA'), treeD.rootOf('cB'), treeD.rootOf('cC'), treeD.rootOf('rX')], ['cA', 'cA', 'cA', 'cA'], '⑥ 三环取环上 id 最小者当根');
+eq(treeD.subtreeIds('cA'), ['cA', 'cB', 'cC', 'rX'], '⑥ 环上子树遍历每组至多一次');
+eq([treeD.parentOf('mC'), treeD.childrenOf('mP1'), treeD.childrenOf('mP2')], ['mP1', ['mC'], []], '⑥ 多父取表序首个声明它的父；另一父的子组表不含它');
+eq([treeD.parentOf('sS'), treeD.childrenOf('sS')], [null, []], '⑥ 自指忽略');
+eq([treeD.typeOf('uG'), treeD.parentOf('uG'), treeD.rootOf('uG'), treeD.group('ghost') !== null], ['junction', null, 'uG', true],
+  '⑥ 站指向了、表里却没有的组＝合成顶层组（站点不丢）；未知子组 id 也可查（空记录）');
+const svD = V.buildStopView(stD, { linesMap: lmCnt, lineGroups: lgCnt, tree: treeD });
+//（次序＝稳定序：节点按「子树首个叶站的站表下标」排——mP1 自身无站、随其子组 mC 的叶站排在 sS 之前）
+eq(svD.pins.map((p) => p.key), ['d1', 'd2', 'd3', 'g:rX', 'g:mC', 'g:sS', 'g:uG', 'd8'], '⑥ 成环/多父/自指/表外组：每站每单元只出一次，不死循环不抛错');
+eq(svD.labels.map((l) => l.key), ['g:cA', 'g:cB', 'g:cC', 'g:rX', 'g:mC', 'g:sS', 'g:uG', 'g:gP'], '⑥ 标签同上（无直属站的出闸单元 mP1/mP2、无站组 empty 不出标签）');
+ok(!svD.pins.some((p) => p.groupId === 'empty') && !svD.pills.length, '⑥ 无站组不出任何图形');
+ok(V.groupRelations('gP', true, treeD, lmCnt, lgCnt) === null, '⑥ 幽灵子组不出现在关系描述里（视同无嵌套）');
+// 同站环：环上全部叶站合成一个符号
+{
+  const stS = V.stopList(fc(
+    stopFeat('q1', '同站环甲', 'cd', '独立乙', 0.1, 0, 0, 'sA', 'same-station'),
+    stopFeat('q2', '同站环乙', 'ce', '独立丙', 0.1, 1, 0, 'sB', 'same-station'),
+  ));
+  const svS = V.buildStopView(stS, { linesMap: lmCnt, lineGroups: lgCnt, tree: V.buildGroupTree([
+    { id: 'sA', type: 'same-station', stops: ['q1'], groups: ['sB'] }, { id: 'sB', type: 'same-station', stops: ['q2'], groups: ['sA'] }], stS) });
+  eq([svS.pins.map((p) => p.key), svS.labels.map((l) => l.key), svS.pins[0].lineIds], [['g:sA'], ['g:sA'], ['cd', 'ce']], '⑥ 同站成环：一个合并大圈、一个标签（叶站不丢不重）');
+}
+// 脏结构表条目：逐项判型跳过、不抛；重复 id 首条为准
+{
+  const trDirty = V.buildGroupTree([
+    null, 5, 'x', [], { id: null }, { id: '' },                                              // 非对象/无 id/空 id
+    { id: 'dQ', type: 7, groups: 'zz', stops: 'not-array' },                                  // 类型非字符串、groups/stops 非数组
+    { id: 'cA', type: 'out-of-station', stops: ['d1'], groups: ['cB'] },
+    { id: 'cA', type: 'junction' },                                                          // 重复 id
+  ].concat(dirtyTable.slice(1)), stD);
+  eq([trDirty.typeOf('dQ'), trDirty.typeOf('cA'), trDirty.childrenOf('dQ'), trDirty.rootOf('dQ')], ['same-station', 'out-of-station', [], 'dQ'],
+    '⑥ 脏条目逐项跳过不抛（未知类型按同站、非数组 groups 按缺省）；重复 id 首条为准');
+  eq(V.buildGroupTree(null, stD).order.length, new Set(stD.filter((s) => s.groupId).map((s) => s.groupId)).size, '无结构表（null）＝按站的直属组合成平铺组');
+  eq(V.buildGroupTree('bad', stD).group('cA').type, 'out-of-station', '结构表非数组＝按无表处理（类型取站 groupType）');
+}
+
+// 嵌套关系描述（信息面板用）：中华艺术宫＝「出闸换乘」关系的两端是 8 号线与「同站换乘：19号线、奉贤线、机场快线」这一组
+console.log('group relations:');
+eq(V.groupRelations('g9003', true, treeNx, lmNx, lgNx),
+  { nodeChain: '出闸换乘（组 g9003）', nodeMembers: '', partners: '同站换乘：19号线、奉贤线、机场快线' },
+  '面板·点 8 号线直属站：换乘对端＝「同站换乘：19号线、奉贤线、机场快线」（既有类型名，不新造术语）');
+eq(V.groupRelations('g9004', false, treeNx, lmNx, lgNx),
+  { nodeChain: '出闸换乘（组 g9003）', nodeMembers: '', partners: '中华艺术宫（8号线）' },
+  '面板·点内层药丸：换乘节点＝上级出闸组；换乘对端＝8 号线直属站');
+eq(V.groupRelations('g9001', false, treeNx, lmNx, lgNx),
+  { nodeChain: '', nodeMembers: '中辰路（嘉松路线）；接轨站：松江快线', partners: '' },
+  '面板·点中辰路合并圈：节点成员＝直属站＋子组（主支线显示组名并去重）');
+eq(V.groupRelations('g9002', false, treeNx, lmNx, lgNx),
+  { nodeChain: '', nodeMembers: '上海金山（嘉青松金线）；接轨站：沪乍线、金铁-金山站联络线', partners: '' },
+  '面板·点上海金山合并圈：节点成员含联络线子组（描述里联络线照列，线数口径只管画法）');
+eq(V.groupRelations('g0148', false, treeNx, lmNx, lgNx), { nodeChain: '同站换乘（组 g9001）', nodeMembers: '', partners: '' },
+  '关系描述对内层组：上级链到节点为止（内层组无独立 pin，此路径界面不可达，仅证不抛）');
+ok(V.groupRelations('g9001', false, V.buildGroupTree(nxTable.map((g) => Object.assign({}, g, { groups: [] })), stNx), lmNx, lgNx) === null,
+  '平铺组返回 null（面板一行不加＝与旧版一致）');
+eq(V.groupRelations('g9003', false, treeNx, lmNx, lgNx),
+  { nodeChain: '', nodeMembers: '中华艺术宫（8号线）；同站换乘：19号线、奉贤线、机场快线', partners: '' },
+  '关系描述对出闸节点本身的组 pin 视角＝节点成员（界面不可达：出闸单元没有组 pin，仅证不抛）');
+ok(V.groupRelations(null, false, treeNx, lmNx, lgNx) === null && V.groupRelations('g9001', false, null, lmNx, lgNx) === null
+  && V.groupRelations('nope', false, treeNx, lmNx, lgNx) === null && V.groupRelations('g9001', false, {}, lmNx, lgNx) === null,
+  '无组/无树/非树对象/未知组 → null');
+eq(V.groupRelations('g9004', false, treeNx, null, null),
+  { nodeChain: '出闸换乘（组 g9003）', nodeMembers: '', partners: '中华艺术宫（8号线）' },
+  '不传 linesMap/lineGroups：线路显示名退线名/线 id，文案结构不变');
+// 多成员出闸（直属站两条线＋两个子组）：对端全列
+{
+  const stM = V.stopList(fc(
+    stopFeat('m1', '闸西', 'l0022', '8号线', 0.1, 40, 40, 'mA', 'out-of-station'),
+    stopFeat('m2', '闸西', 'l0007', '沪乍线', 0.1, 40, 40, 'mA', 'out-of-station'),
+    stopFeat('m3', '闸东', 'l0034', '19号线', 0.1, 40.01, 40, 'mB', 'same-station'),
+    stopFeat('m4', '闸东', 'l0051', '奉贤线', 0.1, 40.01, 40, 'mB', 'same-station'),
+    stopFeat('m5', '闸北', 'l0054', '机场快线', 0.1, 40, 40.01, 'mC', 'junction'),
+  ));
+  const trM = V.buildGroupTree([
+    { id: 'mA', type: 'out-of-station', stops: ['m1', 'm2'], groups: ['mB', 'mC'] },
+    { id: 'mB', type: 'same-station', stops: ['m3', 'm4'], groups: [] },
+    { id: 'mC', type: 'junction', stops: ['m5'], groups: [] }], stM);
+  eq(V.groupRelations('mA', true, trM, lmNx, lgNx),
+    { nodeChain: '出闸换乘（组 mA）', nodeMembers: '', partners: '同站换乘：19号线、奉贤线；接轨站：机场快线' },
+    '多成员出闸·直属站视角：对端＝各子组（同单元其余直属站走既有「组内车站」行不重复）');
+  eq(V.groupRelations('mB', false, trM, lmNx, lgNx),
+    { nodeChain: '出闸换乘（组 mA）', nodeMembers: '', partners: '闸西（8号线）、闸西（沪乍线）；接轨站：机场快线' },
+    '多成员出闸·子组视角：对端＝上级的直属站＋其余兄弟子组');
+}
+
+// 单线导出补注：仅嵌套节点的站补节点信息；平铺组/不传 tree＝旧版输出
+{
+  const gjNx = V.buildLineGeoJSON('l0034', lmNx, stNx, treeNx);
+  eq(gjNx.features[1].properties, { sid: 'l0034-s16', name: '中华艺术宫', lineId: 'l0034', t: 0.5, groupId: 'g9004', groupType: 'same-station', nodeGroupId: 'g9003', nodeGroupType: 'out-of-station' },
+    '导出 GeoJSON：嵌套节点的站补 nodeGroupId/nodeGroupType（直属组两键不变）');
+  ok(!('nodeGroupId' in V.buildLineGeoJSON('l0034', lmNx, stNx).features[1].properties), '导出 GeoJSON：不传 tree＝旧版输出（无补键）');
+  ok(!('nodeGroupId' in V.buildLineGeoJSON('l0034', lmNx, stNx, V.buildGroupTree(nxTable.map((g) => Object.assign({}, g, { groups: [] })), stNx)).features[1].properties),
+    '导出 GeoJSON：平铺组传 tree 也不补键');
+  ok(V.buildLineKML('l0034', lmNx, stNx, { tree: treeNx })
+    .includes('<description>' + V.xmlEscape('所属：19号线；同站换乘；换乘节点：出闸换乘（组 g9003）') + '</description>'), '导出 KML：描述追加「换乘节点：类型（组 id）」');
+  ok(!V.buildLineKML('l0034', lmNx, stNx).includes('换乘节点'), '导出 KML：不传 tree＝旧版输出');
+  eq(V.buildLineGeoJSON('nope', lmNx, stNx, treeNx), null, '导出：未知线路照旧 null');
+}
 
 console.log(fails ? `\nFAIL - ${fails} assertion(s)` : '\nPASS - viewer logic OK');
 process.exit(fails ? 1 : 0);

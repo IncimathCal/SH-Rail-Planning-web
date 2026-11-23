@@ -4,7 +4,9 @@
 // 出省箭头（kind:'arrow' 落位/编组/命名/校验）、多线换乘药丸串法（planGroupPillChain 确定性）、
 // 线路显示顺序（normalizeLineOrder：缺省回退/序列化补全/新建追加/失效清理/删除移除）、
 // 站类型循环切换（nextStopKind：三种位置 × 各起点）、站数<2 缺 status 载入兜底（2026-11-22）、
-// 联络线有效目标判定（connValidTargets：2026-11-22 取消颜色属性改由所联络两线决定）。
+// 联络线有效目标判定（connValidTargets：2026-11-22 取消颜色属性改由所联络两线决定）、
+// 嵌套换乘组（2026-11-23：组树工具含成环/未知子组防御、绘制单元规划、药丸线数口径、含整组的编组判定、
+// groups 字段往返、拆组/删站修剪级联、判脏键）、联络线不带颜色属性（stripConnectorColor/lineForSave）。
 // 用法：node tools/test_editor_logic.js
 
 const L = require(path_join('src', 'editor.js'));
@@ -881,6 +883,278 @@ eq(L.segStatusesOf(Object.assign(mkKeyLine(), { sections: [{ name: '', status: '
   ['existing', 'existing'], '缺记录/非法状态兜底 existing');
 ok(L.isReservedLine({ meta: { layer: '预控通道' } }) && !L.isReservedLine({ meta: { layer: '市域线' } })
   && !L.isReservedLine({}) && !L.isReservedLine(null), '预控通道类别判定');
+
+// ---------- 嵌套换乘组（2026-11-23 用户裁定「换乘组可以再把另一个组当成员」）：组树工具 ----------
+console.log('nested station groups: tree');
+// 中华艺术宫型：外层出闸＋内层同站；另造出闸套出闸＋接轨站，验证「每个子组自成一个单元、递归套用」
+const NEST = [
+  { id: 'g0101', type: 'out-of-station', stops: ['a'], groups: ['g0102', 'g0103'], info: {} },
+  { id: 'g0102', type: 'same-station', stops: ['b', 'c'], info: {} },
+  { id: 'g0103', type: 'out-of-station', stops: ['d'], groups: ['g0104'], info: {} },
+  { id: 'g0104', type: 'junction', stops: ['e', 'f'], info: {} },
+];
+const TN = L.groupTree(NEST);
+eq(TN.parentOf.get('g0102'), 'g0101', 'parentOf：子组 → 父组');
+eq(TN.parentOf.get('g0104'), 'g0103', 'parentOf：多层的直属父组');
+ok(!TN.parentOf.has('g0101'), '最外层组没有上级');
+eq([...TN.childrenOf.get('g0101')], ['g0102', 'g0103'], 'childrenOf：保持 groups 书写序');
+eq(TN.childrenOf.get('g0102'), [], '无子组的组 childrenOf 为空数组');
+ok(L.groupIsRoot(TN, 'g0101') && !L.groupIsRoot(TN, 'g0102') && !L.groupIsRoot(TN, 'g0104'), 'groupIsRoot：无上级为顶层');
+eq(L.groupLeafStops(TN, 'g0101'), ['a', 'b', 'c', 'd', 'e', 'f'], '叶站＝直属站在前＋子组深度优先');
+eq(L.groupLeafStops(TN, 'g0103'), ['d', 'e', 'f'], '中层单元的叶站');
+eq(L.groupLeafStops(TN, 'g0102'), ['b', 'c'], '无子组时叶站＝直属站');
+eq(TN.issues, [], '正常数据无问题');
+// 防御（破损数据不得死循环、其余照常）：未知子组／自引／非字符串项忽略，重复去重，多父先到者胜，逐项记 issues
+const T2 = L.groupTree([
+  { id: 'g0001', type: 'same-station', stops: ['a'], groups: ['gZZZZ', 'g0001', 'g0002', 'g0002', 7, ''] },
+  { id: 'g0002', type: 'same-station', stops: ['b'] },
+  { id: 'g0003', type: 'same-station', stops: ['c'], groups: ['g0002'] },
+]);
+eq([...T2.childrenOf.get('g0001')], ['g0002'], '未知/自引/非字符串/重复项忽略，仅留有效子组');
+eq(T2.childrenOf.get('g0003'), [], '多父：后到的引用忽略');
+eq(T2.parentOf.get('g0002'), 'g0001', '多父时父组取先到者');
+eq(T2.issues.length, 5, '问题逐项记录：未知 1＋自引 1＋非字符串 2＋多父 1');
+ok(T2.issues.some((s) => s.includes('gZZZZ')) && T2.issues.some((s) => s.includes('g0003')), '问题串含涉及的组号');
+// 成环：环上成员都有上级、都不是顶层，不成绘制单元；环外的组照常
+const CYC = [
+  { id: 'g0001', type: 'same-station', stops: ['a'], groups: ['g0002'] },
+  { id: 'g0002', type: 'same-station', stops: ['b'], groups: ['g0001'] },
+  { id: 'g0003', type: 'same-station', stops: ['c', 'd'] },
+];
+const T3 = L.groupTree(CYC);
+ok(!L.groupIsRoot(T3, 'g0001') && !L.groupIsRoot(T3, 'g0002') && L.groupIsRoot(T3, 'g0003'), '成环：环上成员不算顶层（不死循环）');
+const P3 = L.groupDrawPlan(CYC);
+eq(P3.units, ['g0003'], '成环的环上组不成绘制单元，环外的组照常');
+eq([...P3.hidden], ['c', 'd'], '被吸收的只有正常单元的叶站（环上组的直属站照画）');
+eq(L.groupLeafStops(T3, 'g0001'), ['a', 'b'], '成环时叶站遍历走到过的组即止，不死循环');
+eq(L.groupTree(undefined).byId.size, 0, 'undefined 不崩');
+eq(L.groupTree([]).issues, [], '空表');
+
+// ---------- 嵌套换乘组：绘制单元规划（用户 2026-11-23 确认的渲染规则，逐条对应） ----------
+console.log('nested station groups: draw plan');
+const PN = L.groupDrawPlan(NEST);
+eq(PN.units, ['g0101', 'g0102', 'g0103', 'g0104'], '出闸单元不吸收子组：每个子组自成一个绘制单元（递归）');
+eq([...PN.hidden].sort(), ['b', 'c', 'e', 'f'], '隐去同站/接轨单元的叶站；出闸单元的直属站照画（描黑边）');
+ok(PN.unitSet.has('g0102') && PN.unitSet.has('g0104'), 'unitSet 与 units 一致');
+eq(PN.leafOf.get('g0102'), ['b', 'c'], '同站单元成员＝全部叶站');
+// 中辰路／上海金山型：外层同站＋内层接轨站——外层吸收全部，内层不单独出图形
+const PS = L.groupDrawPlan([
+  { id: 'g0201', type: 'same-station', stops: ['a'], groups: ['g0202'] },
+  { id: 'g0202', type: 'junction', stops: ['b', 'c'] },
+]);
+eq(PS.units, ['g0201'], '同站单元吸收子组：内层组不是绘制单元');
+eq([...PS.hidden].sort(), ['a', 'b', 'c'], '同站单元隐去全部叶站（含内层组的）');
+eq(PS.leafOf.get('g0201'), ['a', 'b', 'c'], '成员递归取全部叶站（并点位置按它算）');
+// 接轨站单元同样吸收子组（多层）
+const PJ = L.groupDrawPlan([
+  { id: 'g0201', type: 'junction', stops: ['a'], groups: ['g0202'] },
+  { id: 'g0202', type: 'same-station', stops: ['b'], groups: ['g0203'] },
+  { id: 'g0203', type: 'out-of-station', stops: ['c', 'd'] },
+]);
+eq(PJ.units, ['g0201'], '接轨站单元吸收子组，被吸收的组自己的子组也不成单元');
+eq([...PJ.hidden].sort(), ['a', 'b', 'c', 'd'], '接轨站单元隐去全部叶站');
+// type 未定沿用现行处理：不出合并图形、直属站照画；结构上同出闸（子组各自成单元）
+const PU = L.groupDrawPlan([
+  { id: 'g0301', type: null, stops: ['a'], groups: ['g0302'] },
+  { id: 'g0302', type: 'same-station', stops: ['b', 'c'] },
+]);
+eq(PU.units, ['g0301', 'g0302'], 'type 未定：子组各自成单元');
+eq([...PU.hidden], ['b', 'c'], 'type 未定单元的直属站不隐去');
+// 不嵌套的旧数据：每个组都是单元，隐去的仍只是同站/接轨组成员（与旧行为一致）
+const PF = L.groupDrawPlan([
+  { id: 'g0001', type: 'same-station', stops: ['a', 'b'] },
+  { id: 'g0002', type: 'out-of-station', stops: ['c', 'd'] },
+  { id: 'g0003', type: 'junction', stops: ['e', 'f'] },
+  { id: 'g0004', type: null, stops: ['g', 'h'] },
+]);
+eq(PF.units, ['g0001', 'g0002', 'g0003', 'g0004'], '不嵌套：每个组都是绘制单元');
+eq([...PF.hidden].sort(), ['a', 'b', 'e', 'f'], '不嵌套：隐去同站/接轨组成员，出闸/未定的照画');
+eq(L.groupDrawPlan([]).units, [], '空表');
+eq(L.groupDrawPlan(undefined).units, [], 'undefined 不崩');
+
+// ---------- 嵌套换乘组：药丸线数口径（「支线算一条，联络线不算线」，适用于一切同站单元） ----------
+console.log('nested station groups: logical line count');
+const LN = (id, role, groupId) => ({ id, role, groupId });
+const LGS = [{ id: 'lg01', members: [] }, { id: 'lg02', members: ['l0009'] }];
+eq(L.logicalLineCount([], []), 0, '无成员＝0');
+eq(L.logicalLineCount([LN('l0001', 'standalone', null), LN('l0002', 'main', 'lg01'), LN('l0003', 'branch', 'lg01')], LGS), 2,
+  '主线＋支线＋另一线＝2（支线算一条）');
+eq(L.logicalLineCount([LN('l0001', 'standalone', null), LN('l0008', 'connector', null)], LGS), 1, '联络线不算线');
+eq(L.logicalLineCount([LN('l0007', 'standalone', null), LN('l0008', 'connector', null), LN('l0057', 'standalone', null)], LGS), 2,
+  '上海金山型：两条独立线＋一条联络线＝2 → 大圈');
+eq(L.logicalLineCount([LN('l0058', 'standalone', null), LN('l0075', 'main', 'lg06'), LN('l0076', 'branch', 'lg06')],
+  [{ id: 'lg06', members: [] }]), 2, '中辰路型：独立线＋松江快线主线＋其支线＝2 → 大圈');
+eq(L.logicalLineCount([LN('l0002', 'main', 'lg01'), LN('l0003', 'branch', 'lg01')]), 2,
+  'lineGroups 缺省＝无已知线组：孤儿 groupId 不归并');
+eq(L.logicalLineCount([LN('l0001', 'standalone', null), LN('l0002', 'standalone', null), LN('l0003', 'standalone', null)], LGS), 3,
+  '三条独立线＝3 → 药丸');
+eq(L.logicalLineCount([LN('l0001', 'standalone', null), LN('l0002', 'main', 'lg01'), LN('l0003', 'branch', 'lg01'),
+  LN('l0004', 'main', 'lg02')], LGS), 3, '主线＋支线算一条，三条逻辑线＝3 → 药丸');
+eq(L.logicalLineCount([LN('l0009', 'standalone', null), LN('l0010', 'main', 'lg02')], LGS), 1,
+  '线组归属取双向并集：line.groupId 指向 ＋ 线组 members 声明');
+eq(L.logicalLineCount([LN('l0009', 'standalone', null), LN('l0010', 'standalone', null)], LGS), 2, '两处归属不同组＝两条');
+eq(L.logicalLineCount([LN('l0001', 'main', 'lgXX'), LN('l0002', 'branch', 'lgXX')], LGS), 2, '孤儿 groupId（组记录不存在）不归并');
+eq(L.logicalLineCount(null, null), 0, 'null 不崩');
+// 第三参（全部线对象）：线组须有主线成员才并成一条——与查看器 buildLineGroups「无 main 不归并」同口径（主窗口合入时对齐）
+const ALL1 = [LN('l0002', 'main', 'lg01'), LN('l0003', 'branch', 'lg01'), LN('l0009', 'standalone', 'lg02'), LN('l0010', 'standalone', 'lg02')];
+eq(L.logicalLineCount([LN('l0002', 'main', 'lg01'), LN('l0003', 'branch', 'lg01')], LGS, ALL1), 1, '传入全表：有主线的线组算一条');
+eq(L.logicalLineCount([LN('l0009', 'standalone', 'lg02'), LN('l0010', 'standalone', 'lg02')], LGS, ALL1), 2,
+  '传入全表：无主线的线组成员各算一条');
+eq(L.logicalLineCount([LN('l0003', 'branch', 'lg01')], LGS, ALL1), 1, '传入全表：单元里只有支线、主线不在单元内，仍按线组算一条');
+
+// ---------- 嵌套换乘组：编组判定（待编组单位可含既有顶层组） ----------
+console.log('nested station groups: plan');
+eq(L.planStationGroup([null], 1), { ok: true, type: 'same-station', allBlock: false }, '一站＋一整组＝2 个单位：默认同站（中辰路/上海金山型）');
+eq(L.planStationGroup([], 2), { ok: true, type: 'same-station', allBlock: false }, '仅两个整组：默认同站');
+eq(L.planStationGroup(['block'], 1), { ok: true, type: 'junction', allBlock: true }, '线路所规则只看直属站：全线路所＋整组 → 强制接轨站');
+eq(L.planStationGroup(['block', null], 1), { ok: false, reason: 'mixed' }, '直属站线路所与普通站混选照旧拒绝');
+eq(L.planStationGroup(['arrow'], 1), { ok: false, reason: 'arrow' }, '出省箭头照旧拒绝');
+eq(L.planStationGroup([null], 0), { ok: false, reason: 'few' }, '成员单位（站＋整组）不足 2 拒绝');
+eq(L.planStationGroup([], 1), { ok: false, reason: 'few' }, '仅一个整组不足 2');
+eq(L.planStationGroup([], 0), { ok: false, reason: 'few' }, '空集不足 2');
+eq(L.planStationGroup([null]), { ok: true, type: 'same-station', allBlock: false }, '不传组数：沿用「≥2 由调用方把门」（旧调用方不变）');
+eq(L.pendingGroupIssues(TN, ['g0101']), [], '顶层组可整组编入上层');
+eq(L.pendingGroupIssues(TN, ['g0102']), [{ id: 'g0102', reason: 'parent', parent: 'g0101' }], '已有上级的组不可整组编入（先拆其上层组）');
+eq(L.pendingGroupIssues(TN, ['gZZZZ']), [{ id: 'gZZZZ', reason: 'missing', parent: null }], '不存在的组');
+eq(L.pendingGroupIssues(TN, []), [], '空列表');
+eq(L.pendingGroupIssues(TN, undefined), [], 'undefined 不崩');
+
+// ---------- 嵌套换乘组：groups 字段往返（旧数据往返不变、为空不写出） ----------
+console.log('nested station groups: groups field round trip');
+const oldG = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [{ id: 'g0001', stops: ['a', 'b'], type: 'same-station', info: {} }] };
+const oldJson = JSON.stringify(oldG);
+ok(L.normalizeStationGroups(oldG.stationGroups) === false, '旧数据（无 groups 字段）：无改动');
+eq(JSON.stringify(oldG), oldJson, '旧数据 JSON 往返逐字一致');
+const nG = { stationGroups: [
+  { id: 'g0001', stops: ['a'], groups: ['g0002'], type: 'same-station', info: {} },
+  { id: 'g0002', stops: ['b', 'c'], type: 'same-station', info: {} },
+  { id: 'g0003', stops: ['d', 'e'], groups: [], type: null, info: {} },
+  { id: 'g0004', stops: ['f', 'g'], groups: 'x', type: null, info: {} },
+  { id: 'g0005', stops: ['h', 'i'], groups: ['g0002', 'g0002', 3, ''], type: null, info: {} },
+] };
+ok(L.normalizeStationGroups(nG.stationGroups) === true, '需要规范化时报有改动');
+ok(L.normalizeStationGroups(nG.stationGroups) === false, '幂等');
+eq(nG.stationGroups.map((g) => g.groups), [['g0002'], undefined, undefined, undefined, ['g0002']], '保留有效 id，去重、剔非字符串项');
+ok(!('groups' in nG.stationGroups[2]) && !('groups' in nG.stationGroups[3]), '为空/非数组的 groups 字段删除（保存不写出）');
+ok(JSON.stringify(nG.stationGroups[2]).indexOf('"groups"') === -1, '序列化不含 groups 键');
+ok(JSON.stringify(nG.stationGroups[0]).includes('"groups":["g0002"]'), '非空 groups 序列化保留');
+const rt = JSON.parse(JSON.stringify(nG));   // 保存 → 载入
+eq(rt.stationGroups[0].groups, ['g0002'], '往返后 groups 不丢');
+eq(rt.stationGroups[4].groups, ['g0002'], '往返后（去重后的）groups 不丢');
+eq(L.groupTree(rt.stationGroups).parentOf.get('g0002'), 'g0001', '往返后组树关系不变（先到者胜）');
+ok(L.normalizeStationGroups(undefined) === false && L.normalizeStationGroups(null) === false, 'undefined/null 不崩');
+// 快照式撤销：整对象 JSON 往返同样不丢（snapshot/undo 即此路径）
+const snapG = JSON.stringify({ lines: [], groups: nG });
+eq(JSON.parse(snapG).groups.stationGroups[0].groups, ['g0002'], '撤销快照往返 groups 不丢');
+
+// ---------- 嵌套换乘组：拆组/删站后的修剪与级联（成员单位总数 直属站＋子组 ≥2） ----------
+console.log('nested station groups: prune & cascade');
+eq(L.groupUnitCount({ stops: ['a'], groups: ['g0002'] }), 2, '一站＋一子组＝2 个单位');
+eq(L.groupUnitCount({ stops: ['a', 'b'] }), 2, '无 groups 字段按 [] 计');
+eq(L.groupUnitCount({}), 0, '空组 0');
+eq(L.groupUnitCount(null), 0, 'null 不崩');
+// 删站使内层组剩 1 站 → 拆除；外层摘除引用后剩 1 站 → 级联拆除
+const L1 = [
+  { id: 'g0001', stops: ['a'], groups: ['g0002'], type: 'same-station' },
+  { id: 'g0002', stops: ['b'], type: 'junction' },
+];
+eq(L.pruneStationGroups(L1), ['g0002', 'g0001'], '内层成员不足拆除 → 外层引用摘除后也不足 → 级联拆除');
+eq(L1, [], '两组都不剩');
+// 外层删掉唯一直属站（剩 0 站＋1 子组）→ 外层拆除，子组升为顶层、其余不动
+const L2 = [
+  { id: 'g0001', stops: [], groups: ['g0002'], type: 'same-station' },
+  { id: 'g0002', stops: ['b', 'c'], type: 'junction' },
+  { id: 'g0003', stops: ['d', 'e'], type: 'same-station' },
+];
+eq(L.pruneStationGroups(L2), ['g0001'], '外层成员单位不足 2 拆除');
+eq(L2.map((g) => g.id), ['g0002', 'g0003'], '子组升为顶层、无关的组不动');
+// 三层级联：中层拆除 → 外层引用摘除后不足 → 一并拆除；最内层完好的组留下
+const L5 = [
+  { id: 'g0001', stops: ['a'], groups: ['g0002'], type: 'same-station' },
+  { id: 'g0002', stops: [], groups: ['g0003'], type: 'same-station' },
+  { id: 'g0003', stops: ['b', 'c'], type: 'junction' },
+];
+eq(L.pruneStationGroups(L5), ['g0002', 'g0001'], '级联到稳定');
+eq(L5.map((g) => g.id), ['g0003'], '完好的最内层组留下并升为顶层');
+// 拆组后的级联（cascadeStationGroups）：上级摘除引用（摘空即删字段），仍够 2 个单位就不拆
+const L3b = [
+  { id: 'g0001', stops: ['a'], groups: ['g0002', 'g0009'], type: 'out-of-station' },
+  { id: 'g0009', stops: ['x', 'y'], type: 'same-station' },
+];
+eq(L.cascadeStationGroups(L3b, ['g0002']), [], '上级摘除后仍有 1 站＋1 子组＝2：不级联');
+eq(L3b[0].groups, ['g0009'], '引用已摘除、其余子组保留');
+const L4b = [{ id: 'g0001', stops: ['a'], groups: ['g0002'], type: 'out-of-station' }, { id: 'g0009', stops: ['x', 'y'] }];
+eq(L.cascadeStationGroups(L4b, ['g0002']), ['g0001'], '上级摘除后只剩 1 站：一并拆除');
+eq(L4b.map((g) => g.id), ['g0009'], '无关的组不动');
+const L6 = [{ id: 'g0001', stops: ['a', 'b'], groups: ['g0002'], type: 'out-of-station' }];
+eq(L.cascadeStationGroups(L6, ['g0002']), [], '上级摘除后仍有 2 站：保留');
+ok(!('groups' in L6[0]) && L6[0].stops.length === 2, 'groups 摘空即删字段（为空不写出）');
+eq(L.cascadeStationGroups([], ['g0002']), [], '空表不崩');
+eq(L.cascadeStationGroups(undefined, []), [], 'undefined 不崩');
+// 不嵌套的旧数据：与旧「stops 不足 2 即删」的过滤一致
+const L7 = [{ id: 'g0001', stops: ['a'] }, { id: 'g0002', stops: ['b', 'c'] }];
+eq(L.pruneStationGroups(L7), ['g0001'], '旧数据：仅删 stops 不足 2 的组');
+eq(L7.map((g) => g.id), ['g0002'], '其余保留');
+
+// ---------- 嵌套换乘组：画布增量渲染判脏（新增数据依赖已入键） ----------
+console.log('nested station groups: dirty keys');
+const GK = { id: 'g0101', type: 'out-of-station' };
+eq(L.stopGroupKey(GK, false), 'g0101|out-of-station|v', '设站组键＝直属组 id|直属组 type|v（可见）');
+ok(L.stopGroupKey(GK, true) !== L.stopGroupKey(GK, false), '隐去位变（上级组类型/子组关系变化落到这一位）→ 键变');
+ok(L.stopGroupKey({ id: 'g0101', type: 'same-station' }, true) !== L.stopGroupKey(GK, true), '直属组类型变（出闸黑边/提示文本）→ 键变');
+ok(L.stopGroupKey({ id: 'g0102', type: 'out-of-station' }, false) !== L.stopGroupKey(GK, false), '直属组号变 → 键变');
+eq(L.stopGroupKey({ id: 'g0001', type: null }, false), 'g0001||v', 'type 未定以空串入键');
+// 经 lineDrawKey 体现：同一线数据、仅组的隐去位不同 → 判为变（该线须重建，站圈才会出现/消失）
+{
+  const kl = mkKeyLine();
+  const ka = L.lineDrawKey(kl, new Map([['l0001-s02', L.stopGroupKey(GK, true)]]));
+  const kb = L.lineDrawKey(mkKeyLine(), new Map([['l0001-s02', L.stopGroupKey(GK, false)]]));
+  ok(!L.sameLineDraw(ka, kb), 'lineDrawKey：隐去位不同＝须重建该线');
+}
+const mem = (lineId, t, o) => ({
+  line: Object.assign({ id: lineId, role: 'standalone', color: '#123456', groupId: null }, (o && o.line) || {}),
+  st: Object.assign({ id: lineId + '-s01', t, name: '甲', kind: undefined }, (o && o.st) || {}),
+});
+const sigOf = (over) => L.groupUnitSig(
+  (over && over.type) || 'same-station', (over && over.isPill) || false, (over && over.geomGen) || 3,
+  (over && over.conn) || 'c1', (over && over.lg) || 'lg01:;', (over && over.kids) || ['g0002'],
+  (over && over.members) || [mem('l0001', 0.1), mem('l0002', 0.2)]);
+const sig0 = sigOf();
+ok(sigOf() === sig0, '输入不变＝键不变（不重建）');
+ok(sigOf({ type: 'junction' }) !== sig0, '单元自身类型变 → 重建');
+ok(sigOf({ isPill: true }) !== sig0, '药丸/大圈档位变（线数口径结论变）→ 重建');
+ok(sigOf({ kids: ['g0002', 'g0003'] }) !== sig0 && sigOf({ kids: [] }) !== sig0, '子组名单变（子组关系/提示文本）→ 重建');
+ok(sigOf({ members: [mem('l0001', 0.1), mem('l0002', 0.25)] }) !== sig0, '叶站位置变 → 重建');
+ok(sigOf({ members: [mem('l0001', 0.1), mem('l0003', 0.2)] }) !== sig0, '叶站集合变（子组成员增删）→ 重建');
+ok(sigOf({ members: [mem('l0001', 0.1), mem('l0002', 0.2, { st: { name: '乙' } })] }) !== sig0, '叶站站名变（提示文本）→ 重建');
+ok(sigOf({ members: [mem('l0001', 0.1), mem('l0002', 0.2, { line: { role: 'branch', groupId: 'lg01' } })] }) !== sig0,
+  '叶站所属线的角色/线组归属变（线数口径、接轨站描边）→ 重建');
+ok(sigOf({ members: [mem('l0001', 0.1), mem('l0002', 0.2, { line: { color: '#ABCDEF' } })] }) !== sig0, '成员线颜色变 → 重建');
+ok(sigOf({ lg: 'lg01:l0002;' }) !== sig0, '线组表摘要变（members 声明 → 线数口径）→ 重建');
+ok(sigOf({ geomGen: 4 }) !== sig0, '几何代际变 → 重建');
+ok(sigOf({ conn: 'c2' }) !== sig0, '联络线目标摘要变 → 重建');
+eq(L.groupUnitSig('same-station', false, 0, '', '', undefined, undefined),
+  'same-station|false|0|||', '缺省参数不崩');
+
+// ---------- 联络线不带颜色属性（2026-11-22 用户裁定；2026-11-23 补：改角色即清、载入规范化、落盘兜底） ----------
+console.log('connector color:');
+const mkRoleLine = (role, color) => { const l = mkLine(false); l.role = role; if (color !== undefined) l.color = color; return l; };
+let cc = mkRoleLine('standalone', '#112233');
+ok(L.stripConnectorColor(cc) === false && cc.color === '#112233', '非联络线不动');
+cc.role = 'connector';
+ok(L.stripConnectorColor(cc) === true && !('color' in cc), '改成联络线：color 按键删除（同现有联络线文件写法）');
+ok(L.stripConnectorColor(cc) === false, '已无 color：无改动（幂等）');
+ok(JSON.stringify(cc).indexOf('"color"') === -1, '序列化不含 color');
+ok(L.stripConnectorColor(null) === false && L.stripConnectorColor({ role: 'connector' }) === false, 'null／本就无 color 不崩');
+const cf = mkRoleLine('connector', '#666666');
+const cfOut = L.lineForSave(cf);
+ok(cfOut !== cf && !('color' in cfOut) && cf.color === '#666666', '落盘对象剔除 color，且不改写内存对象');
+eq(Object.keys(cfOut), Object.keys(mkRoleLine('connector', '#666666')).filter((k) => k !== 'color'), '只去 color 键，其余字段与次序不变');
+ok(JSON.stringify(cfOut).indexOf('"color"') === -1, '落盘序列化不含 color（validate：connector must not define color）');
+const cf2 = mkRoleLine('standalone', '#112233');
+ok(L.lineForSave(cf2) === cf2, '非联络线原样返回同一对象');
+const cf3 = mkRoleLine('connector');
+ok(L.lineForSave(cf3) === cf3 && L.lineForSave(null) === null, '本就无 color 的联络线原样返回；null 不崩');
 
 // ---------- 标定变换与瓦片数学（fmt/calibration@1 deg3 / @2 tps，文件存在时） ----------
 console.log('calibration:');

@@ -6,7 +6,9 @@
     python tools/validate.py [目标目录]     # 默认 data
 
 退出码：0 = 通过；1 = 存在 ERROR。
-输出文案：存量规则为英文；v1.5 分段（fmt/line@2）相关新文案为中文。
+输出文案：存量规则为英文；v1.5 分段（fmt/line@2）相关新文案为中文；
+stationGroups 嵌套组（可选字段 groups，2026-11-23 增补——架构方案 §1.3 增补）
+的文案沿用英文小写句式。
 stdout 已 reconfigure 为 UTF-8（同 flatten.py 手法），Windows 管道/
 重定向下中文输出不再受 ANSI 代码页影响。
 仅用 Python 标准库。
@@ -347,13 +349,48 @@ def main():
                 if m not in lines:
                     err("groups.json", f"lineGroup {lgid}: unknown member line {m!r}")
         seen_stop = {}
+        group_ids = set()   # 全部节点组 id（子组引用存在性用——子组可定义在父组之后，故先收集后查）
+        dup_reported = set()  # 已报过的重复 stationGroup id（每个重复 id 只报一条）
+        group_refs = []     # [(父组 id, 子组 id 列表)]：父属唯一／无环检查用
         for sg in g.get("stationGroups") or []:
             sgid = sg.get("id")
             if not RE_GROUP_ID.match(sgid or ""):
                 err("groups.json", f"bad stationGroup id: {sgid!r}")
+            if isinstance(sgid, str):
+                if sgid in group_ids:
+                    # id 重复（2026-11-23 裁定补查——嵌套后父子引用依赖 id 唯一）：每个重复
+                    # id 只报一条；重复记录整条跳过（同线路 id 重复的既有做法），其 stops/
+                    # groups 不参与成员/父子/环校验，免连锁误报——以首次出现的记录为准
+                    if sgid not in dup_reported:
+                        err("groups.json", f"duplicate stationGroup id: {sgid}")
+                        dup_reported.add(sgid)
+                    continue
+                group_ids.add(sgid)   # 格式不合格的 id 已报错，仍收进来免得其子组再报「不存在」
             members = sg.get("stops") or []
-            if len(members) < 2:
-                err("groups.json", f"stationGroup {sgid}: needs >= 2 stops")
+            # 嵌套组（2026-11-23 增补）：可选字段 groups＝子组 id 列表（缺省视为 []）；
+            # stops 仍是本组的**直属**设站，外层组 type＝直属站与每个子组（整体）之间的关系。
+            # 非数组同 sections 的既有处理：报错并按 [] 继续查
+            sub_groups = sg.get("groups")
+            if sub_groups is None:
+                sub_groups = []
+            elif not isinstance(sub_groups, list):
+                err("groups.json", f"stationGroup {sgid}: groups must be a list of stationGroup ids")
+                sub_groups = []
+            sub_ok = []      # 合法且不重复的子组 id（保持文件顺序）
+            for c in sub_groups:
+                if not isinstance(c, str):
+                    err("groups.json", f"stationGroup {sgid}: bad groups entry: {c!r}")
+                elif c in sub_ok:
+                    err("groups.json", f"stationGroup {sgid}: duplicate groups entry: {c!r}")
+                else:
+                    sub_ok.append(c)
+                    if c == sgid:
+                        err("groups.json", f"stationGroup {sgid}: cannot list itself in groups")
+            group_refs.append((sgid, sub_ok))
+            # 成员单位总数（直属站数＋子组数）≥ 2：嵌套后直属站可为 0（只有子组）
+            if len(members) + len(sub_ok) < 2:
+                err("groups.json",
+                    f"stationGroup {sgid}: needs >= 2 members (direct stops + child groups)")
             for sid in members:
                 if sid not in all_stop_ids:
                     err("groups.json", f"stationGroup {sgid}: unknown stop {sid!r}")
@@ -368,6 +405,35 @@ def main():
                 err("groups.json", f"stationGroup {sgid}: contains block stop(s) but type is not 'junction'")
             if 0 < n_blk < len(members):
                 err("groups.json", f"stationGroup {sgid}: block and normal stops cannot be mixed")
+
+        # ---------- 嵌套组引用（全表收集后查：子组可定义在父组之后）----------
+        parent_of = {}   # 子组 id -> 父组 id（至多一个）
+        for sgid, subs in group_refs:
+            for c in subs:
+                if c not in group_ids:
+                    err("groups.json", f"stationGroup {sgid}: unknown stationGroup {c!r} in groups")
+                elif c in parent_of and parent_of[c] != sgid:
+                    # 同一父组内重复列出已由 duplicate groups entry 报过，此处不重复
+                    err("groups.json",
+                        f"stationGroup {c} in two stationGroups as a child ({parent_of[c]}, {sgid})")
+                elif c != sgid:
+                    parent_of[c] = sgid   # 自引已单独报错，不入父链（免得环检查再报一遍）
+        # 无环：自子组沿父链上溯，回到本次走查已过的组即成环；已查明的无环节点
+        # 记入 done 不再重走，每个环只报一次
+        done = set()
+        for start in parent_of:
+            path, on_path = [], set()
+            cur = start
+            while cur in parent_of and cur not in done:
+                if cur in on_path:
+                    cyc = path[path.index(cur):] + [cur]
+                    err("groups.json", "stationGroup cycle (child -> parent): "
+                        + " -> ".join(str(x) for x in cyc))
+                    break
+                path.append(cur)
+                on_path.add(cur)
+                cur = parent_of[cur]
+            done.update(path)
 
     # ---------- 线路 ↔ 组/联络 引用交叉检查 ----------
     for lid, d in lines.items():
