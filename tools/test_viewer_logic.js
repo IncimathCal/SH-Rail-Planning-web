@@ -219,17 +219,23 @@ eq(V.matchEntries('线', ents, 1).map((e) => e.id), ['la'], 'limit 截断');
 eq(V.matchEntries('线', ents).length, 2, '默认 limit 12 内全返');
 eq(V.matchEntries('人民', null).length, 0, 'null 索引不崩');
 
-// ---------- filterLabels（zoom 门槛层；2026-11-23 用户裁定组站统一 12，两级制废止） ----------
+// ---------- filterLabels（换乘组/站 z≥10，普通单线站 z≥11） ----------
 console.log('filterLabels:');
-ok(V.LABEL_ZOOM_STOP === 11 && V.LABEL_ZOOM_GROUP === 11, '门槛常量：组与站统一 11（2026-11-23 不再区分）');
+ok(V.LABEL_ZOOM_STOP === 11 && V.LABEL_ZOOM_GROUP === 10, '门槛常量：换乘组/站 10，普通单线站 11');
+
 ok(!('LABEL_CAP' in V) && V.filterLabels.length === 2 && V.visibleLabels.length === 3,
   '标签总数上限已删：无 LABEL_CAP 导出，filterLabels/visibleLabels 不再收 cap 入参（2026-11-22 真数据抓包）');
 const bigLabels = [];
 for (let i = 0; i < 900; i++) bigLabels.push({ key: 's' + i, name: '站' + i, group: false });
 for (let i = 0; i < 100; i++) bigLabels.push({ key: 'g' + i, name: '组' + i, group: true });
 eq(V.filterLabels(bigLabels, 9).length, 0, 'z9 无标签');
-eq(V.filterLabels(bigLabels, 10).length, 0, 'z10 无标签（旧组门槛 10 已废）');
-eq(V.filterLabels(bigLabels, 10.99).length, 0, 'z10.99 仍无标签（门槛边界）');
+eq(V.filterLabels(bigLabels, 10).length, 100, 'z10 仅换乘组标签显示');
+eq(V.filterLabels(bigLabels, 10.99).length, 100, 'z10.99 普通单线站仍隐藏');
+eq(V.filterLabels([{ group: false, groupType: 'out-of-station' }, { group: false, groupType: null }], 10).length, 1,
+  'z10 按真实 groupType 字段显示出闸换乘站标签，不看名称');
+eq(V.filterLabels([{ group: true, groupType: 'junction' }, { group: false, groupType: null }], 10).length, 1,
+  'z10 按真实 group 字段显示换乘组标签');
+
 eq(V.filterLabels(bigLabels, 11).length, 1000, 'z11 全部显示——1000 个标签单元（超旧上限 800）不再砍普通站名');
 eq(V.filterLabels(bigLabels, 11).filter((l) => !l.group).length, 900, 'z11 普通站标签全在');
 eq(V.filterLabels(bigLabels, 11).filter((l) => l.group).length, 100, 'z11 换乘组标签全在');
@@ -1167,8 +1173,13 @@ const svNx = V.buildStopView(stNx, { linesMap: lmNx, lineGroups: lgNx, tree: tre
   const stNo = stNx.filter((s) => s.sid !== 'l0022-s20');
   eq(V.buildStopView(stNo, { linesMap: lmNx, lineGroups: lgNx, tree: V.buildGroupTree(noDirect, stNo) }).labels.map((l) => l.key),
     ['g:g9001', 'g:g9002', 'g:g9004'], '④ 出闸单元没有直属站则本单元不出自己的标签（子组标签照出）');
-  // 站名门槛规则不动：嵌套单元的标签一律 group 标签（组站统一门槛 z≥11——2026-11-23 裁定）
-  eq([V.filterLabels(svNx.labels, 11).length, V.filterLabels(svNx.labels, 10.99).length], [4, 0], '嵌套单元标签沿用统一门槛 z≥11');
+  // 嵌套组与出闸换乘标签按 group/groupType 结构字段在 z≥10 显示。
+  eq([V.filterLabels(svNx.labels, 11).length, V.filterLabels(svNx.labels, 10).length, V.filterLabels(svNx.labels, 9.99).length], [4, 4, 0], '嵌套单元标签 z≥10 显示');
+  eq(V.filterLabels([{ key: 'plain', group: false, groupType: null }], 10).length, 0, 'z10 普通站仍隐藏');
+  eq(V.filterLabels([{ key: 'exchange', group: false, groupType: 'out-of-station' }], 10).map((l) => l.key), ['exchange'], 'z10 出闸换乘站按类型显示');
+  eq(V.filterLabels([{ key: 'interchange', group: true, groupType: 'same-station' }], 10).map((l) => l.key), ['interchange'], 'z10 换乘组按结构字段显示');
+
+
   // 调光口径不变：单元标签收全部成员线，全成员被调光才隐藏
   eq([V.visibleLabels(svNx.labels, 12, { dimmedSet: ['l0008'] }).some((l) => l.key === 'g:g9002'),
     V.visibleLabels(svNx.labels, 12, { dimmedSet: ['l0057', 'l0007', 'l0008'] }).some((l) => l.key === 'g:g9002')],

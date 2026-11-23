@@ -78,13 +78,11 @@
   // 名单同款集中式，勿散落 if）；命中类别的线特征带 dash 0/1 位，渲染层据此分虚实两层
   //（viewer.js corridorLineLayerDef）。
   const DASHED_LAYERS = ['预控通道'];
-  // 标签只按 zoom 门槛分级，**不设标签总数上限**。2026-11-22 删除初版自设的 LABEL_CAP=800
-  //（「整份数据标签数超上限则只显示换乘组」）：它数的是整份数据而非同屏数——用户真数据
-  // 1095 站＝1040 个标签单元，一超上限普通站名就在一切 zoom 永不显示（真机抓包
-  //「单线站名不见了」），与用户规则「普通站名 z≥11 显示」直接冲突；低 zoom 的防糊屏
-  // 本就由下面两个门槛承担，同屏数量由渲染层视口裁剪约束。
-  const LABEL_ZOOM_GROUP = 11;  // 换乘组标签最低 zoom（2026-11-23 用户裁定：与普通站统一，不再区分）
-  const LABEL_ZOOM_STOP = 11;   // 普通站标签最低 zoom（2026-11-22 曾 12→11；2026-11-23 组站统一为 11）
+  // 标签只按 zoom 门槛分级，**不设标签总数上限**。组/换乘标签含出闸换乘成员，z≥10 渐显；
+  // 普通单线站 z≥11 渐显，同屏数量由渲染层视口裁剪约束。
+  const LABEL_ZOOM_GROUP = 10;  // 换乘组及出闸换乘标签最低 zoom
+  const LABEL_ZOOM_STOP = 11;   // 普通单线站标签最低 zoom
+
   // 尺寸随缩放等比变化（2026-11-22 用户两次裁定：初次线性缩小案被推翻，改「等比缩＋向上封顶」）：
   // z≥SIZE_ZOOM_HOLD 各尺寸维持基准值（拉近不再变粗——封顶）；z<11 按 2^(z−11) 持续等比缩小
   //（每拉远一级减半，与画布同比例——「肉眼随画布缩小」），无下限地板（远景元素极小防结块；
@@ -1092,13 +1090,13 @@
   }
 
   // ---------- 标签分级（zoom 门槛层；上层优先级见 visibleLabels） ----------
-  // z≥11 显示全部；更低不显示（2026-11-23 用户裁定组站统一 11、不再区分——
-  // 曾试 12 嫌晚，两级制 组 z≥10／站 z≥11 亦废）。
+  // 换乘组/出闸换乘标签 z≥10 渐显；普通单线站 z≥11 渐显。标签的 group/groupType
+  // 来自结构关系字段，不依赖站名文字；不设总数上限，视口裁剪由渲染层处理。
   // 2026-11-22 删 cap 入参与 LABEL_CAP（见常量区注）：数据量再大也不砍普通站名。
   function filterLabels(labels, zoom) {
     const arr = Array.isArray(labels) ? labels : [];
     if (zoom >= LABEL_ZOOM_STOP) return arr;
-    if (zoom >= LABEL_ZOOM_GROUP) return arr.filter((l) => l && l.group);
+    if (zoom >= LABEL_ZOOM_GROUP) return arr.filter((l) => l && (l.group || l.groupType));
     return [];
   }
 
