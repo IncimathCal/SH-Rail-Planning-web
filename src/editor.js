@@ -1105,6 +1105,109 @@
     return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
   }
 
+  // ---------- lineinfo.md 节编辑（2026-11-23 增，纯逻辑可单测） ----------
+  // lineinfo.md＝每线组一节的用户手填介绍（格式约定与解析见 viewer_core.parseLineInfo／
+  // data/lineinfo.md 模板）。编辑器「线路介绍」面板按节读写该文件：**保真硬要求＝只动被
+  // 编辑的那一节，文件其余部分（用户注释、节排序、空行习惯）逐字节原样保留**——因此这里
+  // 不做任何行尾归一化，按「逻辑行＋原行尾符」切分处理（CRLF/LF/CR 都原样保真）。
+  // 标题绑定口径与解析器一致：`## <id> <名>` 的 id＝标题内容 trim 后首个空白前 token
+  //（`##   lg07  名` 同样绑 lg07）；三级标题（### 等）不算节边界、按节内容处理。
+  const LI_HEAD_RE = /^##(?!#)[ \t]*(.*)$/;
+  /** 逻辑行切分：split 捕获行尾符 → [行文, 行尾符, 行文, 行尾符, …, 行文]，重建原样拼回 */
+  function liSplitLines(md) { return String(md == null ? '' : md).split(/(\r\n|\n|\r)/); }
+  /** 标题行文本 → 线组 id（与 parseLineInfo 同口径；非标题行返回 null） */
+  function liHeadingId(text) {
+    const m = String(text == null ? '' : text).match(LI_HEAD_RE);
+    return m ? (m[1].trim().split(/\s+/)[0] || null) : null;
+  }
+  /** 逻辑行数组 → 节列表 [{id, text, start, end}]：text＝标题行起到下一标题前（含中间行尾符，
+   *  逐字节原样）；start/end 为逻辑行下标 [start, end)。无任何节 → [] */
+  function liSections(md) {
+    const parts = liSplitLines(md);
+    const lines = [];
+    for (let i = 0; i < parts.length; i += 2) lines.push({ text: parts[i], term: i + 1 < parts.length ? parts[i + 1] : null });
+    const secs = [];
+    let cur = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const id = liHeadingId(lines[i].text);
+      if (id != null) {
+        if (cur >= 0) secs[secs.length - 1].end = i;
+        cur = i;
+        secs.push({ id, text: '', start: i, end: lines.length });
+      }
+    }
+    for (const s of secs) {
+      let t = '';
+      for (let i = s.start; i < s.end; i++) t += lines[i].text + (lines[i].term || '');
+      s.text = t;
+    }
+    return secs;
+  }
+  /** 取某线组节原文（同 id 多节取首个；无 → null）。面板列表标记与 textarea 取值都用它 */
+  function extractLineInfoSection(mdText, groupId) {
+    const id = String(groupId == null ? '' : groupId).trim();
+    if (!id) return null;
+    const hit = liSections(mdText).find((s) => s.id === id);
+    return hit ? hit.text : null;
+  }
+  /** 节原位替换／尾部追加（返回新串，不改入参）：
+   *  - 节存在（同 id 多节全算命中）：新节替换**首个**命中节，其余命中节一并移除（解析器
+   *    「同 id 多节后者覆盖」，留着旧节会让查看器继续显示旧内容）；首个命中节之前的全部字节
+   *    原样保留，命中节之间的未命中节与最后一个命中节之后的全部字节同样逐字节原样保留。
+   *  - 节不存在：追加到文件尾（原文件不以行尾符结尾时先补一个——沿用文件末行自己的行尾符，
+   *    无行尾符记录时用 '\n'）。
+   *  - mdText 为 null/空串 → 结果就是新节本身（文件不存在的新建场景，注释头由面板另行拼）。
+   *  插入节不以行尾符结尾且后面还有内容时，沿用被替换节原有的末行行尾符补上（防空行吞并）。 */
+  function replaceLineInfoSection(mdText, groupId, sectionText) {
+    const id = String(groupId == null ? '' : groupId).trim();
+    const sec = String(sectionText == null ? '' : sectionText);
+    if (!id) return mdText == null ? sec : String(mdText);
+    const secs = liSections(mdText);
+    const hits = secs.filter((s) => s.id === id);
+    if (!hits.length) {
+      const src = mdText == null ? '' : String(mdText);
+      if (!src) return sec;
+      let out = src;
+      const parts = liSplitLines(src);
+      const lastTerm = parts.length >= 3 ? parts[parts.length - 2] : null;   // 末文本行自带的行尾符
+      if (!/(\r\n|\n|\r)$/.test(out)) out += lastTerm || '\n';
+      return out + (sec.endsWith('\n') || sec.endsWith('\r') ? sec : sec + '\n');
+    }
+    const parts = liSplitLines(mdText);
+    const lines = [];
+    for (let i = 0; i < parts.length; i += 2) lines.push({ text: parts[i], term: i + 1 < parts.length ? parts[i + 1] : null });
+    const first = hits[0], lastHit = hits[hits.length - 1];
+    // 新节末尾行尾符：被替换区末行原行尾符优先（保持后续内容与原文件同样的分隔习惯）
+    const afterTerm = (() => { for (let i = lastHit.end - 1; i >= first.start; i--) { if (lines[i].term) return lines[i].term; } return null; })();
+    let ins = sec;
+    if (first.end < lines.length && !/(\r\n|\n|\r)$/.test(ins)) ins += afterTerm || '\n';
+    let out = '';
+    for (let i = 0; i < first.start; i++) out += lines[i].text + (lines[i].term || '');
+    out += ins;
+    // 首个命中节之后逐行重抄：命中节（含其余同 id 节）跳过，未命中内容逐字节照抄
+    for (let i = first.start; i < lines.length; i++) {
+      if (hits.some((s) => i >= s.start && i < s.end)) continue;
+      out += lines[i].text + (lines[i].term || '');
+    }
+    return out;
+  }
+  /** 新节骨架（全占位符零真实内容；线组 id/名＝用户已有数据，正文与字段全是 … 占位） */
+  function lineInfoSectionSkeleton(groupId, name) {
+    const id = String(groupId == null ? '' : groupId).trim();
+    const nm = String(name == null ? '' : name).trim();
+    return '## ' + id + (nm ? ' ' + nm : '') + '\n'
+      + '起讫点: …\n编组: …\n\n（正文……）\n\n### 相关链接\n[链接文字](https://…)\n';
+  }
+  /** 模板头（新建 lineinfo.md 用）：仓库 data/lineinfo.md 去掉自带示例节、尾部规整为恰好一个
+   *  空行；模板缺失/为空/以标题开头 → 退化为中性标题行（不造任何内容） */
+  function lineInfoTemplateHeader(tplText) {
+    const t = tplText == null ? '' : String(tplText);
+    const m = t.search(/^##[ \t]/m);
+    let head = (m >= 0 ? t.slice(0, m) : t).replace(/\s+$/, '');
+    if (!head.trim()) head = '# 线路信息（lineinfo.md）';
+    return head + '\n\n';
+  }
+
   const SHLogic = { SEG_ORDER, SEG_LABEL, ROLE_LABEL, EPS, segInsert, segRemove,
     pruneSections, migrateLineToV2, planSectionSplit, applySectionMerge, sectionSpanOf, sectionIssuesOf,
     canPlaceArrow, planGroupPillChain, nextStopKind, unitIsPill,
@@ -1117,6 +1220,7 @@
     cascadeStationGroups, pruneStationGroups, normalizeStationGroups, pendingGroupIssues,
     normalizeLineOrder, archivedIdList, LAYER_RESERVED, searchTermsOf, matchesTerms, groupSearchText, pageSlice,
     isReservedLine, segStatusesOf, lineDrawKey, sameLineDraw,
+    extractLineInfoSection, replaceLineInfoSection, lineInfoSectionSkeleton, lineInfoTemplateHeader,
     calibForward, calibInverse, tpsForward, tpsInverse, poly3Forward, poly3Inverse,
     lonToTileX, latToTileY, tileXToLon, tileYToLat };
   global.SHEditorLogic = SHLogic;
@@ -1170,6 +1274,9 @@
     pending: [],             // 编组模式待选 stop id 列表
     pendingGroups: [],       // 编组模式待编入上层的**既有顶层组** id 列表（嵌套组 2026-11-23；与 pending 并存、
                              // 瞬态——同 pending 不进快照/撤销/自动暂存，切模式/Esc/清空一并清）
+    lineinfoMd: null,        // lineinfo.md 当前文本（null＝工作区没有此文件且尚未生成；「线路介绍」面板编辑）
+    lineinfoSavedMd: null,   // lineinfo.md 落盘基线（载入/保存成功时与 lineinfoMd 同步——两者不同＝有未保存改动）
+    liTplText: null,         // 仓库 data/lineinfo.md 模板文本（新建文件拼注释头用；boot 拉取，瞬态不进暂存）
     undo: [],                // 快照栈 {lines, groups, imports}
   };
   // 编号水位（含 localStorage 持久，防删除后复用）
@@ -1258,6 +1365,7 @@
           lines: [...S.lines.values()],
           groups: S.groups, activeLine: S.activeLine,
           lineOrder: S.lineOrder,
+          lineinfoMd: S.lineinfoMd, lineinfoSavedMd: S.lineinfoSavedMd,   // 线路介绍（面板编辑后随暂存，防刷新丢未保存改动）
         }));
         if (importsDirty) {   // 导入记录仅在变化时写自己的键（见 LS_IMPS_KEY 注释）
           localStorage.setItem(LS_IMPS_KEY, JSON.stringify(S.imports));
@@ -1295,6 +1403,12 @@
       const diskSources = new Set(S.imports.map((i) => i.source));
       S.imports = snapImports.filter((i) => !diskSources.has(i.source)).concat(S.imports);
       S.activeLine = snap.activeLine && S.lines.has(snap.activeLine) ? snap.activeLine : null;
+      // 线路介绍：暂存带此键（含显式 null＝当时工作区无此文件）才采用——旧暂存（功能上线前）
+      // 无此键则保留 boot 时读到的 data/lineinfo.md
+      if (Object.prototype.hasOwnProperty.call(snap, 'lineinfoMd')) {
+        S.lineinfoMd = snap.lineinfoMd != null ? snap.lineinfoMd : null;
+        S.lineinfoSavedMd = snap.lineinfoSavedMd != null ? snap.lineinfoSavedMd : null;
+      }
       // 暂存不带选中/待编组态：清掉，免左栏高亮与就近提示残留；弧缓存随线路集整体替换
       // （path 没变的沿用旧弧，变了的丢弃重建——否则同 id 异 path 的线会按旧几何落站）
       S.selStop = null; S.pending = []; S.pendingGroups = [];
@@ -1453,6 +1567,15 @@
     // 标定：恒用现行 data/calibration.json（手动标定 TPS v2；旧 deg3 备份文件保留但不再载入，回滚走 git）
     const calib = await get('data/calibration.json');
     if (calib) takeCalibration(calib);
+    // lineinfo.md（线路介绍，文本非 JSON）：boot 经 http 时把仓库 data/lineinfo.md 当作当前
+    // 工作集载入（保存工作区写回的就是它）；模板文本同源留存（面板新建文件拼注释头用）
+    try {
+      const r = await fetch('data/lineinfo.md', { cache: 'no-cache' });
+      if (r.ok) {
+        const t = await r.text();
+        S.lineinfoMd = t; S.lineinfoSavedMd = t; S.liTplText = t;
+      }
+    } catch (e) { /* file:// 等，忽略 */ }
     try {
       const r = await fetch('data/lines/', { cache: 'no-cache' });
       if (r.ok) {
@@ -2860,6 +2983,128 @@
     }).join('') : '<div style="color:var(--dim);font-size:12px">（暂无）</div>');
   }
 
+  // ---------- 线路介绍面板（lineinfo.md 用户手填介绍；2026-11-23 增） ----------
+  // 入口＝左栏「编组」节之后的「线路介绍」节。线组列表数据源＝S.groups.lineGroups（与「线组」
+  // 列表同源）；选中线组后 textarea 编辑该组在 lineinfo.md 中的那一节 md 原文（不搞结构化表单，
+  // 保留手写 md 习惯），防抖 300ms 实时预览——渲染复用查看器 VIEWER_CORE.parseLineInfo
+  // （editor.html 载入 src/viewer_core.js，实现零语义改动）。文件读写：载入见
+  // applyWorkspace／bootFetchData，落盘见 saveLineinfoIfChanged（只替换被编辑节，其余字节
+  // 逐位保留）；未保存改动＝S.lineinfoMd 与 S.lineinfoSavedMd 失配，列表行内 ● 标出，
+  // 文本与基线随自动暂存持久（刷新不丢），「保存工作区」后基线同步、标记清零。
+  let liSel = null;              // 当前选中线组 id（临时 UI 状态：不进快照/撤销/自动暂存）
+  let liPrevTimer = null;        // 预览防抖计时
+  const liVC = () => (global.VIEWER_CORE && typeof global.VIEWER_CORE.parseLineInfo === 'function')
+    ? global.VIEWER_CORE : null;
+
+  /** 预览渲染：parseLineInfo 只认「## <id> …」标题绑定（id＝标题首个 token），标题 id 改掉即提示 */
+  function liRenderPreview(secText) {
+    const vc = liVC();
+    const parsed = (vc && secText) ? vc.parseLineInfo(secText)[liSel] : null;
+    if (!parsed) {
+      setHtml($('liPrev'), secText
+        ? '<span style="color:var(--warn)">标题 id 与所选线组不匹配（绑定靠「## <线组id>」的首个 token）</span>'
+        : '<span style="color:var(--dim)">（无内容）</span>');
+      return;
+    }
+    const parts = [];
+    if (parsed.fields.length) {
+      parts.push('<div class="li-flds">' + parsed.fields.map((fv) =>
+        `<div><span class="li-k">${esc(fv[0])}:</span> ${esc(fv[1])}</div>`).join('') + '</div>');
+    }
+    // bodyHtml 为 parseLineInfo 产物：一切文本已转义、只含白名单标签（viewer_core 安全注），可直接 innerHTML
+    if (parsed.bodyHtml) parts.push('<div class="li-body">' + parsed.bodyHtml + '</div>');
+    if (parsed.links.length) {
+      parts.push('<ul class="li-links">' + parsed.links.map((l) =>
+        `<li><a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.text)}</a></li>`).join('') + '</ul>');
+    }
+    setHtml($('liPrev'), parts.join('') || '<span style="color:var(--dim)">（无内容）</span>');
+  }
+  function liPreviewSoon() {
+    clearTimeout(liPrevTimer);
+    liPrevTimer = setTimeout(() => liRenderPreview(extractLineInfoSection(S.lineinfoMd, liSel)), 300);
+  }
+
+  /** 编辑区随选中线组就位（值相同不重写 textarea——保住光标位置） */
+  function liLoadEditor() {
+    const g = liSel && S.groups ? (S.groups.lineGroups || []).find((x) => x.id === liSel) : null;
+    const sec = g ? extractLineInfoSection(S.lineinfoMd, liSel) : null;
+    const ta = $('liText');
+    if (ta.value !== (sec || '')) ta.value = sec || '';
+    ta.disabled = !g || sec == null;
+    $('btnLiSkeleton').disabled = !g || sec != null;
+    setHtml($('liHint'), !g ? '左侧列表选一个线组，编辑它在 lineinfo.md 里的介绍节。'
+      : sec == null ? `线组 ${esc(g.id)} 还没有介绍节——点「生成骨架」创建（全占位符），也可改后再保存工作区。`
+      : '');
+    liRenderPreview(sec);
+    liSyncState();
+  }
+  /** 脏标记行（未保存改动＝内存文本与落盘基线失配） */
+  function liSyncState() {
+    const dirty = typeof S.lineinfoMd === 'string' && S.lineinfoMd !== S.lineinfoSavedMd;
+    const st = $('liState');
+    st.textContent = dirty ? '有未保存改动（随「保存工作区」写入 lineinfo.md）' : '';
+    st.style.color = dirty ? 'var(--warn)' : 'var(--dim)';
+  }
+  /** 线组列表（数据源＝S.groups.lineGroups；行内标节有无＋未保存 ●）。只重画列表容器，
+   *  不动 textarea——输入逐键调用不失焦点 */
+  function renderLineInfoList() {
+    const lgs = (S.groups && S.groups.lineGroups) || [];
+    setHtml($('liList'), lgs.length ? lgs.map((g) => {
+      const cur = extractLineInfoSection(S.lineinfoMd, g.id);
+      const dirty = cur != null && cur !== extractLineInfoSection(S.lineinfoSavedMd, g.id);
+      return `<div class="grp-row li-row${g.id === liSel ? ' li-sel' : ''}" data-lisel="${esc(g.id)}" title="点击编辑该线组的介绍节">`
+        + `<span class="chip" style="display:inline-block;width:11px;height:11px;background:${esc(g.color || '#888')};border-radius:3px"></span>`
+        + `<b>${esc(g.id)}</b> ${esc(g.name || '')}`
+        + `<span class="li-mark">${dirty ? '<span style="color:var(--warn)">●</span>' : ''}`
+        + (cur != null ? '有节' : '<span style="color:var(--dim)">无节</span>') + '</span>'
+        + `</div>`;
+    }).join('') : '<div style="color:var(--dim);font-size:12px">（暂无线组——先在「编组」节新建线组）</div>');
+  }
+  function renderLineInfoPanel() {
+    // 组删了清选中（撤销/载入工作区后 liSel 可能悬空）
+    if (liSel && !(S.groups && (S.groups.lineGroups || []).some((x) => x.id === liSel))) liSel = null;
+    renderLineInfoList();
+    liLoadEditor();
+  }
+
+  $('liList').addEventListener('click', (e) => {
+    const row = e.target.closest('[data-lisel]');
+    if (!row || row.dataset.lisel === liSel) return;
+    liSel = row.dataset.lisel;
+    renderLineInfoPanel();
+  });
+  // 生成骨架（节不存在时可点）：文件不存在先按仓库 data/lineinfo.md 模板头新建（注释头＋该组
+  // 骨架，示例节不带进来）；生成即改内存文本＋自动暂存，落盘仍等「保存工作区」
+  $('btnLiSkeleton').addEventListener('click', async () => {
+    const g = liSel && S.groups ? (S.groups.lineGroups || []).find((x) => x.id === liSel) : null;
+    if (!g) return;
+    const sec = lineInfoSectionSkeleton(g.id, g.name);
+    if (typeof S.lineinfoMd !== 'string') {
+      let tpl = S.liTplText;
+      if (typeof tpl !== 'string') {
+        try { const r = await fetch('data/lineinfo.md', { cache: 'no-cache' }); if (r.ok) tpl = await r.text(); } catch (e) { /* file:// 等，忽略 */ }
+        if (typeof tpl === 'string') S.liTplText = tpl;
+      }
+      S.lineinfoMd = lineInfoTemplateHeader(tpl) + sec;
+      setStatus(`已新建 lineinfo.md（仓库模板注释头）并为 ${g.id} 生成介绍节骨架——全是占位符，请改掉 … 再保存工作区。`);
+    } else {
+      S.lineinfoMd = replaceLineInfoSection(S.lineinfoMd, liSel, sec);
+      setStatus(`已为 ${g.id} 生成介绍节骨架——全是占位符，请改掉 … 再保存工作区。`);
+    }
+    renderLineInfoPanel();
+    autosave();
+  });
+  // 编辑＝内存文本按节替换（replaceLineInfoSection 保真：其余节逐字节不动）＋自动暂存；
+  // 预览防抖刷新；落盘等「保存工作区」
+  $('liText').addEventListener('input', () => {
+    if (!liSel || $('liText').disabled) return;
+    S.lineinfoMd = replaceLineInfoSection(S.lineinfoMd, liSel, $('liText').value);
+    liPreviewSoon();
+    liSyncState();
+    renderLineInfoList();
+    autosave();
+  });
+
   /** 待编入上层的整组态的失配清理（嵌套组）：撤销/拆组/删站后可能残留已不存在或已非顶层的组 id——
    *  只留仍存在的顶层组（瞬态状态，不进快照） */
   function syncPendingGroups() {
@@ -2878,6 +3123,7 @@
     renderLineForm();
     renderStopList();
     renderGroupsPanel();
+    renderLineInfoPanel();
     autosave();
   }
 
@@ -4294,8 +4540,10 @@
   $('wsOpen').onclick = async () => { wsMenu.close(); await openWorkspace(); };
   $('wsNew').onclick = () => { wsMenu.close(); resetAll(); };
 
-  /** 应用一份工作区数据集（整体替换语义；一次快照，撤销一次回退整批） */
-  function applyWorkspace(lineFiles, groups, manifest, calib, label, writable) {
+  /** 应用一份工作区数据集（整体替换语义；一次快照，撤销一次回退整批）。
+   *  lineinfoText＝工作区 lineinfo.md 原文（字符串）或 null（工作区无此文件——整体替换语义
+   *  连介绍文本一并清零，不沿用上一个工作区的）。lineinfo 不参与撤销（撤销只回退线路/编组）。 */
+  function applyWorkspace(lineFiles, groups, manifest, calib, label, writable, lineinfoText) {
     if (!lineFiles.size && !groups && !manifest) {
       setStatus(`${label}：未发现工作区文件（lines/*.json、groups.json、manifest.json 均无）。若要清空请用「新建空工作区」。`, true);
       return;
@@ -4316,6 +4564,8 @@
     S.manifest = manifest || null;
     // 工作区整体替换：显示顺序随 manifest.lineOrder（缺失＝null 回退 id 升序）
     S.lineOrder = (manifest && Array.isArray(manifest.lineOrder)) ? manifest.lineOrder : null;
+    // 线路介绍整体替换：工作区有 lineinfo.md 用其原文（落盘基线同步＝无未保存改动），无则清零
+    S.lineinfoMd = S.lineinfoSavedMd = (typeof lineinfoText === 'string') ? lineinfoText : null;
     if (calib) takeCalibration(calib);
     S.arcs = reuseArcs(S.arcs, S.lines);   // path 没变的线沿用旧弧；变了的丢掉重建
     if (!S.lines.has(S.activeLine)) S.activeLine = lineFiles.size ? [...lineFiles.keys()][0] : null;
@@ -4341,7 +4591,7 @@
     let dir;
     try { dir = await window.showDirectoryPicker({ mode: 'readwrite' }); }
     catch (e) { return; }   // 用户取消
-    const lineFiles = new Map(); let groups = null, manifest = null, calib = null;
+    const lineFiles = new Map(); let groups = null, manifest = null, calib = null, lineinfoText = null;
     try {
       for await (const [name, handle] of dir.entries()) {
         if (handle.kind === 'directory') {
@@ -4360,16 +4610,17 @@
           if (name === 'manifest.json') { const o = await readHandleJson(handle); if (o.schema === 'fmt/manifest@1') manifest = o; }
           else if (name === 'groups.json') { const o = await readHandleJson(handle); if (o.schema === 'fmt/groups@1') groups = o; }
           else if (name === 'calibration.json') { const o = await readHandleJson(handle); if (o.schema === 'fmt/calibration@2') calib = o; }
+          else if (name === 'lineinfo.md') { lineinfoText = await (await handle.getFile()).text(); }   // 手填 markdown 原样读入
         } catch (e) { setStatus(`工作区 ${name} 解析失败，已跳过：${e.message}`, true); }
       }
     } catch (e) { setStatus(`读取工作区失败：${e.message}`, true); return; }
     if (lineFiles.size || groups || manifest) wsHandle = dir;
-    applyWorkspace(lineFiles, groups, manifest, calib, dir.name, true);
+    applyWorkspace(lineFiles, groups, manifest, calib, dir.name, true, lineinfoText);
   }
 
   // 降级：webkitdirectory 整目录读（只读——保存走下载）。按文件名归槽，非工作区文件一概忽略
   $('fileWsDir').addEventListener('change', async (e) => {
-    const lineFiles = new Map(); let groups = null, manifest = null, calib = null;
+    const lineFiles = new Map(); let groups = null, manifest = null, calib = null, lineinfoText = null;
     for (const f of [...e.target.files]) {
       const base = (f.webkitRelativePath || f.name).replace(/\\/g, '/').split('/').pop();
       try {
@@ -4379,10 +4630,11 @@
         } else if (base === 'manifest.json') { const o = JSON.parse(await f.text()); if (o.schema === 'fmt/manifest@1') manifest = o; }
         else if (base === 'groups.json') { const o = JSON.parse(await f.text()); if (o.schema === 'fmt/groups@1') groups = o; }
         else if (base === 'calibration.json') { const o = JSON.parse(await f.text()); if (o.schema === 'fmt/calibration@2') calib = o; }
+        else if (base === 'lineinfo.md') { lineinfoText = await f.text(); }   // 手填 markdown 原样读入
       } catch (err) { /* 非 JSON/坏文件跳过 */ }
     }
     e.target.value = '';
-    applyWorkspace(lineFiles, groups, manifest, calib, '目录读入', false);
+    applyWorkspace(lineFiles, groups, manifest, calib, '目录读入', false, lineinfoText);
   });
 
   /** 新建空工作区＝清空暂存与编号水位后刷新（原「重置」） */
@@ -4449,22 +4701,43 @@
   });
 
   // ---------- 保存（工作区直写＋降级下载） ----------
-  function download(name, obj) {
-    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json;charset=utf-8' });
+  function saveBlob(name, blob) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = name;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
+  function download(name, obj) {
+    saveBlob(name, new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json;charset=utf-8' }));
+  }
+  /** lineinfo.md 是手填 markdown，整文件按原文落盘（不 JSON 化——保真硬要求） */
+  function downloadText(name, text) {
+    saveBlob(name, new Blob([String(text)], { type: 'text/markdown;charset=utf-8' }));
+  }
 
-  /** 工作区直写：线路＋groups＋manifest 成套写入目录（多余线路文件删除并列出）。
-   *  只碰 lines/ 子目录与 groups.json/manifest.json 三个自家产物——calibration 等其他文件一概不动。 */
+  /** 工作区直写：线路＋groups＋manifest＋lineinfo.md（有介绍改动时）成套写入目录（多余线路文件删除并列出）。
+   *  只碰 lines/ 子目录与 groups.json/manifest.json/lineinfo.md 自家产物——calibration 等其他文件一概不动。 */
   async function writeJson(dirHandle, name, obj) {
     const fh = await dirHandle.getFileHandle(name, { create: true });
     const w = await fh.createWritable();
     await w.write(JSON.stringify(obj, null, 2));
     await w.close();
+  }
+  async function writeText(dirHandle, name, text) {
+    const fh = await dirHandle.getFileHandle(name, { create: true });
+    const w = await fh.createWritable();
+    await w.write(String(text));
+    await w.close();
+  }
+  /** lineinfo.md 落盘（保存工作区的两条通道共用的环节）：内存有文本且与落盘基线不同才写
+   *  ——未载入该文件的工作区不凭空生成；整文件写回但被编辑节以外的字节由
+   *  replaceLineInfoSection 保证原样；写完同步基线（脏标记随之清除）。返回是否实际写入。 */
+  async function saveLineinfoIfChanged(dirHandle) {
+    if (typeof S.lineinfoMd !== 'string' || S.lineinfoMd === S.lineinfoSavedMd) return false;
+    await writeText(dirHandle, 'lineinfo.md', S.lineinfoMd);
+    S.lineinfoSavedMd = S.lineinfoMd;
+    return true;
   }
 
   async function saveWorkspaceToHandle(dir) {
@@ -4482,6 +4755,9 @@
     normalizeStationGroups(S.groups.stationGroups);   // 兜底：嵌套子组字段为空不写出（载入与各操作已保证）
     await writeJson(dir, 'groups.json', S.groups);
     await writeJson(dir, 'manifest.json', buildManifest());
+    let liWrote = false;
+    try { liWrote = await saveLineinfoIfChanged(dir); }   // lineinfo.md（有介绍改动时）
+    catch (e) { setStatus(`写入失败 lineinfo.md：${e.message}`, true); }
     // 同步语义：lines/ 里已不在当前数据的线路文件删除（只认 lNNNN.json 命名，其余文件不动）
     const ids = new Set(lines.map((l) => l.id));
     const removed = [];
@@ -4489,7 +4765,9 @@
       const m = /^(l\d{4})\.json$/.exec(name);
       if (m && handle.kind === 'file' && !ids.has(m[1])) { await linesDir.removeEntry(name); removed.push(name); }
     }
+    renderLineInfoPanel();   // 介绍落盘基线已同步：面板未保存标记随之刷新（无介绍改动时为无害重绘）
     setStatus(`工作区已保存到 ${dir.name}/：线路 ${ok} 条＋groups.json＋manifest.json`
+      + (liWrote ? '＋lineinfo.md' : '')
       + (fail ? `；${fail} 条未过检查或写入失败（见上）` : '')
       + (removed.length ? `；已删除多余线路文件 ${removed.join('、')}` : '。'));
   }
@@ -4559,11 +4837,12 @@
     return S.manifest;
   }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  // 降级保存＝线路＋groups＋manifest 一并下载（目录直写不可用时；水位恢复依赖 manifest，务必成套）；
-  // 逐个隔 150ms 发出降低浏览器多下载拦截概率，结束对账计数
+  // 降级保存＝线路＋groups＋manifest（＋lineinfo.md 有介绍改动时）一并下载（目录直写不可用时；
+  // 水位恢复依赖 manifest，务必成套）；逐个隔 150ms 发出降低浏览器多下载拦截概率，结束对账计数
   async function saveWorkspaceDownload() {
     const lines = [...S.lines.values()];
-    const total = lines.length + 2;
+    const liPending = typeof S.lineinfoMd === 'string' && S.lineinfoMd !== S.lineinfoSavedMd;
+    const total = lines.length + 2 + (liPending ? 1 : 0);
     let ok = 0, fail = 0, n = 0;
     for (const l of lines) {
       const issues = lineIssues(l);
@@ -4578,8 +4857,15 @@
     setStatus(`保存工作区 ${n}/${total}：已请求 groups.json`);
     await sleep(150);
     download('manifest.json', buildManifest()); n++;
+    if (liPending) {
+      await sleep(150);
+      downloadText('lineinfo.md', S.lineinfoMd); n++;   // 手填 markdown 原样下载（不 JSON 化）
+      S.lineinfoSavedMd = S.lineinfoMd;                 // 已导出即记为已保存（与直写通道口径一致）
+    }
+    renderLineInfoPanel();   // 介绍基线已同步：面板未保存标记随之刷新（无介绍改动时为无害重绘）
     setStatus(`保存工作区完成（降级下载模式）：已请求 ${n}/${total} 个文件（线路 ${ok} 个`
-      + (fail ? `＋未过检查 ${fail} 个（见上）` : '') + '＋groups＋manifest）→ 放入工作区/data/ 对应位置。'
+      + (fail ? `＋未过检查 ${fail} 个（见上）` : '') + '＋groups＋manifest'
+      + (liPending ? '＋lineinfo.md' : '') + '）→ 放入工作区/data/ 对应位置。'
       + '若浏览器询问「允许下载多个文件」请允许；中途取消可再点本按钮补齐。'
       + '（Chrome/Edge 可经「载入工作区」打开文件夹获得直写，免手动归档。）', !!fail);
   }
