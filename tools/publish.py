@@ -11,7 +11,8 @@
   2. flatten.py 把 <data> 经 data/calibration.json 变换为 GeoJSON → <out>/net/
      （lines.geojson / stops.geojson / index.json＝线路显示顺序索引，随 net/ 整体产出；
      lineinfo.md＝用户手填线路介绍，数据目录里有则原样透传进 net/）；
-  3. 白名单拷贝：index.html、src/viewer*.js、assets/vendor/（vendored MapLibre）。
+  3. 白名单拷贝：index.html、src/viewer*.js、assets/vendor/（vendored MapLibre）、
+     assets/fonts/（UI 字体子集，index.html @font-face 引用；2026-11-23 增）。
 
 白名单恒定——editor.html、编辑器代码、过程文档、源资产、import/ 永不进入部署目录
 （编辑器仅供本地使用，永不部署）。docs/ 为生成物，勿手改。
@@ -94,6 +95,7 @@ def main():
         cp(js.relative_to(ROOT).as_posix())
     cp("assets/vendor")
     cp("basemap")   # 省级界线底图静态件（查看器运行时按相对路径只读此仓库内文件）
+    cp("assets/fonts")   # UI 字体子集（2026-11-23 浅色改版随 @font-face 进发布）
 
     # 4. 汇总与自检
     total = 0
