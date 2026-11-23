@@ -80,6 +80,19 @@
 // linesMap/lineGroups/结构树三样入参）。结构树 S.groupTree（buildGroupTree）由视图与站点面板
 // 共用；站点面板对嵌套节点补「换乘节点／节点成员／换乘对端」行（平铺组一行不加，呈现与旧版
 // 一致）；单线导出对嵌套节点的站补节点信息。
+// 2026-11-23 渲染参数两项（用户需求，仅查看器渲染）：①底图白色遮罩常态提亮 40%→60%
+//（VEIL_OPACITY），唯聚焦态保持 40%（VEIL_OPACITY_FOCUS——聚焦高亮已有 70% 白罩
+// FOCUS_VEIL_OPACITY，底图遮罩再提亮两层叠白会看不清；聚焦态判定＝现有状态变量 S.focus，
+// 切换挂 applyDimState/applyBasemapToMap 的 syncBasemapVeil）；②预控通道画虚线——分类
+// 判断集中在 V.lineDashed/DASHED_LAYERS（meta.layer＝「预控通道」，viewer_core 纯逻辑可单测），
+// 特征带 dash 0/1 位，实线层 filter 剔 dash=1、独立 lines-dash 虚线层收 dash=1（显式 ==
+// 互斥，0/1 数字位勿用 '!'）；line-dasharray [2,2]＝段长与间隔相等（数值单位＝线宽倍数，
+// 基准线宽 7px 下名义 14px/14px——圆头端帽各外扩半线宽，观感约 21px 实段/7px 空隙；
+// z<11 线宽缩小时纹样随线宽等比缩小），颜色不变、常态基线不透明度 CORRIDOR_OPACITY=0.6
+//（调光系数照旧叠乘 dim case）；相位「几何起点居实段中间」需 line-dashoffset，其不在
+// MapLibre 样式规范（vendored maplibre-gl 5.24.1 bundle 亦无此属性字面量），退路＝从
+// dash 边界起始（起点首现整段实段）。聚焦重画分实/虚两层（focus-copy/-dash——虚线身份
+// 随线走，罩上 opacity 恒 1 的「聚焦豁免一切」语义不变）；分期调光/白罩叠加逻辑一律不动。
 // 与编辑器完全独立：不加载 editor.js 的任何代码。中文标签走 HTML 叠加（架构方案 §6 备案路线）。
 
 (function (G) {
@@ -254,7 +267,7 @@
         features.push({
           type: 'Feature',
           geometry: { type: 'LineString', coordinates: coords },
-          properties: { lineId: line.lineId, name: line.name, color: line.color, segStatus: seg.segStatus, segIndex: seg.segIndex, dim },
+          properties: { lineId: line.lineId, name: line.name, color: line.color, segStatus: seg.segStatus, segIndex: seg.segIndex, dim, dash: V.lineDashed(line) },
         });
       }
       S.dispBbox.set(line.lineId, bb);
@@ -360,15 +373,42 @@
   // ⚠ line-cap/line-join 是 layout 属性——放 paint 会被样式校验判非法、整个 style 拒载
   //（2026-11-22 黑屏根因：药丸层初版起就放错在 paint，全部图层因此一个都不渲染）。
   const LINE_LAYER_IDS = ['lines'];
+  // 预控通道虚线（2026-11-23 用户需求）：①line-dasharray 数值单位＝线宽倍数——CORRIDOR_DASHARRAY
+  // [2,2]＝段长与间隔相等，基准线宽 7px 下名义 14px/14px（圆头端帽各外扩半线宽，观感约
+  // 21px 实段/7px 空隙）；纹样以线宽计、随 line-width 等比缩放，z<11 线宽缩小时视觉一致。
+  // ②常态基线不透明度 CORRIDOR_OPACITY＝0.6，调光系数照旧叠乘（dim case 取乘积 0.5×0.6）；
+  // 颜色不变（['get','color']）。③相位：line-dashoffset 不在 MapLibre 样式规范（本项目
+  // vendored maplibre-gl 5.24.1 的 bundle 无此属性字面量——line-* 属性名都在规范表里），
+  // 「几何起点居实段中间」无从实现，退路＝从 dash 边界起始（每条通道起点首现整段实段）。
+  const CORRIDOR_DASHARRAY = [2, 2];
+  const CORRIDOR_OPACITY = 0.6;
   function lineLayerDef() {
     return {
       id: 'lines', type: 'line', source: 'lines',
+      filter: ['==', ['get', 'dash'], 0],   // 实线层：剔虚线位线（预控通道走 lines-dash，互斥见 corridorLineLayerDef）
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
         'line-color': ['get', 'color'],
         'line-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
         // 2026-11-22 双击精确命中：线宽基准常量收敛到 V.LINE_WIDTH_PX（与 V.lineWidthAt
         // 同一数值源，防两处漂移——胶水层命中阈值按它算）
+        'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX), V.LINE_WIDTH_PX),
+      },
+    };
+  }
+  // 预控通道虚线层定义（lines-dash / focus-copy-dash 共用骨架）：布局/线宽/颜色/调光机制
+  // 与实线层同源，唯 line-dasharray＋常态基线 0.6；filter 显式 == 1 与实线层 == 0 互斥
+  //（0/1 数字位，勿用 '!'——弃层坑见 STOP_LAYER_DEFS 注）。dasharray 数组逐次新建
+  //（slice，防 addLayer 内部处理共享引用污染初始 style 定义——对齐 pillFocusLayerDef 同款谨慎）。
+  function corridorLineLayerDef(id, source) {
+    return {
+      id, type: 'line', source,
+      filter: ['==', ['get', 'dash'], 1],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': ['get', 'color'],
+        'line-dasharray': CORRIDOR_DASHARRAY.slice(),
+        'line-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY * CORRIDOR_OPACITY, CORRIDOR_OPACITY],
         'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX), V.LINE_WIDTH_PX),
       },
     };
@@ -475,6 +515,7 @@
         layers: [
           { id: 'bg', type: 'background', paint: { 'background-color': '#ffffff' } },   // 2026-11-22 三批：黑板→白板
           ...LINE_LAYER_IDS.map(lineLayerDef),
+          corridorLineLayerDef('lines-dash', 'lines'),   // 预控通道虚线（同 source 紧挨实线层——药丸之下罩下区，2026-11-23）
           ...PILL_LAYER_DEFS,          // 药丸垫在站圈之下（罩下区：聚焦时与站圈一起被白罩罩淡）
           ...STOP_LAYER_DEFS.map(stopLayerDef),   // 站圈按 big/dark 拆三层（常量档位；罩下区，层序见 rebuildConnLayers 注）
         ],
@@ -535,8 +576,20 @@
   //（编辑器是「逐瓦片常量偏移」动瓦片侧，查看器数据侧变换，各自单侧适配、殊途同归）。
   const BASEMAP_LABEL_ZH = { off: '无', osm: 'OSM', gaode: '高德' };
   const BASEMAP_ATTR_ZH = { osm: '底图 © OpenStreetMap 贡献者', gaode: '底图 © 高德' };
-  // 底图白色遮罩不透明度：2026-11-22 用户档位测试后定值 40%（临时下拉控件已删，调值改此处）
-  const VEIL_OPACITY = 0.4;
+  // 底图白色遮罩不透明度：2026-11-22 用户档位测试定值 40%（临时下拉控件已删，调值改此处）；
+  // 2026-11-23 用户需求常态提亮为 60%（VEIL_OPACITY），唯聚焦态保持 40%——聚焦高亮已有
+  // 70% 白罩（FOCUS_VEIL_OPACITY），底图遮罩再叠 60% 两层叠白会看不清。聚焦态判定＝现有
+  // 状态变量 S.focus（null＝未聚焦），不新造状态；随聚焦进出换档走 syncBasemapVeil
+  //（applyDimState＝分期/聚焦两条路径的汇聚点＋applyBasemapToMap＝底图开启时补一档）。
+  const VEIL_OPACITY = 0.6;
+  const VEIL_OPACITY_FOCUS = 0.4;
+  // 遮罩层未建（底图从未开过）防御跳过——样式未就绪期由 dimPending/basemapPending 补应用
+  // 机制兜底（load 后两路径都会重进 applyDimState/applyBasemapToMap）。
+  function syncBasemapVeil() {
+    if (!S.map || !S.map.getLayer('basemap-veil')) return;
+    S.map.setPaintProperty('basemap-veil', 'fill-opacity',
+      S.focus != null ? VEIL_OPACITY_FOCUS : VEIL_OPACITY);
+  }
   function syncBasemapUI() {
     const b = $('btnBasemap');
     if (b) b.textContent = '底图：' + (BASEMAP_LABEL_ZH[S.basemap] || S.basemap);
@@ -559,7 +612,8 @@
   // 按 (tx+ty)%4 取子域，MapLibre 无子域模板语法，tiles 列 4 个完整 URL 由其内部轮询，等价。
   // 2026-11-22 三批：瓦片 100% 不透明（旧 0.45 透明作废），提亮改走白色遮罩 fill 层——
   // 全世界矩形（Mercator ±85.0511，任何平移不出界），插在瓦片之上、线路之下，只洗底图
-  // 不碰线网站名；不透明度＝VEIL_OPACITY（用户档位测试定值 40%，临时下拉已删）。
+  // 不碰线网站名；不透明度＝VEIL_OPACITY（2026-11-22 定 40%、2026-11-23 常态提亮 60%；
+  // 聚焦态 40%，见 VEIL_OPACITY 注；临时下拉已删）。
   function ensureBasemapLayers() {
     const map = S.map;
     if (!map || map.getSource('basemap-osm')) return;
@@ -594,12 +648,13 @@
   // dispBbox 已是显示坐标（与渲染同帧），不特殊处理。
   function applyBasemapToMap() {
     if (S.basemap !== 'off') ensureBasemapLayers();
+    syncBasemapVeil();   // 遮罩档位随聚焦态（建层时先落常态 60%，聚焦中开底图即刻改 40%）
     const vis = (layerId, on) => {
       if (S.map.getLayer(layerId)) S.map.setLayoutProperty(layerId, 'visibility', on ? 'visible' : 'none');
     };
     vis('basemap-osm', S.basemap === 'osm');
     vis('basemap-gaode', S.basemap === 'gaode');
-    // 遮罩随底图开关（不透明度定值 VEIL_OPACITY，无运行时档位）
+    // 遮罩随底图开关（不透明度＝VEIL_OPACITY，聚焦态 VEIL_OPACITY_FOCUS，无其他运行时档位）
     vis('basemap-veil', S.basemap !== 'off');
     S.dispCoord = V.makeDispCoord(S.basemap === 'gaode' ? 'gaode' : 'none');
     if (S.map.getSource('lines')) S.map.getSource('lines').setData(renderLinesFC());
@@ -637,6 +692,7 @@
     if (S.map.getSource('stops')) S.map.getSource('stops').setData(renderStopsFC());
     if (S.map.getSource('pills')) S.map.getSource('pills').setData(renderPillsFC());
     rebuildConnLayers();   // 联络线渐变层＋白罩＋聚焦重画层＋出省渐隐层（全删全建）
+    syncBasemapVeil();     // 底图白遮罩随聚焦态换档（40%⇄60%，2026-11-23）
     scheduleLabels();
   }
   // ---------- 联络线渐变层＋白罩高亮（2026-11-22 用户需求 2＋3） ----------
@@ -746,13 +802,23 @@
     const def = lineLayerDef();
     def.id = 'focus-copy';
     def.source = 'focus-copy';
+    def.filter = ['==', ['get', 'dash'], 0];   // 实线成员（虚线成员走 focus-copy-dash，互斥同基础层）
     def.paint['line-opacity'] = 1;   // 恒原色（不挂 dim case，见上注）
+    return def;
+  }
+  // 罩上虚线重画层（2026-11-23）：预控通道被聚焦时罩上保持虚线身份——虚线是其画法本体，
+  // 聚焦只豁免调光不改画法；opacity 恒 1（对齐 focus-copy「聚焦豁免一切」裁定，60% 基线
+  // 是常态值、聚焦态罩上恒原色不受其约束）。
+  function focusCopyDashLayerDef() {
+    const def = corridorLineLayerDef('focus-copy-dash', 'focus-copy');
+    def.paint['line-opacity'] = 1;
     return def;
   }
   // 聚焦重画特征：聚焦组成员的渲染特征（renderLinesFC 同款构造）；blend/fade/arrow
   // 成员跳过（渐变层接管——防御：联络线/出省线被录进线组的罕见形态，避免双层重复画，
-  // 各渐变层自身已在白罩之上）。不带 dim 位（层定义恒原色，见 focusCopyLayerDef 注）。
-  // 坐标过 S.dispCoord（底图切换 gaode 同帧）。
+  // 各渐变层自身已在白罩之上）。不带 dim 位（层定义恒原色，见 focusCopyLayerDef 注）；
+  // 带 dash 位（2026-11-23：预控通道被聚焦时罩上重画保持虚线身份，实/虚两层收——
+  // focusCopyLayerDef/focusCopyDashLayerDef）。坐标过 S.dispCoord（底图切换 gaode 同帧）。
   function renderFocusCopyFC() {
     const grp = S.lineGroups.ofLine.get(S.focus);
     const members = grp ? grp.members : [S.focus];
@@ -773,7 +839,7 @@
         features.push({
           type: 'Feature',
           geometry: { type: 'LineString', coordinates: coords },
-          properties: { lineId: line.lineId, name: line.name, color: line.color, segStatus: seg.segStatus, segIndex: seg.segIndex },
+          properties: { lineId: line.lineId, name: line.name, color: line.color, segStatus: seg.segStatus, segIndex: seg.segIndex, dash: V.lineDashed(line) },
         });
       }
     }
@@ -852,10 +918,10 @@
   // 挂接点：applyDimState 与 applyBasemapToMap 末尾（调光/聚焦与底图切换都重设 source
   // 坐标）；样式未就绪的 pending 路径由既有 dimPending/basemapPending 补应用机制自然覆盖。
   // 层序总排布（自下而上；2026-11-22 真机反馈轮——站圈/药丸移罩下＋罩上符号复制层）：
-  //   bg/basemap → lines 基础层 → conn-blend（未被聚焦绑定的联络线渐变）→（静态五层）
+  //   bg/basemap → lines 基础层 → lines-dash（预控通道虚线，2026-11-23）→ conn-blend（未被聚焦绑定的联络线渐变）→（静态五层）
   //   pills-outer/inner → stops/stops-dark/stops-big（以上全部罩下；聚焦时这五层 filter
   //   追加「非聚焦参与」——聚焦成员 feature 只上罩上层，不双层叠画，见 applyFocusFilters）
-  //   → focus-veil 白罩 → focus-copy 聚焦重画 → conn-fade 渐变高亮 → arrow 渐隐层 →
+  //   → focus-veil 白罩 → focus-copy 聚焦重画（实/虚两层，2026-11-23 预控通道虚线随线走）→ conn-fade 渐变高亮 → arrow 渐隐层 →
   //   pills-outer-focus/pills-inner-focus → stops-focus/stops-dark-focus/stops-big-focus
   //（罩上符号复制：聚焦成员的药丸/站圈恒原色完整显示）→ HTML 站名标签（聚焦时仅聚焦
   //   组成员的标签显示，见 visibleLabels）。
@@ -908,6 +974,7 @@
       const copySrc = map.getSource('focus-copy');
       if (copySrc) copySrc.setData(renderFocusCopyFC());
       addTop(focusCopyLayerDef());
+      addTop(focusCopyDashLayerDef());   // 预控通道成员罩上保持虚线（2026-11-23）
     }
     // ③ fade 形态联络线层（聚焦绑定：聚焦线色→透明；罩上＝渐变高亮不被罩压白；非聚焦无此层）
     const focusColor = (S.linesMap.get(S.focus) || {}).color;

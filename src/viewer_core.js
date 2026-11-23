@@ -70,6 +70,10 @@
   // 「仅显示」级类别（2026-11-22 用户裁定：他省线）——列表双击不聚焦、地图点选不开面板、
   // 一切调光场合（分期非「无」档/任何聚焦）恒在半透明侧（即便期次恰好匹配）
   const DISPLAY_ONLY_LAYERS = ['他省'];
+  // 虚线渲染类别（2026-11-23 用户需求：预控通道画虚线）——分类判断集中于此（与上面两份
+  // 名单同款集中式，勿散落 if）；命中类别的线特征带 dash 0/1 位，渲染层据此分虚实两层
+  //（viewer.js corridorLineLayerDef）。
+  const DASHED_LAYERS = ['预控通道'];
   // 标签只按 zoom 门槛分级，**不设标签总数上限**。2026-11-22 删除初版自设的 LABEL_CAP=800
   //（「整份数据标签数超上限则只显示换乘组」）：它数的是整份数据而非同屏数——用户真数据
   // 1095 站＝1040 个标签单元，一超上限普通站名就在一切 zoom 永不显示（真机抓包
@@ -1094,6 +1098,14 @@
     return DISPLAY_ONLY_LAYERS.indexOf(layer) >= 0 ? 'displayOnly' : 'normal';
   }
 
+  // 虚线位（2026-11-23 用户需求）：预控通道画虚线——0/1 数字位写入渲染特征属性 dash，
+  // 滤镜一律显式 ['==', ['get','dash'], 0/1]（对齐 big/dark 的 0/1 数字约定；'!' 吃数字
+  // 判类型错致静默弃层的坑，见 viewer.js STOP_LAYER_DEFS 注）。
+  function lineDashed(line) {
+    const layer = line && typeof line.layer === 'string' ? line.layer : '';
+    return DASHED_LAYERS.indexOf(layer) >= 0 ? 1 : 0;
+  }
+
   // 调光线集：state＝{ phase: 'none'|'existing'|'approved'|'future', focus: lineId|null,
   //                   lineGroups: buildLineGroups 产物（可选，缺省＝逐线旧行为） }。
   // 2026-11-22 白罩定案（用户确认遮罩 70%、删全部对比开关与旧调光路径）：聚焦不再贡献
@@ -1383,7 +1395,7 @@
   // ---------- 导出 ----------
   const Core = {
     DIM_OPACITY, SEG_STATUS_RANK, DEFAULT_LINE_COLOR, GROUP_TYPE_ZH, ROLE_ZH, SEG_STATUS_ZH,
-    PHASE_CYCLE, PHASE_LABEL_ZH, HIDDEN_LIST_LAYERS, DISPLAY_ONLY_LAYERS,
+    PHASE_CYCLE, PHASE_LABEL_ZH, HIDDEN_LIST_LAYERS, DISPLAY_ONLY_LAYERS, DASHED_LAYERS,
     LABEL_ZOOM_GROUP, LABEL_ZOOM_STOP,
     SIZE_ZOOM_MIN, SIZE_ZOOM_HOLD, SIZE_SCALE_EXP, labelScale,
     UNNAMED_STOP_ZH, stopDisplayName, formatTerminals,
@@ -1391,7 +1403,7 @@
     normalizeLines, lineBboxOf, stopList, buildStopView,
     parseNetIndex, buildGroupTree, logicalLineCount, groupRelations,
     planGroupPillChain, planarOf, lineSummaries, layerGroups, visibleListGroups,
-    linePhaseOf, lineLayerRank, computeDimmedSet, nextPhase, connectorFadePlan,
+    linePhaseOf, lineLayerRank, lineDashed, computeDimmedSet, nextPhase, connectorFadePlan,
     connectorBlendPlan, arrowFadePlan, arrowFadeGradient, ARROW_FADE_M,
     zoomInterp, scaledSize, LINE_WIDTH_PX, DBLCLICK_TOL_PX, lineWidthAt,
     pointToScreenPolylineDist,

@@ -29,6 +29,8 @@
 // 最外层组·叶站／buildStopView 节点出图：中辰路·上海金山·中华艺术宫三形态＋出闸递归＋junction
 // 递归取叶站／logicalLineCount 药丸线数口径／groupRelations 关系描述／导出补注；回归＝旧实现
 // 对干净夹具的输出快照逐字段冻结；防御＝未知子组 id、无站组、成环、自指、多父、表外组、脏条目）。
+// 2026-11-23 增：预控通道虚线分类（lineDashed/DASHED_LAYERS——meta.layer 判别，渲染层
+// 据此分虚实两层；viewer.js 侧 paint 参数不在纯逻辑层，不在此测）。
 // 用法：node tools/test_viewer_logic.js（纯 node，不引 jsdom/DOM/maplibre）
 
 const V = require(path_join('src', 'viewer_core.js'));
@@ -268,6 +270,15 @@ eq(V.lineLayerRank(lm.get('lc')), 'normal', '联络线是 normal（可交互，�
 eq(V.lineLayerRank({ layer: '他省' }), 'displayOnly', '他省线 displayOnly（仅显示级）');
 eq(V.lineLayerRank({ layer: '市区线' }), 'normal', '市区线 normal');
 eq(V.lineLayerRank({}), 'normal', '类别缺失 → normal');
+// 虚线位（2026-11-23 用户需求：预控通道画虚线）——集中判断，0/1 数字位供渲染特征属性
+ok(V.DASHED_LAYERS.join(',') === '预控通道', '虚线类别常量＝[预控通道]（2026-11-23 用户需求）');
+eq(V.lineDashed({ layer: '预控通道' }), 1, '预控通道 → dash 1（画虚线）');
+eq(V.lineDashed({ layer: '市区线' }), 0, '市区线 → dash 0（实线）');
+eq(V.lineDashed({ layer: '市域线' }), 0, '市域线 → dash 0（实线）');
+eq(V.lineDashed({ layer: '联络线' }), 0, '联络线 → dash 0（实线）');
+eq(V.lineDashed({ layer: '他省' }), 0, '他省线 → dash 0（仅显示级与虚线位互不相干）');
+eq(V.lineDashed({}), 0, '类别缺失 → dash 0');
+eq(V.lineDashed(null), 0, 'null 线不崩 → 0');
 const lmTP = V.normalizeLines(fc(
   lineFeat('tp', 0, 'existing', [[0, 0], [1, 0]], { layer: '他省' }),
 ));
