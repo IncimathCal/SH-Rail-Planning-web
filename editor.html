@@ -183,6 +183,28 @@
   .grp-pill-under { fill: none; pointer-events: none; }  /* 药丸黑边垫层（不参与命中） */
   .stop-ring { fill: none; stroke: var(--acc); }
   .hint-ring { fill: none; stroke: var(--warn); stroke-dasharray: 3 3; }
+
+  /* 线路介绍面板（lineinfo.md 手填介绍编辑，2026-11-23 增）：列表行沿用 .grp-row，
+     选中行底色同 .line-row.active；预览区样式对齐查看器 .lineinfo-* 的观感（字号/行距） */
+  #liList { margin-bottom: 6px; }
+  .li-row { cursor: pointer; }
+  .li-row:hover { background: #2a2e35; }
+  .li-row.li-sel { background: #1e3a5f; }
+  .li-row .li-mark { flex: none; margin-left: auto; color: var(--dim); font-size: 11px; }
+  #liText { width: 100%; min-height: 150px; resize: vertical; background: var(--bg);
+    color: var(--fg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 4px 6px; font: 12px/1.55 ui-monospace, Consolas, monospace; }
+  #liText[disabled] { opacity: .5; }
+  #liPrev { border: 1px dashed var(--border); border-radius: 4px; padding: 5px 8px;
+    margin-top: 4px; font-size: 12px; line-height: 1.6; word-break: break-all;
+    background: var(--bg); max-height: 220px; overflow-y: auto; }
+  #liPrev .li-flds { color: var(--dim); margin-bottom: 3px; }
+  #liPrev .li-k { color: var(--acc); }
+  #liPrev .li-body p { margin: 0 0 5px; }
+  #liPrev .li-body p:last-child { margin-bottom: 0; }
+  #liPrev .li-body ul { margin: 0 0 5px; padding-left: 18px; }
+  #liPrev a { color: var(--acc); }
+  #liPrev .li-links { margin: 3px 0 0; padding: 0; list-style: none; }
 </style>
 </head>
 <body>
@@ -223,7 +245,7 @@
       <input type="checkbox" id="backfillTrans">填补换乘站数据
     </label>
     <button id="btnSaveWorkspace" class="primary"
-      title="把 lines/*.json＋groups.json＋manifest.json 成套写入工作区文件夹（已打开则直写；未打开先选目录；均不可用则降级多文件下载）；工作区里多余的线路文件会删除并列出">保存工作区</button>
+      title="把 lines/*.json＋groups.json＋manifest.json（＋lineinfo.md，介绍面板有未保存改动时）成套写入工作区文件夹（已打开则直写；未打开先选目录；均不可用则降级多文件下载）；工作区里多余的线路文件会删除并列出">保存工作区</button>
   </div>
 </header>
 
@@ -306,6 +328,25 @@
       <div id="lineGroups"></div>
     </div>
   </section>
+
+  <section id="secInfo">
+    <h3>线路介绍（lineinfo.md）</h3>
+    <div class="body">
+      <!-- 线组列表（数据源＝编组节的线组表）＋选中组的 md 原文编辑＋防抖预览（parseLineInfo 渲染效果）。
+           列表与编辑/预览分区重画（输入逐键只重画列表），textarea 焦点不丢 -->
+      <div id="liList"></div>
+      <div id="liHint" style="color:var(--dim);font-size:11px;margin-bottom:4px"></div>
+      <textarea id="liText" rows="10" spellcheck="false" disabled
+        placeholder="选中线组后在此编辑该组那一节的 markdown 原文（## 标题绑定线组，标题行下空行前为「键: 值」字段区，其后为自由正文＋「### 相关链接」）"></textarea>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:wrap">
+        <button id="btnLiSkeleton" class="mini primary" disabled
+          title="该线组在 lineinfo.md 里还没有介绍节：一键生成骨架（## 线组id 线组名＋字段区占位＋正文占位＋相关链接占位，全占位符零真实内容）；文件不存在时按仓库 data/lineinfo.md 模板新建（注释头＋骨架）">生成骨架</button>
+        <span id="liState" style="color:var(--dim);font-size:11px"></span>
+      </div>
+      <div class="imp-src">实时预览（查看器 parseLineInfo 渲染效果）</div>
+      <div id="liPrev"><span style="color:var(--dim)">（无内容）</span></div>
+    </div>
+  </section>
 </aside>
 
 <main id="canvas">
@@ -322,7 +363,7 @@
 <dialog id="wsMenu">
   <b style="display:block;margin-bottom:6px">工作区</b>
   <p style="color:var(--dim);margin:0 0 10px;font-size:12px;max-width:330px">
-    工作区文件夹与 data/ 同构（lines/*.json＋groups.json＋manifest.json），复制进 data/ 即为提交；
+    工作区文件夹与 data/ 同构（lines/*.json＋groups.json＋manifest.json，介绍面板的 lineinfo.md 有改动时一并写入），复制进 data/ 即为提交；
     也可直接打开 data/ 本体，保存即落盘（校验门禁照旧把守）。载入＝整体替换当前线路与编组（Ctrl+Z 可撤销）。</p>
   <div style="display:flex;flex-direction:column;gap:6px">
     <button id="wsOpen" class="primary">打开工作区文件夹…</button>
@@ -345,6 +386,9 @@
 </dialog>
 
 <script src="src/geom.js"></script>
+<!-- viewer_core.js＝查看器纯逻辑层（无 DOM 依赖，浏览器直载安全）：编辑器只用其
+     parseLineInfo 做介绍节预览（实现零语义改动、与查看器同一份解析），其余导出不触碰 -->
+<script src="src/viewer_core.js"></script>
 <script src="src/editor.js"></script>
 </body>
 </html>

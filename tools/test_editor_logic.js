@@ -6,7 +6,8 @@
 // 站类型循环切换（nextStopKind：三种位置 × 各起点）、站数<2 缺 status 载入兜底（2026-11-22）、
 // 联络线有效目标判定（connValidTargets：2026-11-22 取消颜色属性改由所联络两线决定）、
 // 嵌套换乘组（2026-11-23：组树工具含成环/未知子组防御、绘制单元规划、药丸线数口径、含整组的编组判定、
-// groups 字段往返、拆组/删站修剪级联、判脏键）、联络线不带颜色属性（stripConnectorColor/lineForSave）。
+// groups 字段往返、拆组/删站修剪级联、判脏键）、联络线不带颜色属性（stripConnectorColor/lineForSave）、
+// lineinfo.md 节编辑（2026-11-23：保真替换/尾部追加/空文件/多节逐字节不变/标题空白边界/骨架与模板头）。
 // 用法：node tools/test_editor_logic.js
 
 const L = require(path_join('src', 'editor.js'));
@@ -1193,6 +1194,111 @@ const cf2 = mkRoleLine('standalone', '#112233');
 ok(L.lineForSave(cf2) === cf2, '非联络线原样返回同一对象');
 const cf3 = mkRoleLine('connector');
 ok(L.lineForSave(cf3) === cf3 && L.lineForSave(null) === null, '本就无 color 的联络线原样返回；null 不崩');
+
+// ---------- lineinfo.md 节编辑（2026-11-23：保真＝只动被编辑节，其余字节原样） ----------
+console.log('lineinfo 节编辑:');
+const V = require(path_join('src', 'viewer_core.js'));   // 绑定口径对拍：parseLineInfo 同为「## <id> …」首 token
+
+// CRLF 多节文件：替换中间节，前后其余节逐字节不动（含行尾符与注释）
+const crlfMd = [
+  '# 线路信息',
+  '',
+  '<!-- 注释 -->',
+  '',
+  '## lg01 一号线',
+  '起讫点: A—B',
+  '',
+  '正文一',
+  '',
+  '## lg02 二号线',
+  '起讫点: C—D',
+  '',
+  '- 项一',
+  '- 项二',
+  '',
+  '### 相关链接',
+  '[链接](https://x/y)',
+  '',
+  '## lg03 三号线',
+  '编组: 6A',
+  '',
+  '正文三',
+  '',
+].join('\r\n');
+const newSec2 = '## lg02 二号线\r\n起讫点: C—E\r\n\r\n改好的正文\r\n';
+const rep = L.replaceLineInfoSection(crlfMd, 'lg02', newSec2);
+ok(rep.indexOf(newSec2) >= 0, '替换节进入结果');
+ok(rep.slice(0, rep.indexOf(newSec2)) === crlfMd.slice(0, crlfMd.indexOf('## lg02')),
+  '被替换节之前的全部字节不变（文件头注释＋lg01 整节）');
+ok(rep.slice(rep.indexOf('## lg03')) === crlfMd.slice(crlfMd.indexOf('## lg03')),
+  '被替换节之后的全部字节不变（lg03 整节至文件尾）');
+ok(L.extractLineInfoSection(rep, 'lg01') === L.extractLineInfoSection(crlfMd, 'lg01'), 'lg01 节原文逐字节相同');
+ok(L.extractLineInfoSection(rep, 'lg03') === L.extractLineInfoSection(crlfMd, 'lg03'), 'lg03 节原文逐字节相同');
+const p0 = V.parseLineInfo(crlfMd), p1 = V.parseLineInfo(rep);
+eq(p1.lg02.fields, [['起讫点', 'C—E']], 'parseLineInfo 对拍：lg02 字段更新');
+eq(p1.lg02.bodyHtml, '<p>改好的正文</p>', 'parseLineInfo 对拍：lg02 正文更新');
+eq(p1.lg01, p0.lg01, 'lg01 解析结果不变');
+eq(p1.lg03, p0.lg03, 'lg03 解析结果不变');
+
+// 尾部追加：节不存在 → 原文件全部字节作前缀，新节接在文件尾
+const ap = L.replaceLineInfoSection(crlfMd, 'lg09', '## lg09 九号线\n正文九\n');
+ok(ap.slice(0, crlfMd.length) === crlfMd, '尾部追加：原文件字节全保');
+eq(ap.slice(crlfMd.length), '## lg09 九号线\n正文九\n', '追加节恰在文件尾');
+// 原文件不以行尾符结尾：追加前补一个（沿用文件末行的行尾符）
+eq(L.replaceLineInfoSection('## lg01 A\n正文一', 'lg09', '## lg09 B\nx\n'),
+  '## lg01 A\n正文一\n## lg09 B\nx\n', '追加前补 LF');
+eq(L.replaceLineInfoSection('## lg01 A\r\n正文一', 'lg09', '## lg09 B\nx\n'),
+  '## lg01 A\r\n正文一\r\n## lg09 B\nx\n', '追加前补行尾符沿用 CRLF');
+
+// 文件为空/无任何节
+eq(L.replaceLineInfoSection(null, 'lg01', '## lg01 A\nx\n'), '## lg01 A\nx\n', 'null 文件 → 结果即新节');
+eq(L.replaceLineInfoSection('', 'lg01', '## lg01 A\nx\n'), '## lg01 A\nx\n', '空文件 → 结果即新节');
+eq(L.replaceLineInfoSection('# 标题\n\n散行注释\n', 'lg01', '## lg01 A\nx\n'),
+  '# 标题\n\n散行注释\n## lg01 A\nx\n', '无任何节的文件 → 尾部追加（散行保留）');
+ok(L.extractLineInfoSection(null, 'lg01') === null, 'null → 无节');
+ok(L.extractLineInfoSection('# 只有说明\n散行\n', 'lg01') === null, '无节文件 → null');
+
+// 同 id 多节：首个位置替换、其余同 id 一并移除（解析器「后者覆盖」，留旧节会让查看器继续显示旧内容）；
+// 中间的未命中节逐字节保留。被换下的节末尾空行属于旧节字节，新节不带它（字节级对换语义）
+const dup = '## d1 旧A\nk: 1\n\n## mid 中间\nm: 1\n\n## d1 旧B\nk: 2\n\n## tail 尾\nt: 1\n';
+eq(L.replaceLineInfoSection(dup, 'd1', '## d1 新\nk: 9\n'),
+  '## d1 新\nk: 9\n## mid 中间\nm: 1\n\n## tail 尾\nt: 1\n', '同 id 多节＝首位置替换＋余同 id 移除，中间节不动');
+
+// 标题解析边界（与 parseLineInfo 同口径）：「##」后前导/多重空白不影响首 token 绑 id
+const liSpMd = '##   lg07   七号\r\nk: v\r\n';
+eq(L.extractLineInfoSection(liSpMd, 'lg07'), liSpMd, '前导空白标题仍按首 token 绑 id');
+eq(L.replaceLineInfoSection(liSpMd, 'lg07', '## lg07 换\n'), '## lg07 换\n', '替换命中前导空白标题');
+ok(L.extractLineInfoSection(liSpMd, 'lg0') === null, 'id 不是完整 token 不命中');
+
+// 三级标题不是节边界：### 相关链接 属于所在节，替换整节不越界到他节
+const h3 = '## lg01 A\nx: 1\n\n正文\n\n### 相关链接\n[l](https://a)\n\n## lg02 B\ny: 2\n';
+ok(L.extractLineInfoSection(h3, 'lg01').indexOf('### 相关链接') >= 0, '### 子节属所在节');
+eq(L.replaceLineInfoSection(h3, 'lg01', '## lg01 A\n新正文\n'),
+  '## lg01 A\n新正文\n## lg02 B\ny: 2\n', '替换含 ### 子节的整节，lg02 不受影响');
+// 替换节不以行尾符结尾且后面还有内容：沿用原节末行行尾符补上（防后续标题被吞进正文行）
+eq(L.replaceLineInfoSection('## a A\n旧文\n## b B\nx\n', 'a', '## a A\n新文'),
+  '## a A\n新文\n## b B\nx\n', '新节无尾行尾符时自动补（文件尾节不受影响）');
+eq(L.replaceLineInfoSection('## a A\n旧文\r\n## b B\nx\n', 'a', '## a A\n新文'),
+  '## a A\n新文\r\n## b B\nx\n', '补行尾符沿用原节末行的 CRLF');
+
+// 骨架与模板头（全占位符零真实内容）
+const sk = L.lineInfoSectionSkeleton('lg42', '嘉闵线');
+ok(sk.startsWith('## lg42 嘉闵线\n'), '骨架标题绑定线组 id＋名');
+ok(sk.indexOf('起讫点: …') >= 0 && sk.indexOf('（正文……）') >= 0
+  && sk.indexOf('[链接文字](https://…)') >= 0, '骨架字段区/正文/链接全占位符');
+ok(sk.endsWith('\n'), '骨架以行尾符结尾');
+eq(L.lineInfoSectionSkeleton('lg42', ''), '## lg42\n起讫点: …\n编组: …\n\n（正文……）\n\n### 相关链接\n[链接文字](https://…)\n', '无名线组骨架');
+const tpl = require('fs').readFileSync(path_join('data', 'lineinfo.md'), 'utf8');
+const head = L.lineInfoTemplateHeader(tpl);
+ok(!head.split('\n').some((l) => /^##/.test(l)), '模板头去掉自带示例节（无行首 ## 行）');
+ok(head.endsWith('\n\n'), '模板头以恰好一个空行结尾');
+ok(/^# 线路信息（lineinfo\.md）/.test(head), '模板头保留文件标题');
+eq(L.lineInfoTemplateHeader(''), '# 线路信息（lineinfo.md）\n\n', '空模板退化为中性标题');
+eq(L.lineInfoTemplateHeader('## lg01 A\nx: 1\n'), '# 线路信息（lineinfo.md）\n\n', '以标题开头的模板退化');
+const liNew = head + sk;
+const pv = V.parseLineInfo(liNew);
+eq(pv.lg42.fields, [['起讫点', '…'], ['编组', '…']], '模板头＋骨架可被查看器解析（字段占位）');
+eq(pv.lg42.links, [{ text: '链接文字', url: 'https://…' }], '骨架相关链接可被解析');
 
 // ---------- 标定变换与瓦片数学（fmt/calibration@1 deg3 / @2 tps，文件存在时） ----------
 console.log('calibration:');
