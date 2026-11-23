@@ -4,9 +4,10 @@
 // 纯深色画布）→ 搜索 / 聚焦（列表双击）·线路·车站信息面板 / 站点 hover 提示 / 单线导出 /
 // 中文 HTML 标签叠加。
 // 渲染坐标系＝WGS84（无底图设计，零外部资源）；S.linesMap/S.stops 即权威结构，
-// GeoJSON/KML 导出与其同坐标。2026-11-22 增：测试阶段底图三态（无→OSM→高德循环，
-// 用户阶段性豁免——早前「查看器不放底图」裁定在测试期让位，正式上线可能保留也可能移除）；
-// 高德为 GCJ02，对齐走显示侧坐标变换（S.dispCoord，权威数据/导出一律 WGS84 不动）。
+// GeoJSON/KML 导出与其同坐标。2026-11-22 增：测试阶段底图（用户阶段性豁免——早前
+//「查看器不放底图」裁定在测试期让位，正式上线可能保留也可能移除；2026-11-23 三态扩四态：
+// 无→OSM→高德→CARTO无字 循环）；高德为 GCJ02，对齐走显示侧坐标变换（S.dispCoord，
+// 权威数据/导出一律 WGS84 不动；OSM/CARTO 瓦片均 WGS84，恒等直通）。
 // 2026-11-22 改版（用户八条指示）：①渲染不再区分期次——单一线层纯色实线统一不透明
 //（三档透明/远期虚线/按 segStatus 拆层全删）；②分期四档循环按钮（无→既有→已批复→远期），
 // 非选中期的线半透明并隐站名；③左栏列表双击聚焦（其他线半透明隐站名、聚焦线站名常显、
@@ -126,11 +127,11 @@
     labelFrame: 0,                // rAF 合帧令牌
     searchIdx: [],                // 搜索条目
     dropIndex: 0,                 // 搜索下拉键盘焦点序
-    basemap: 'off',               // 测试阶段底图三态：'off'|'osm'|'gaode'（默认无＝与现状零差别；不持久化）
-    dispCoord: V.makeDispCoord('none'), // 显示坐标变换（gaode＝WGS84→GCJ02；仅显示侧，见下方底图段）
+    basemap: 'off',               // 测试阶段底图四态：'off'|'osm'|'gaode'|'carto'（默认无＝与现状零差别；不持久化）
+    dispCoord: V.makeDispCoord('none'), // 显示坐标变换（gaode＝WGS84→GCJ02，osm/carto 恒等；仅显示侧，见下方底图段）
     basemapPending: false,        // 样式未就绪时点击的补应用标记（目标态恒存 S.basemap）
     styleReady: false,            // map 'load' 已触发（样式只建一次，就绪后 addSource/addLayer 恒可用）
-    panelCollapsed: false,        // 线路面板收起态（2026-11-22 用户需求；会话内不持久化，刷新回展开——与底图三态等 UI 态同策）
+    panelCollapsed: false,        // 线路面板收起态（2026-11-22 用户需求；会话内不持久化，刷新回展开——与底图四态等 UI 态同策）
     // 2026-11-22 出省渐变计划（用户改版）：arrowPlan＝V.arrowFadePlan 结果（boot 算一次，
     // 常驻不随聚焦变）；arrowSet＝含出省端 arrow 的线 id 集（基础层剔除、arrow-fade-*
     // 渐变层接管——查看器以线身末端 1km 渐隐示意出省，编辑器 glyph 不动）。
@@ -243,7 +244,7 @@
 
   // ---------- 渲染数据（由归一结果重建，保证 paint 属性干净齐全） ----------
   // 权威结构（S.linesMap/S.stops）恒 WGS84；渲染特征逐坐标过 S.dispCoord（测试阶段底图：
-  // 'off'/'osm' 恒等直通、'gaode' 变 GCJ02）——bbox 也按显示坐标记账（fitAll/选中定位与
+  // 'off'/'osm'/'carto' 恒等直通、'gaode' 变 GCJ02）——bbox 也按显示坐标记账（fitAll/选中定位与
   // 渲染同帧一致；与 WGS84 差数百米，全图 fit 无感）。导出走权威结构，不经此处。
   // 2026-11-22 改版：特征带 dim 位（S.dimmed 调光线集），各图层 paint 据此半透明
   //（分期四档/聚焦两模式共用；调光状态下重设 source 即刷新）。
@@ -584,16 +585,22 @@
     if (bb) S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 60, duration: 0, maxZoom: 12 });
   }
 
-  // ---------- 测试阶段底图（三态：无 → OSM → 高德 → 无 循环） ----------
+  // ---------- 测试阶段底图（四态：无 → OSM → 高德 → CARTO无字 → 无 循环） ----------
   // ⚠ 测试阶段功能（2026-11-22 用户指示的阶段性豁免）：早前用户曾裁定「查看器不放底图、
-  // 零外部资源」，本段为测试期豁免，正式上线可能保留也可能移除——移除时删本段＋顶栏按钮＋
+  // 零外部资源」，本段为测试期豁免，正式上线可能保留也可能移除（2026-11-23 用户裁定：打磨
+  // 最后阶段移除白板/OSM/高德、只留 CARTO 并删切换按钮）——移除时删本段＋顶栏按钮＋
   // 图例卡署名行＋S 里三字段即可。默认 'off' 与无底图现状完全一致（不 addSource、零网络请求）；
   // 状态会话内不持久化（每次加载默认无底图）。
-  // 对齐设计：OSM 瓦片 WGS84 与数据同基准直接叠；高德瓦片 GCJ02——不动瓦片、只把显示用坐标
+  // 对齐设计：OSM 与 CARTO（Positron 无字版，2026-11-23 接入，瓦片 WGS84）与数据同基准
+  // 直接叠（S.dispCoord 恒等直通）；高德瓦片 GCJ02——不动瓦片、只把显示用坐标
   // 过 S.dispCoord（WGS84→GCJ02），权威数据与 GeoJSON/KML 导出一律 WGS84 一个字节不动
   //（编辑器是「逐瓦片常量偏移」动瓦片侧，查看器数据侧变换，各自单侧适配、殊途同归）。
-  const BASEMAP_LABEL_ZH = { off: '无', osm: 'OSM', gaode: '高德' };
-  const BASEMAP_ATTR_ZH = { osm: '底图 © OpenStreetMap 贡献者', gaode: '底图 © 高德' };
+  const BASEMAP_LABEL_ZH = { off: '无', osm: 'OSM', gaode: '高德', carto: 'CARTO无字' };
+  const BASEMAP_ATTR_ZH = {
+    osm: '底图 © OpenStreetMap 贡献者',
+    gaode: '底图 © 高德',
+    carto: '底图 © OpenStreetMap contributors © CARTO',   // CARTO 条款硬性署名（文字即可）
+  };
   // 底图白色遮罩不透明度：2026-11-22 用户档位测试定值 40%（临时下拉控件已删，调值改此处）；
   // 2026-11-23 用户需求常态提亮为 60%（VEIL_OPACITY），唯聚焦态保持 40%——聚焦高亮已有
   // 70% 白罩（FOCUS_VEIL_OPACITY），底图遮罩再叠 60% 两层叠白会看不清。聚焦态判定＝现有
@@ -628,6 +635,8 @@
   //（setLayoutProperty visibility none，source 保留——再开免重建）。
   // 瓦片 URL 与编辑器 src/editor.js 同源：OSM 同址；高德四子域 webrd01~04＋style=8——编辑器
   // 按 (tx+ty)%4 取子域，MapLibre 无子域模板语法，tiles 列 4 个完整 URL 由其内部轮询，等价。
+  // CARTO（Positron 无字版，仅查看器有）单条官方 raster URL；key＝用户申请的免费 key，浏览器端
+  // 公开属官方接受的用法，建议用户在 CARTO dashboard 配 referer 限制防盗用。
   // 2026-11-22 三批：瓦片 100% 不透明（旧 0.45 透明作废），提亮改走白色遮罩 fill 层——
   // 全世界矩形（Mercator ±85.0511，任何平移不出界），插在瓦片之上、线路之下，只洗底图
   // 不碰线网站名；不透明度＝VEIL_OPACITY（2026-11-22 定 40%、2026-11-23 常态提亮 60%；
@@ -644,6 +653,10 @@
       tiles: [1, 2, 3, 4].map((n) =>
         'https://webrd0' + n + '.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}'),
     });
+    map.addSource('basemap-carto', {
+      type: 'raster', tileSize: 256,
+      tiles: ['https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png?key=cb1_5e93_1_df67d9c33ed32773609298af'],
+    });
     map.addSource('basemap-veil', {
       type: 'geojson',
       data: {
@@ -656,6 +669,8 @@
     map.addLayer({ id: 'basemap-osm', type: 'raster', source: 'basemap-osm',
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-gaode', type: 'raster', source: 'basemap-gaode',
+      layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
+    map.addLayer({ id: 'basemap-carto', type: 'raster', source: 'basemap-carto',
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-veil', type: 'fill', source: 'basemap-veil',
       layout: { visibility: 'none' }, paint: { 'fill-color': '#ffffff', 'fill-opacity': VEIL_OPACITY } }, before);
@@ -672,9 +687,13 @@
     };
     vis('basemap-osm', S.basemap === 'osm');
     vis('basemap-gaode', S.basemap === 'gaode');
-    // 遮罩随底图开关（不透明度＝VEIL_OPACITY，聚焦态 VEIL_OPACITY_FOCUS，无其他运行时档位）
+    vis('basemap-carto', S.basemap === 'carto');
+    // 遮罩随底图开关（不透明度＝VEIL_OPACITY，聚焦态 VEIL_OPACITY_FOCUS，无其他运行时档位；
+    // CARTO 态同样生效——60%/40% 用户裁定值，Positron 本就浅，不因底图变浅调档）
     vis('basemap-veil', S.basemap !== 'off');
-    S.dispCoord = V.makeDispCoord(S.basemap === 'gaode' ? 'gaode' : 'none');
+    // 显示坐标变换：gaode 变 GCJ02；osm/carto 瓦片均 WGS84 恒等直通（carto 显式传 'carto'，
+    // makeDispCoord 恒等分支，与 osm 同类）
+    S.dispCoord = V.makeDispCoord(S.basemap === 'gaode' ? 'gaode' : (S.basemap === 'carto' ? 'carto' : 'none'));
     if (S.map.getSource('lines')) S.map.getSource('lines').setData(renderLinesFC());
     if (S.map.getSource('stops')) S.map.getSource('stops').setData(renderStopsFC());
     if (S.map.getSource('pills')) S.map.getSource('pills').setData(renderPillsFC());
@@ -695,7 +714,7 @@
   // ---------- 分期四档 / 聚焦 / 调光 / 全局站名开关 ----------
   // 调光应用：重算 S.dimmed 与联络线渐变集 → 四个 source 全量重设（渲染特征重带 dim 位、
   // fadeSet 线跳基础层）→ 渐变层重建 → 标签重排。与底图切换共用 render* 函数（互相独立、
-  // 叠加不冲突——坐标变换与 dim 位各管各的）。样式未就绪时只置 pending 标记（同底图三态
+  // 叠加不冲突——坐标变换与 dim 位各管各的）。样式未就绪时只置 pending 标记（同底图四态
   // 模式），on('load') 后补应用，点击不丢失。
   function applyDimState() {
     // 2026-11-22 主支线合并：调光组级（lineGroups 传入——期次/仅显示级以主线为准；
@@ -1542,7 +1561,7 @@
   // 收起＝藏 #linePanel、亮出左缘「线路」半出药丸 #linePanelTab；点药丸恢复面板。
   // ⚠ #linePanel 的 display:flex 会压过 UA 样式表的 [hidden]{display:none}，index.html 已
   // 显式补 #linePanel[hidden]{display:none}（legendPanel 注释同款坑），此处只管切 hidden。
-  // 会话内不持久化，刷新回展开（与底图三态等 UI 态一致）。
+  // 会话内不持久化，刷新回展开（与底图四态等 UI 态一致）。
   //（聚焦跳转 focusPadding() 运行时探测 linePanel 可见性，收起后左留白自动回 64，无需在此联动）
   function setLinePanelCollapsed(collapsed) {
     S.panelCollapsed = collapsed;
@@ -1557,9 +1576,10 @@
     $('btnPhase').addEventListener('click', () => setPhase(V.nextPhase(S.phase)));
     // 全局站名开关：显示 ⇄ 隐藏（优先级最高——隐藏时一切站名不显示，站圈符号保留）
     $('btnNames').addEventListener('click', toggleNames);
-    // 测试阶段底图三态循环：无 → OSM → 高德 → 无（不持久化，刷新回默认「无」）
+    // 测试阶段底图四态循环：无 → OSM → 高德 → CARTO无字 → 无（不持久化，刷新回默认「无」）
     $('btnBasemap').addEventListener('click', () => {
-      setBasemap(S.basemap === 'off' ? 'osm' : (S.basemap === 'osm' ? 'gaode' : 'off'));
+      setBasemap(S.basemap === 'off' ? 'osm'
+        : (S.basemap === 'osm' ? 'gaode' : (S.basemap === 'gaode' ? 'carto' : 'off')));
     });
     syncPhaseUI();     // 与 S.phase 初始态（'none'）对齐：按钮文案「分期：无」
     syncNamesUI();     // 与 S.namesOn 初始态（true）对齐：按钮文案「站名：显示」
