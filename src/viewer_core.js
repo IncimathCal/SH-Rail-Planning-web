@@ -170,8 +170,67 @@
     return (lon, lat) => [lon, lat];
   }
 
+  // ---------- 视口经纬读数尺纯逻辑 ----------
+  function niceTickStep(span, pixels, targetPx) {
+    const raw = Math.abs(span) * targetPx / Math.max(1, pixels);
+    if (!Number.isFinite(raw) || raw <= 0) return 1;
+    const power = Math.pow(10, Math.floor(Math.log10(raw)));
+    const n = raw / power;
+    return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * power;
+  }
+  function formatCoordinate(value, axis, step) {
+    if (!Number.isFinite(value)) return '';
+    const digits = Math.min(7, Math.max(0, -Math.floor(Math.log10(Math.abs(step) || 1))));
+    const rounded = Number(Math.abs(value).toFixed(digits));
+    let hemisphere;
+    if (axis === 'lon') hemisphere = rounded === 0 || value >= 0 ? 'E' : 'W';
+    else hemisphere = rounded === 0 || value >= 0 ? 'N' : 'S';
+    return `${rounded.toFixed(digits)}°${hemisphere}`;
+  }
+  function edgeTickPositions(samples, values) {
+    const positions = [];
+    for (const value of values) {
+      const hits = [];
+      for (let i = 1; i < samples.length; i++) {
+        const a = samples[i - 1];
+        const b = samples[i];
+        if (a.value === b.value || (value - a.value) * (value - b.value) > 0) continue;
+        const t = a.t + (b.t - a.t) * (value - a.value) / (b.value - a.value);
+        hits.push(t);
+      }
+      for (const t of hits) {
+        const alreadyAdded = positions.some((position) =>
+          position.value === value && Math.abs(position.t - t) < 1e-5);
+        if (!alreadyAdded) positions.push({ value, t });
+      }
+    }
+    return positions.sort((a, b) => a.t - b.t);
+  }
+  function coordinateTicks(min, max, step) {
+    if (![min, max, step].every(Number.isFinite) || step <= 0) return [];
+    const lo = Math.ceil(min / step - 1e-10);
+    const hi = Math.floor(max / step + 1e-10);
+    const ticks = [];
+    for (let i = lo; i <= hi && ticks.length < 500; i++) {
+      ticks.push(Number((i * step).toPrecision(12)));
+    }
+    return ticks;
+  }
+
+  function gcj02ToWgs84(lon, lat) {
+    if (outOfChina(lon, lat)) return [lon, lat];
+    let x = lon;
+    let y = lat;
+    for (let i = 0; i < 8; i++) {
+      const transformed = wgs84ToGcj02(x, y);
+      x -= transformed[0] - lon;
+      y -= transformed[1] - lat;
+    }
+    return [x, y];
+  }‌‬⁢⁤⁥⁦⁧⁨⁩⁪⁫⁬⁭⁮⁯ ⁠
+
   // ---------- 数据归一 ----------
-  // lines.geojson → Map<lineId, line>；line.segments 按 segIndex 升序（稳定），
+  // lines.geojson → Map<lineId, line>；line.segments 按升序（稳定），
   // 非法 feature（无 lineId / 非 LineString / 坐标 <2 点）跳过不炸。
   function normalizeLines(fc) {
     const out = new Map();
@@ -1570,7 +1629,8 @@
     matchEntries, filterLabels, visibleLabels,
     parseLineInfo, safeLinkUrl, lineInfoEntryOf,
     buildLineGeoJSON, buildLineKML,
-    outOfChina, wgs84ToGcj02, makeDispCoord,
+    outOfChina, wgs84ToGcj02, gcj02ToWgs84, makeDispCoord,
+    niceTickStep, formatCoordinate, coordinateTicks, edgeTickPositions,
   };
   G.VIEWER_CORE = Core;
   if (typeof module !== 'undefined' && module.exports) module.exports = Core;
