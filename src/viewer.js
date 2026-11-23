@@ -101,10 +101,11 @@
 // 节绑定＝「线组 id 或线 id」（VIEWER_CORE.lineInfoEntryOf 解析：先按所属线组 id 查节、
 // 查不到再落线自身 id——没建组的单线按线 id 写的介绍同样显示）。
 // 2026-11-23 省级界线底图（用户明示授权外部地理底图数据——省界属底图范畴，不受地铁数据
-// 外部源禁令约束）：中国省级界线常驻细灰线层。source 'provinces'（初始空 FC，
-// loadProvinces 异步读仓库静态件 basemap/provinces-wgs84.json 后 setData——零外部请求原则，
-// 运行时只读仓库内落盘文件）；落盘件由 tools/provinces_basemap.py 生成（DataV GeoAtlas
-// 全国省界 GCJ02 → WGS84 迭代反变换＋60m Douglas–Peucker 简化，来源与许可口径见脚本头注）。
+// 外部源禁令约束）：长三角省级界线（沪苏浙皖 bbox 裁剪，不要全国/九段线）常驻细灰线层。
+// source 'provinces'（初始空 FC，loadProvinces 异步读仓库静态件 basemap/provinces-wgs84.json
+// 后 setData——零外部请求原则，运行时只读仓库内落盘文件）；落盘件由 tools/provinces_basemap.py
+// 生成（OSM admin_level=4 全精度 WGS84 零转换 → bbox 裁剪＋60m Douglas–Peucker 简化，
+// 点距中位约 290m；首版 DataV 概化版 4.8km 已弃，来源与许可口径见脚本头注）。
 // 层序在底图瓦片／白遮罩之上、线路之下（ensureBasemapLayers 的 before 指到本层）；只画线
 // 不填充，低调灰常量 1px；纯地理参照，不参与分期/聚焦/调光。坐标逐点过 S.dispCoord
 //（renderProvincesFC）——高德底图态下界线与线路数据同一显示变换通道，与瓦片同基准；
@@ -622,8 +623,8 @@
 
   // ---------- 省级界线底图（常驻，2026-11-23 用户明示授权外部底图数据） ----------
   // 数据：仓库静态件 basemap/provinces-wgs84.json（WGS84）——tools/provinces_basemap.py 生成
-  //（DataV GeoAtlas 全国省界 GCJ02 → WGS84 迭代反变换＋60m Douglas–Peucker 简化；来源与许可
-  // 口径见该脚本头注）。零外部请求原则：运行时只读仓库内落盘文件，不向任何外网拉数据。
+  //（OSM admin_level=4 全精度 WGS84 零转换 → 长三角 bbox 裁剪＋60m Douglas–Peucker 简化；
+  // 来源与许可口径见该脚本头注）。零外部请求原则：运行时只读仓库内落盘文件，不向任何外网拉数据。
   // 层序：底图瓦片／白遮罩之上、线路之下（ensureBasemapLayers 的 before 指到 'provinces'）；
   // 纯地理参照，不参与分期/聚焦/调光，颜色线宽全常量。坐标逐点过 S.dispCoord——高德底图态下
   // 界线与线路数据同一显示变换通道（与瓦片同基准）；OSM／CARTO／无底图态 dispCoord＝恒等即 WGS84 直出。
