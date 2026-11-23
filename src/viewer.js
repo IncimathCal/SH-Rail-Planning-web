@@ -107,6 +107,12 @@
 // 不填充，低调灰常量 1px；纯地理参照，不参与分期/聚焦/调光。坐标逐点过 S.dispCoord
 //（renderProvincesFC）——高德底图态下界线与线路数据同一显示变换通道，与瓦片同基准；
 // OSM／无底图态 dispCoord＝恒等即 WGS84 直出。
+// 2026-11-23 遮罩分档（用户裁定「对于carto无字来讲，这个遮罩太厚了。仅carto正常情况改为35，
+// 高亮情况下改为30」）：底图白色遮罩按底图态分档——carto 态常态 35%/聚焦 30%（Positron 本就浅，
+// 60% 下几乎只剩水系轮廓），OSM／高德态维持 60%/40% 不变（用户点名仅 carto，字面执行）；
+// VEIL_OPACITY/VEIL_OPACITY_FOCUS 改为按态查表（veilOpacityFor 取当态档位），syncBasemapVeil
+// 与建层初始 paint 同表取值，聚焦进出（applyDimState）与底图切换（applyBasemapToMap）路径
+// 自动换档；聚焦态恒比常态薄一档的旧语义不变。
 // 与编辑器完全独立：不加载 editor.js 的任何代码。中文标签走 HTML 叠加（架构方案 §6 备案路线）。
 
 (function (G) {
@@ -669,19 +675,27 @@
     gaode: '底图 © 高德',
     carto: '底图 © OpenStreetMap contributors © CARTO',   // CARTO 条款硬性署名（文字即可）
   };
-  // 底图白色遮罩不透明度：2026-11-22 用户档位测试定值 40%（临时下拉控件已删，调值改此处）；
-  // 2026-11-23 用户需求常态提亮为 60%（VEIL_OPACITY），唯聚焦态保持 40%——聚焦高亮已有
-  // 70% 白罩（FOCUS_VEIL_OPACITY），底图遮罩再叠 60% 两层叠白会看不清。聚焦态判定＝现有
-  // 状态变量 S.focus（null＝未聚焦），不新造状态；随聚焦进出换档走 syncBasemapVeil
-  //（applyDimState＝分期/聚焦两条路径的汇聚点＋applyBasemapToMap＝底图开启时补一档）。
-  const VEIL_OPACITY = 0.6;
-  const VEIL_OPACITY_FOCUS = 0.4;
+  // 底图白色遮罩不透明度按底图态分档（2026-11-23 用户裁定「对于carto无字来讲，这个遮罩太厚了。
+  // 仅carto正常情况改为35，高亮情况下改为30」）：carto 态常态 35%/聚焦 30%——Positron 本就浅，
+  // 60% 下几乎只剩水系轮廓；OSM／高德态维持 60%/40% 不变（用户点名仅 carto，字面执行）。
+  // 聚焦态恒比常态薄一档——聚焦高亮已有 70% 白罩（FOCUS_VEIL_OPACITY），底图遮罩再叠厚
+  // 两层叠白会看不清。历史档位：2026-11-22 用户档位测试定值 40%（临时下拉控件已删，调值改
+  // 此处）；2026-11-23 常态提亮 60%、唯聚焦态保持 40%；同日 carto 态再降档为查表分档。
+  // 聚焦态判定＝现有状态变量 S.focus（null＝未聚焦），不新造状态；随聚焦进出与底图切换
+  // 换档走 syncBasemapVeil（applyDimState＝分期/聚焦两条路径的汇聚点＋applyBasemapToMap＝
+  // 底图开启时补一档）。
+  const VEIL_OPACITY = { osm: 0.6, gaode: 0.6, carto: 0.35 };
+  const VEIL_OPACITY_FOCUS = { osm: 0.4, gaode: 0.4, carto: 0.30 };
+  // 取当态档位；off／未知态兜底取 osm 档（veil 仅底图非 off 时可见，值不生效，纯防御）
+  function veilOpacityFor(focused) {
+    const t = focused ? VEIL_OPACITY_FOCUS : VEIL_OPACITY;
+    return t[S.basemap] != null ? t[S.basemap] : t.osm;
+  }
   // 遮罩层未建（底图从未开过）防御跳过——样式未就绪期由 dimPending/basemapPending 补应用
   // 机制兜底（load 后两路径都会重进 applyDimState/applyBasemapToMap）。
   function syncBasemapVeil() {
     if (!S.map || !S.map.getLayer('basemap-veil')) return;
-    S.map.setPaintProperty('basemap-veil', 'fill-opacity',
-      S.focus != null ? VEIL_OPACITY_FOCUS : VEIL_OPACITY);
+    S.map.setPaintProperty('basemap-veil', 'fill-opacity', veilOpacityFor(S.focus != null));
   }
   function syncBasemapUI() {
     const b = $('btnBasemap');
@@ -707,8 +721,8 @@
   // 公开属官方接受的用法，建议用户在 CARTO dashboard 配 referer 限制防盗用。
   // 2026-11-22 三批：瓦片 100% 不透明（旧 0.45 透明作废），提亮改走白色遮罩 fill 层——
   // 全世界矩形（Mercator ±85.0511，任何平移不出界），插在瓦片之上、线路之下，只洗底图
-  // 不碰线网站名；不透明度＝VEIL_OPACITY（2026-11-22 定 40%、2026-11-23 常态提亮 60%；
-  // 聚焦态 40%，见 VEIL_OPACITY 注；临时下拉已删）。
+  // 不碰线网站名；不透明度＝按底图态分档查表（见 VEIL_OPACITY 注：carto 35%/聚焦 30%、
+  // 其余 60%/40%；2026-11-23 用户裁定）。
   function ensureBasemapLayers() {
     const map = S.map;
     if (!map || map.getSource('basemap-osm')) return;
@@ -744,7 +758,7 @@
     map.addLayer({ id: 'basemap-carto', type: 'raster', source: 'basemap-carto',
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-veil', type: 'fill', source: 'basemap-veil',
-      layout: { visibility: 'none' }, paint: { 'fill-color': '#ffffff', 'fill-opacity': VEIL_OPACITY } }, before);
+      layout: { visibility: 'none' }, paint: { 'fill-color': '#ffffff', 'fill-opacity': veilOpacityFor(false) } }, before);
   }
   // 应用到地图：层可见性＋显示坐标变换＋四个 source 全量 setData 重渲染＋标签重排
   //（复用既有 render 函数，mode 变了自然产出变换后坐标）。箭头 icon-rotate 角度是 WGS84
@@ -752,15 +766,15 @@
   // dispBbox 已是显示坐标（与渲染同帧），不特殊处理。
   function applyBasemapToMap() {
     if (S.basemap !== 'off') ensureBasemapLayers();
-    syncBasemapVeil();   // 遮罩档位随聚焦态（建层时先落常态 60%，聚焦中开底图即刻改 40%）
+    syncBasemapVeil();   // 遮罩档位随聚焦态与底图态（建层先落当态常态档，聚焦中开底图即刻换聚焦档）
     const vis = (layerId, on) => {
       if (S.map.getLayer(layerId)) S.map.setLayoutProperty(layerId, 'visibility', on ? 'visible' : 'none');
     };
     vis('basemap-osm', S.basemap === 'osm');
     vis('basemap-gaode', S.basemap === 'gaode');
     vis('basemap-carto', S.basemap === 'carto');
-    // 遮罩随底图开关（不透明度＝VEIL_OPACITY，聚焦态 VEIL_OPACITY_FOCUS，无其他运行时档位；
-    // CARTO 态同样生效——60%/40% 用户裁定值，Positron 本就浅，不因底图变浅调档）
+    // 遮罩随底图开关（不透明度＝veilOpacityFor 按底图态分档：carto 35%/聚焦 30%、其余
+    // 60%/40%，无其他运行时档位；2026-11-23 用户裁定——Positron 本就浅，仅 carto 降档）
     vis('basemap-veil', S.basemap !== 'off');
     // 显示坐标变换：gaode 变 GCJ02；osm/carto 瓦片均 WGS84 恒等直通（carto 显式传 'carto'，
     // makeDispCoord 恒等分支，与 osm 同类）
@@ -801,7 +815,7 @@
     if (S.map.getSource('stops')) S.map.getSource('stops').setData(renderStopsFC());
     if (S.map.getSource('pills')) S.map.getSource('pills').setData(renderPillsFC());
     rebuildConnLayers();   // 联络线渐变层＋白罩＋聚焦重画层＋出省渐隐层（全删全建）
-    syncBasemapVeil();     // 底图白遮罩随聚焦态换档（40%⇄60%，2026-11-23）
+    syncBasemapVeil();     // 底图白遮罩随聚焦态换档（按底图态分档：carto 30%⇄35%、其余 40%⇄60%，2026-11-23）
     scheduleLabels();
   }
   // ---------- 联络线渐变层＋白罩高亮（2026-11-22 用户需求 2＋3） ----------
