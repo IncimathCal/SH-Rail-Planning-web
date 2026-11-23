@@ -1583,7 +1583,103 @@
   // ---------- HTML 中文标签叠加层（map.project + rAF 合帧） ----------
   function scheduleLabels() {
     if (S.labelFrame) return;
-    S.labelFrame = G.requestAnimationFrame(() => { S.labelFrame = 0; updateLabels(); });
+    S.labelFrame = G.requestAnimationFrame(() => { S.labelFrame = 0; updateLabels(); updateCoordinateRuler(); });
+  }
+  function updateCoordinateRuler() {
+    const svg = $('coordinateRuler');
+    const map = S.map;
+    if (!svg || !map || !V.edgeTickPositions) return;
+
+    const width = map.getCanvas().clientWidth;
+    const height = map.getCanvas().clientHeight;
+    if (width < 100 || height < 100) {
+      svg.replaceChildren();
+      return;
+    }
+
+    // map.unproject 返回当前底图显示坐标；高德态用既有 GCJ02 逆变换恢复 WGS84 读数。
+    // 每条边分别采样，旋转/倾斜后经纬度沿单边可能非单调，不能用全视口跨度估步长。
+    const inverseDisplay = S.basemap === 'gaode' ? V.gcj02ToWgs84 : (lon, lat) => [lon, lat];
+    const sampleEdge = (name, count = 64) => Array.from({ length: count + 1 }, (_, i) => {
+      const t = i / count;
+      let point;
+      if (name === 'top') point = [20 + (width - 40) * t, 0];
+      else if (name === 'bottom') point = [20 + (width - 40) * t, height];
+      else if (name === 'left') point = [0, 20 + (height - 40) * t];
+      else point = [width, 20 + (height - 40) * t];
+      const displayed = map.unproject(point);
+      const [lon, lat] = inverseDisplay(displayed.lng, displayed.lat);
+      return { t, value: name === 'top' || name === 'bottom' ? lon : lat };
+    });
+    const edges = {
+      top: sampleEdge('top'), bottom: sampleEdge('bottom'),
+      left: sampleEdge('left'), right: sampleEdge('right'),
+    };
+    const longitudes = edges.top.concat(edges.bottom).map((sample) => sample.value);
+    const latitudes = edges.left.concat(edges.right).map((sample) => sample.value);
+    const edgeSpan = (samples) => Math.max(...samples.map((sample) => sample.value)) - Math.min(...samples.map((sample) => sample.value));
+    const longitudeSpan = Math.max(edgeSpan(edges.top), edgeSpan(edges.bottom));
+    const latitudeSpan = Math.max(edgeSpan(edges.left), edgeSpan(edges.right));
+    const longitudeStep = V.niceTickStep(longitudeSpan, width - 40, 95);
+    const latitudeStep = V.niceTickStep(latitudeSpan, height - 40, 62);
+    const longitudeTicks = V.coordinateTicks(Math.min(...longitudes), Math.max(...longitudes), longitudeStep);
+    const latitudeTicks = V.coordinateTicks(Math.min(...latitudes), Math.max(...latitudes), latitudeStep);
+    const labels = [];
+    const ticks = [];
+
+    const addEdgeTicks = (axis, values, step, name) => {
+      const horizontal = name === 'top' || name === 'bottom';
+      const positions = V.edgeTickPositions(edges[name], values);
+      for (const { value, t } of positions) {
+        const x = horizontal ? 20 + (width - 40) * t : (name === 'left' ? 0 : width);
+        const y = horizontal ? (name === 'top' ? 0 : height) : 20 + (height - 40) * t;
+        const tick = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        if (horizontal) {
+          const direction = name === 'top' ? 1 : -1;
+          tick.setAttribute('d', `M${x},${name === 'top' ? 1 : height - 1}v${direction * 5}`);
+          label.setAttribute('x', x);
+          label.setAttribute('y', (name === 'top' ? 1 : height - 1) + direction * 8);
+          label.setAttribute('text-anchor', 'middle');
+          label.setAttribute('dominant-baseline', direction > 0 ? 'hanging' : 'auto');
+        } else {
+          const direction = name === 'left' ? 1 : -1;
+          tick.setAttribute('d', `M${name === 'left' ? 1 : width - 1},${y}h${direction * 5}`);
+          label.setAttribute('x', (name === 'left' ? 1 : width - 1) + direction * 8);
+          label.setAttribute('y', y);
+          label.setAttribute('text-anchor', direction > 0 ? 'start' : 'end');
+          label.setAttribute('dominant-baseline', 'middle');
+        }
+        tick.setAttribute('stroke', '#9ca3af');
+        tick.setAttribute('stroke-width', '1');
+        tick.setAttribute('fill', 'none');
+        label.textContent = V.formatCoordinate(value, axis, step);
+        labels.push({ element: label, edge: name, x, y, horizontal });
+        ticks.push(tick);
+      }
+    };
+    addEdgeTicks('lon', longitudeTicks, longitudeStep, 'top');
+    addEdgeTicks('lon', longitudeTicks, longitudeStep, 'bottom');
+    addEdgeTicks('lat', latitudeTicks, latitudeStep, 'left');
+    addEdgeTicks('lat', latitudeTicks, latitudeStep, 'right');
+
+    // 先接入 SVG 取得实际文本宽度，再按各边可用的像素跨度过滤重叠；角落横纵标签也互检。
+    svg.replaceChildren(...ticks, ...labels.map((item) => item.element));
+    const svgRect = svg.getBoundingClientRect();
+    const controls = Array.from(document.querySelectorAll('.maplibregl-ctrl')).map((control) => {
+      const rect = control.getBoundingClientRect();
+      return { x: rect.left - svgRect.left, y: rect.top - svgRect.top, width: rect.width, height: rect.height };
+    });
+    const accepted = [];
+    for (const item of labels) {
+      const box = item.element.getBBox();
+      const candidate = { ...item, box };
+      const overlaps = (otherBox) => box.x < otherBox.x + otherBox.width + 3 &&
+        box.x + box.width + 3 > otherBox.x && box.y < otherBox.y + otherBox.height + 3 &&
+        box.y + box.height + 3 > otherBox.y;
+      if (controls.some(overlaps) || accepted.some((other) => overlaps(other.box))) item.element.remove();
+      else accepted.push(candidate);
+    }
   }
   function updateLabels() {
     const wrap = $('labelLayer');
