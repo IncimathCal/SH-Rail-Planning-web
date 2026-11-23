@@ -15,6 +15,7 @@
 | `import/` | `svg_parse.py` 从 AI 导出 SVG 提取的线路 path |
 | `tools/` | Python 离线工具链（校验、标定、加密、字形、发布） |
 | `src/` | 查看器/编辑器共享前端代码 |
+| `basemap/` | 地理底图静态件：`provinces-wgs84.json` 中国省级界线（WGS84，`tools/provinces_basemap.py` 从 DataV GeoAtlas 转换生成；用户明示授权的底图范畴数据，不受地铁数据外部源禁令约束） |
 | `index.html` / `editor.html` | 查看器入口（发布源）/ 编辑器入口（仅本地，永不部署） |
 | `docs/` | GitHub Pages 部署目录（`publish.py` 生成，勿手改） |
 | `源资产/` | 用户提供的 SVG/KML 原始文件（本地保留，已 gitignore） |
@@ -22,6 +23,8 @@
 ## 数据纪律
 
 本项目全部线网数据（线型、设站、站名、状态、关系）**一律由作者提供，不引用任何外部数据源**（OSM、维基、第三方数据库等一律不使用）。设站与站名纯手动录入。
+
+唯一例外＝**地理底图**：`basemap/provinces-wgs84.json` 中国省级界线（2026-11-23 用户明示授权）。源数据为阿里云 DataV GeoAtlas 全国省界（GCJ02，底层来自高德；官方未附开源许可证文本），生成脚本 `tools/provinces_basemap.py` 做迭代反变换转 WGS84＋60m 简化落盘，查看器运行时只读此仓库内文件（零外部请求）。末位含南海诸岛九段线（DataV 件 `100000_JD`）。
 
 ## 常用命令
 

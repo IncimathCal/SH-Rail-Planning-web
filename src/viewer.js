@@ -80,6 +80,15 @@
 // linesMap/lineGroups/结构树三样入参）。结构树 S.groupTree（buildGroupTree）由视图与站点面板
 // 共用；站点面板对嵌套节点补「换乘节点／节点成员／换乘对端」行（平铺组一行不加，呈现与旧版
 // 一致）；单线导出对嵌套节点的站补节点信息。
+// 2026-11-23 省级界线底图（用户明示授权外部地理底图数据——省界属底图范畴，不受地铁数据
+// 外部源禁令约束）：中国省级界线常驻细灰线层。source 'provinces'（初始空 FC，
+// loadProvinces 异步读仓库静态件 basemap/provinces-wgs84.json 后 setData——零外部请求原则，
+// 运行时只读仓库内落盘文件）；落盘件由 tools/provinces_basemap.py 生成（DataV GeoAtlas
+// 全国省界 GCJ02 → WGS84 迭代反变换＋60m Douglas–Peucker 简化，来源与许可口径见脚本头注）。
+// 层序在底图瓦片／白遮罩之上、线路之下（ensureBasemapLayers 的 before 指到本层）；只画线
+// 不填充，低调灰常量 1px；纯地理参照，不参与分期/聚焦/调光。坐标逐点过 S.dispCoord
+//（renderProvincesFC）——高德底图态下界线与线路数据同一显示变换通道，与瓦片同基准；
+// OSM／无底图态 dispCoord＝恒等即 WGS84 直出。
 // 与编辑器完全独立：不加载 editor.js 的任何代码。中文标签走 HTML 叠加（架构方案 §6 备案路线）。
 
 (function (G) {
@@ -124,6 +133,9 @@
     // 渐变层接管——联络线颜色由 connects 两端线的双端渐变决定）。
     blendPlan: [],
     blendSet: new Set(),
+    // 2026-11-23 省级界线底图：仓库静态件原始 FC（WGS84 权威拷贝，loadProvinces 读
+    // basemap/provinces-wgs84.json 回填；渲染特征经 renderProvincesFC 过 S.dispCoord）
+    provincesFC: null,
     // 2026-11-22 用户需求 3：联络线渐变高亮——fadeSet＝当前聚焦的绑定联络线 lineId 集
     //（基础层跳 feature，防半透明底线垫在渐变尾端底下透出）；fadeConnPlan＝
     // connectorFadePlan 缓存（rebuildConnLayers 复用，避免重复几何判定）；
@@ -458,6 +470,10 @@
           // 是 line-gradient 的前置要求；初始空 FC，由 rebuildConnLayers 动态填数＋逐线加层。
           // 渐变图层不进初始 layers——按需才建（见 rebuildConnLayers）。
           'conn-fade': { type: 'geojson', lineMetrics: true, data: { type: 'FeatureCollection', features: [] } },
+          // 省级界线底图 source（2026-11-23）：初始空 FC——loadProvinces 异步读仓库静态件
+          // basemap/provinces-wgs84.json 后 setData（fetch 先于样式就绪时由 map 'load'
+          // 处理器补应用，见 applyProvincesToMap）。
+          provinces: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
           // 白罩高亮 source（2026-11-22 用户需求 3）：focus-veil＝全世界矩形 Polygon
           //（数据常量——任何平移不出界；层动态建删，非聚焦态不建）；focus-copy＝聚焦
           // 重画层 source（初始空 FC，veil＋聚焦时填聚焦组成员特征）。层均不进初始 layers。
@@ -474,6 +490,14 @@
         },
         layers: [
           { id: 'bg', type: 'background', paint: { 'background-color': '#ffffff' } },   // 2026-11-22 三批：黑板→白板
+          // 省级界线层（2026-11-23）：bg 之上、线路之下；底图瓦片／白遮罩由 ensureBasemapLayers
+          // 插到本层之下（界线浮在遮罩上不被盖住）。只画线不填充，低调灰常量 1px（⚠ 血泪教训：
+          // line-join 属 layout 属性放 paint 会拒载整个 style；色宽恒常量，不搞数据驱动×zoom 复合）。
+          {
+            id: 'provinces', type: 'line', source: 'provinces',
+            layout: { 'line-join': 'round' },
+            paint: { 'line-color': '#a8a8a8', 'line-width': 1 },
+          },
           ...LINE_LAYER_IDS.map(lineLayerDef),
           ...PILL_LAYER_DEFS,          // 药丸垫在站圈之下（罩下区：聚焦时与站圈一起被白罩罩淡）
           ...STOP_LAYER_DEFS.map(stopLayerDef),   // 站圈按 big/dark 拆三层（常量档位；罩下区，层序见 rebuildConnLayers 注）
@@ -511,6 +535,9 @@
       if (S.basemapPending) { S.basemapPending = false; applyBasemapToMap(); }
       // 同理补应用提前切换的分期/聚焦调光（目标态恒存 S.phase/S.focus）
       if (S.dimPending) { S.dimPending = false; applyDimState(); }
+      // 省界底图：fetch 先于样式就绪完成时由此补 setData（applyProvincesToMap 幂等，
+      // S.provincesFC 未回填时是空 FC 重设，无副作用）
+      applyProvincesToMap();
       // 常驻 blend 层首次建立（联络线双端渐变不依赖聚焦——两条 pending 路径各自
       // 已调过 rebuildConnLayers，此处幂等重跑一次兜底，全删全建无副作用）
       rebuildConnLayers();
@@ -523,6 +550,47 @@
   function fitAll() {
     const bb = totalBbox();
     if (bb) S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 60, duration: 0, maxZoom: 12 });
+  }
+
+  // ---------- 省级界线底图（常驻，2026-11-23 用户明示授权外部底图数据） ----------
+  // 数据：仓库静态件 basemap/provinces-wgs84.json（WGS84）——tools/provinces_basemap.py 生成
+  //（DataV GeoAtlas 全国省界 GCJ02 → WGS84 迭代反变换＋60m Douglas–Peucker 简化；来源与许可
+  // 口径见该脚本头注）。零外部请求原则：运行时只读仓库内落盘文件，不向任何外网拉数据。
+  // 层序：底图瓦片／白遮罩之上、线路之下（ensureBasemapLayers 的 before 指到 'provinces'）；
+  // 纯地理参照，不参与分期/聚焦/调光，颜色线宽全常量。坐标逐点过 S.dispCoord——高德底图态下
+  // 界线与线路数据同一显示变换通道（与瓦片同基准）；OSM／无底图态 dispCoord＝恒等即 WGS84 直出。
+  function renderProvincesFC() {
+    const fc = S.provincesFC;
+    if (!fc || !Array.isArray(fc.features)) return { type: 'FeatureCollection', features: [] };
+    const dc = S.dispCoord;
+    const mapC = (c) => (Array.isArray(c[0]) ? c.map(mapC) : dc(c[0], c[1]));
+    return {
+      type: 'FeatureCollection',
+      features: fc.features.map((f) => ({
+        type: 'Feature',
+        properties: f.properties || {},
+        geometry: { type: f.geometry.type, coordinates: mapC(f.geometry.coordinates) },
+      })),
+    };
+  }
+  // setData 补应用：fetch 回填（loadProvinces）与底图切换（applyBasemapToMap）两条路都走这里；
+  // 样式未就绪时直接返回——map 'load' 处理器会再调一次兜底（同 basemapPending/dimPending
+  // 的补应用模式，界线无独立目标态：S.provincesFC 一旦有值，load 后调本函数即完成回放）。
+  function applyProvincesToMap() {
+    if (!S.map || !(S.styleReady || S.map.isStyleLoaded())) return;
+    if (S.map.getSource('provinces')) S.map.getSource('provinces').setData(renderProvincesFC());
+  }
+  function loadProvinces() {
+    fetchJSON('basemap/provinces-wgs84.json').then((fc) => {
+      if (!fc || fc.type !== 'FeatureCollection' || !Array.isArray(fc.features)) {
+        throw new Error('结构不符（须为 FeatureCollection）');
+      }
+      S.provincesFC = fc;
+      applyProvincesToMap();
+    }).catch((e) => {
+      // 装饰性底图缺了不阻断启动（线网本体照常）；显式告警（MapLibre 运行时错误不上控制台）
+      console.warn('提示：省界底图加载失败（不影响线网显示）：' + (e && e.message ? e.message : e));
+    });
   }
 
   // ---------- 测试阶段底图（三态：无 → OSM → 高德 → 无 循环） ----------
@@ -580,7 +648,10 @@
         ]] },
       },
     });
-    const before = map.getLayer(LINE_LAYER_IDS[0]) ? LINE_LAYER_IDS[0] : undefined;
+    // 省界层在底图之上、线路之下（2026-11-23）：raster＋白遮罩插到省界层之下（界线浮在
+    // 遮罩与瓦片上不被盖住）；省界层异常缺失时回落旧行为＝插到首条线路层之下。
+    const before = map.getLayer('provinces') ? 'provinces'
+      : (map.getLayer(LINE_LAYER_IDS[0]) ? LINE_LAYER_IDS[0] : undefined);
     map.addLayer({ id: 'basemap-osm', type: 'raster', source: 'basemap-osm',
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-gaode', type: 'raster', source: 'basemap-gaode',
@@ -605,6 +676,7 @@
     if (S.map.getSource('lines')) S.map.getSource('lines').setData(renderLinesFC());
     if (S.map.getSource('stops')) S.map.getSource('stops').setData(renderStopsFC());
     if (S.map.getSource('pills')) S.map.getSource('pills').setData(renderPillsFC());
+    applyProvincesToMap();   // 省界与线路数据同一显示变换通道：gaode 态下坐标随 dispCoord 重投影
     rebuildConnLayers();   // 渐变/重画特征坐标必须同帧过 S.dispCoord（2026-11-22 用户需求 3）
     scheduleLabels();
   }
@@ -1467,6 +1539,7 @@
     buildSearchIndex();
 
     buildMap();
+    loadProvinces();   // 省界底图（仓库静态件，异步回填，不阻塞线网启动）
     buildLineList();
     wireUI();
     hideCenter();
