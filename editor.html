@@ -332,15 +332,16 @@
   <section id="secInfo">
     <h3>线路介绍（lineinfo.md）</h3>
     <div class="body">
-      <!-- 线组列表（数据源＝编组节的线组表）＋选中组的 md 原文编辑＋防抖预览（parseLineInfo 渲染效果）。
+      <!-- 列表（建了组的线以组为单位一行、没建组的线各一行——绑「线组 id 或线 id」）＋
+           选中条目的 md 原文编辑＋防抖预览（parseLineInfo 渲染效果）。
            列表与编辑/预览分区重画（输入逐键只重画列表），textarea 焦点不丢 -->
       <div id="liList"></div>
       <div id="liHint" style="color:var(--dim);font-size:11px;margin-bottom:4px"></div>
       <textarea id="liText" rows="10" spellcheck="false" disabled
-        placeholder="选中线组后在此编辑该组那一节的 markdown 原文（## 标题绑定线组，标题行下空行前为「键: 值」字段区，其后为自由正文＋「### 相关链接」）"></textarea>
+        placeholder="选中线组或线路后在此编辑对应那一节的 markdown 原文（## 标题绑定线组 id 或线 id，标题行下空行前为「键: 值」字段区，其后为自由正文＋「### 相关链接」）"></textarea>
       <div style="display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:wrap">
         <button id="btnLiSkeleton" class="mini primary" disabled
-          title="该线组在 lineinfo.md 里还没有介绍节：一键生成骨架（## 线组id 线组名＋字段区占位＋正文占位＋相关链接占位，全占位符零真实内容）；文件不存在时按仓库 data/lineinfo.md 模板新建（注释头＋骨架）">生成骨架</button>
+          title="该线组／线路在 lineinfo.md 里还没有介绍节：一键生成骨架（## id 名＋字段区占位＋正文占位＋相关链接占位，全占位符零真实内容）；文件不存在时按仓库 data/lineinfo.md 模板新建（注释头＋骨架）">生成骨架</button>
         <span id="liState" style="color:var(--dim);font-size:11px"></span>
       </div>
       <div class="imp-src">实时预览（查看器 parseLineInfo 渲染效果）</div>

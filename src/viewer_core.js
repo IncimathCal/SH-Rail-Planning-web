@@ -45,9 +45,10 @@
 // 成员递归取全部叶站；药丸线数改按逻辑线计（logicalLineCount：联络线不计、同一线组算一条，一切
 // 同站单元适用）；groupRelations 嵌套关系描述（信息面板用；平铺组返回 null＝面板呈现不变）；
 // 单线导出可选补嵌套节点信息。平铺数据下 pins/pills/labels 与旧版逐项一致（单测＋真数据对拍）。
-// 2026-11-23 增：线路信息面板（parseLineInfo——lineinfo.md 用户手填的每线组介绍解析为
+// 2026-11-23 增：线路信息面板（parseLineInfo——lineinfo.md 用户手填的每线路介绍解析为
 // { fields, bodyHtml, links }；轻量 md→HTML 白名单标签、一切文本先转义再标记替换、
-// 链接 URL 只放行 http/https/相对路径，见该节注）。
+// 链接 URL 只放行 http/https/相对路径，见该节注）。同日放宽节绑定＝「线组 id 或线 id」
+//（lineInfoEntryOf 解析：有组线组节优先、查不到落线自身 id——没建组的单线同样能写介绍）。
 
 (function (G) {
   'use strict';
@@ -1322,10 +1323,13 @@
   // ---------- 线路信息面板（2026-11-23 增：lineinfo.md 用户手填介绍） ----------
   // 数据链：数据目录的 lineinfo.md（用户手填）→ flatten 原样透传进 net/ → 查看器按
   // lines.geojson 同款 net/ → build/net 回退拉取并解析。本函数只做解析：
-  // parseLineInfo(md) → { [线组id]: { fields:[[键,值]…]（原序）, bodyHtml, links:[{text,url}] } }。
+  // parseLineInfo(md) → { [线组id或线id]: { fields:[[键,值]…]（原序）, bodyHtml, links:[{text,url}] } }。
   // md 约定（格式模板见 data/lineinfo.md）：
-  //   ## <线组id> <线组名>      二级标题绑定线组（id＝首个空白前 token，以 groups.json 的
-  //                            lineGroups.id 为准；标题名不参与绑定，同 id 多节后者覆盖）
+  //   ## <线组id或线id> <名>    二级标题绑定线路（id＝首个空白前 token：建了组的线路以
+  //                            groups.json 的 lineGroups.id 为准，没建组的线以 lines/*.json
+  //                            的线 id 为准——2026-11-23 放宽「绑线组 id 或线 id」，没建组的
+  //                            单线同样是用户眼里的一条线路；标题名不参与绑定，同 id 多节
+  //                            后者覆盖）
   //   标题行到第一个空行        形如「键: 值」的行＝固定显示项（半/全角冒号均可；键名开放
   //                            集合——解析器不做白名单，任意键照收照显，用户加新键零代码
   //                            改动；不成形的行按正文收，不丢字）
@@ -1334,7 +1338,7 @@
   //                            链接 [文字](url)
   //   ### 相关链接              链接列表区：该节下每行一个 md 链接；其余三级节名＝未来
   //                            扩展位，按正文处理
-  // 没写信息的线组＝结果表无该键（查看器不显示信息节，不报错）；空文件/非字符串 → {}；
+  // 没写信息的线路＝结果表无该键（查看器不显示信息节，不报错）；空文件/非字符串 → {}；
   // 只有标题、什么都没写的组同样从表中省去。
   // 安全（硬要求）：一切用户文本先 HTML 转义（xmlEscape）再做标记替换，产物只含受控
   // 白名单标签（a/strong/em/p/ul/li/br）——<script>/<img onerror> 等注入只落成转义后的
@@ -1444,6 +1448,31 @@
     closeCur();
     return out;
   }
+  // lineinfo 节绑定 id 解析（2026-11-23 放宽：节绑「线组 id 或线 id」）：给定一条线，先按
+  // 其所属线组的 id 查节，查不到再按该线自身 id 查——没建组的单线（无支线的独立线）同样是
+  // 「用户眼里的一条线路」，按线 id 写的介绍也能显示。返回 { id, name }｜null：name＝节题
+  // 用名（组节→组名〔buildLineGroups 已兜主线名〕、线节→线名〔缺失退线 id〕）；两处都无节
+  // → null（显示侧完全无痕）。「有节」判据与查看器 appendLineInfo 的显示判据同口径：
+  // fields/links/bodyHtml 任一非空才算（只有标题的空节按无节处理）。
+  function lineInfoEntryOf(lineId, linesMap, lineGroups, lineInfo) {
+    const id = lineId != null ? String(lineId) : '';
+    if (!id) return null;
+    const info = lineInfo && typeof lineInfo === 'object' ? lineInfo : null;
+    const hasSec = (k) => {
+      const e = info ? info[k] : null;
+      if (!e || typeof e !== 'object') return false;
+      const f = Array.isArray(e.fields) ? e.fields : [];
+      const lk = Array.isArray(e.links) ? e.links : [];
+      const b = typeof e.bodyHtml === 'string' ? e.bodyHtml : '';
+      return f.length > 0 || lk.length > 0 || b.length > 0;
+    };
+    const l = linesMap instanceof Map ? linesMap.get(id) : null;
+    const lineName = (l && l.name) || id;
+    const lg = lineGroups && lineGroups.ofLine instanceof Map ? lineGroups.ofLine.get(id) : null;
+    if (lg && hasSec(lg.id)) return { id: String(lg.id), name: lg.name || lineName };
+    if (hasSec(id)) return { id: id, name: lineName };
+    return null;
+  }
 
   // ---------- 单线导出 ----------
   // 嵌套节点补注（2026-11-23）：导出函数的 tree 入参可选——传入且该站所属组处在嵌套节点
@@ -1539,7 +1568,7 @@
     pointToScreenPolylineDist,
     buildLineGroups, lineSearchEntries, lineLabelOf, linesOfPin,
     matchEntries, filterLabels, visibleLabels,
-    parseLineInfo, safeLinkUrl,
+    parseLineInfo, safeLinkUrl, lineInfoEntryOf,
     buildLineGeoJSON, buildLineKML,
     outOfChina, wgs84ToGcj02, makeDispCoord,
   };

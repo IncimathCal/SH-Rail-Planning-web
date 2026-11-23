@@ -32,7 +32,8 @@
 // 2026-11-23 增：预控通道虚线分类（lineDashed/DASHED_LAYERS——meta.layer 判别，渲染层
 // 据此分虚实两层；viewer.js 侧 paint 参数不在纯逻辑层，不在此测）。
 // 2026-11-23 增：线路信息面板（parseLineInfo——lineinfo.md 手填介绍解析：多组/字段区切分/
-// 链接节/转义注入/恶意 URL 拒绝/空文件与缺组防御；safeLinkUrl 白名单）。
+// 链接节/转义注入/恶意 URL 拒绝/空文件与缺组防御；safeLinkUrl 白名单）；同日放宽节绑定＝
+//「线组 id 或线 id」（lineInfoEntryOf：有组线组节优先、查不到落线自身 id、无名线退线 id）。
 // 用法：node tools/test_viewer_logic.js（纯 node，不引 jsdom/DOM/maplibre）
 
 const V = require(path_join('src', 'viewer_core.js'));
@@ -1505,6 +1506,39 @@ ok(liMix.gm.bodyHtml.indexOf('不成形的一行') >= 0, '字段区不成形行�
 // 同 id 多节：后者覆盖（重写时以新为准）
 const liDup = V.parseLineInfo('## d1 A\nk: 1\n\n## d1 B\nk: 2\n');
 eq(liDup.d1.fields, [['k', '2']], '同 id 多节后者覆盖');
+
+// ---------- lineInfoEntryOf（节绑定 id 解析：线组 id 优先、线 id 兜底；2026-11-23 放宽） ----------
+console.log('lineInfoEntryOf:');
+const lim = new Map([
+  ['l1', { lineId: 'l1', name: '1号线', role: 'main', aliases: [] }],
+  ['l2', { lineId: 'l2', name: '2号线支线', role: 'branch', aliases: [] }],
+  ['l3', { lineId: 'l3', name: '', role: 'standalone', aliases: [] }],
+]);
+const lig = V.buildLineGroups(lim, [{ id: 'lg01', name: '1号线', mainId: 'l1', members: ['l1', 'l2'] }]);
+const lix = {
+  lg01: { fields: [['编组', '6A']], bodyHtml: '<p>正文</p>', links: [] },
+  l3: { fields: [], bodyHtml: '<p>单线介绍</p>', links: [] },
+};
+// 有组线：组节存在 → 绑组 id（节题＝组名）
+eq(V.lineInfoEntryOf('l1', lim, lig, lix), { id: 'lg01', name: '1号线' }, '有组线 → 组 id 优先（节题＝组名）');
+eq(V.lineInfoEntryOf('l2', lim, lig, lix), { id: 'lg01', name: '1号线' }, '组内支线同样解析到组 id');
+// 组节缺失、线节存在 → 兜底到线自身 id（节题＝线名）
+eq(V.lineInfoEntryOf('l2', lim, lig, { l2: { fields: [['k', 'v']], bodyHtml: '', links: [] } }),
+  { id: 'l2', name: '2号线支线' }, '组无节 → 兜底线自身 id（节题＝线名）');
+// 组节全空（只有标题）：按无节处理（与 appendLineInfo 显示判据同口径）→ 落线节
+eq(V.lineInfoEntryOf('l1', lim, lig, { lg01: { fields: [], bodyHtml: '', links: [] }, l1: { fields: [['k', 'v']], bodyHtml: '', links: [] } }),
+  { id: 'l1', name: '1号线' }, '组节全空 → 按无节落线节');
+// 无组线：直接按线 id 命中（没建组的单线也能显示介绍；无名线节题退线 id）
+eq(V.lineInfoEntryOf('l3', lim, lig, lix), { id: 'l3', name: 'l3' }, '无组线 → 线 id 命中，无名退线 id');
+// 两处都无节 → null（显示侧完全无痕；l1 的组节在 lix 里存在 → 组命中，见上）
+eq(V.lineInfoEntryOf('l1', lim, lig, { l3: lix.l3 }), null, '组与线都无节 → null');
+// 无组结构（旧快照 @1＝buildLineGroups 空表）：线 id 直查
+const ligEmpty = V.buildLineGroups(lim, []);
+eq(V.lineInfoEntryOf('l1', lim, ligEmpty, { l1: { fields: [['a', 'b']], bodyHtml: '', links: [] } }),
+  { id: 'l1', name: '1号线' }, '无组结构 → 线 id 直查');
+// 防御：空 id／lineInfo 缺失 → null
+eq(V.lineInfoEntryOf(null, lim, lig, lix), null, '空 id → null');
+eq(V.lineInfoEntryOf('l1', lim, lig, undefined), null, 'lineInfo 缺失 → null');
 
 console.log(fails ? `\nFAIL - ${fails} assertion(s)` : '\nPASS - viewer logic OK');
 process.exit(fails ? 1 : 0);

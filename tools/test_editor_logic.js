@@ -7,7 +7,8 @@
 // 联络线有效目标判定（connValidTargets：2026-11-22 取消颜色属性改由所联络两线决定）、
 // 嵌套换乘组（2026-11-23：组树工具含成环/未知子组防御、绘制单元规划、药丸线数口径、含整组的编组判定、
 // groups 字段往返、拆组/删站修剪级联、判脏键）、联络线不带颜色属性（stripConnectorColor/lineForSave）、
-// lineinfo.md 节编辑（2026-11-23：保真替换/尾部追加/空文件/多节逐字节不变/标题空白边界/骨架与模板头）。
+// lineinfo.md 节编辑（2026-11-23：保真替换/尾部追加/空文件/多节逐字节不变/标题空白边界/骨架与模板头）、
+// 介绍列表条目（lineInfoTargets：线组行＋未入组线各一行——绑「线组 id 或线 id」，同日放宽）。
 // 用法：node tools/test_editor_logic.js
 
 const L = require(path_join('src', 'editor.js'));
@@ -1299,6 +1300,38 @@ const liNew = head + sk;
 const pv = V.parseLineInfo(liNew);
 eq(pv.lg42.fields, [['起讫点', '…'], ['编组', '…']], '模板头＋骨架可被查看器解析（字段占位）');
 eq(pv.lg42.links, [{ text: '链接文字', url: 'https://…' }], '骨架相关链接可被解析');
+
+// ---------- lineInfoTargets（介绍列表条目：线组行＋未入组线行；2026-11-23 放宽「绑线组 id 或线 id」） ----------
+console.log('lineInfoTargets:');
+// 无任何线组：全部线各占一行（绑线自身 id）——列表不能是空的
+const lt0 = L.lineInfoTargets([], [
+  { id: 'l01', name: '机场快线', color: '#123456', meta: { archived: false } },
+  { id: 'l02', name: '', color: '#445566', meta: { archived: true } },
+]);
+eq(lt0.map((t) => t.id), ['l01', 'l02'], '无线组 → 全部线各一行（绑线自身 id）');
+eq(lt0.map((t) => t.kind), ['line', 'line'], '全为线行');
+eq(lt0.map((t) => t.name), ['机场快线', ''], '线行名＝线名（可空）');
+eq(lt0[0].color, '#123456', '行 chip 色＝线色');
+ok(lt0[0].archived === false && lt0[1].archived === true, '归档标随线携带');
+// 混排：组行在前（原序）、未入组/悬空组的线在后（传入序）；已被现存组收编的线不重复出行
+const lt1 = L.lineInfoTargets([
+  { id: 'lg01', name: '1号线', color: '#aa0000' },
+  { id: 'lg02', name: '', color: '#00aa00' },
+], [
+  { id: 'l03', name: '1号线主线', groupId: 'lg01', meta: {} },
+  { id: 'l04', name: '2号线', groupId: null, meta: {} },
+  { id: 'l05', name: '悬空组线', groupId: 'lgZZ', meta: { archived: true } },
+]);
+eq(lt1.map((t) => t.id + ':' + t.kind), ['lg01:group', 'lg02:group', 'l04:line', 'l05:line'],
+  '组行在前、未入组线与悬空组线在后；组收编的 l03 不重复出行');
+eq(lt1[0].name, '1号线', '组行名＝组名（可空组退空串）');
+eq(lt1[2].name, '2号线', '线行名＝线名');
+ok(lt1[3].archived === true, '悬空组线归档标照带');
+eq(lt1.map((t) => t.kind), ['group', 'group', 'line', 'line'], 'kind 标注组行/线行');
+// 无名组/无名线照出行（id 即标识）；缺 id 条目跳过；非数组入参 → 空表
+eq(L.lineInfoTargets([{ id: 'lg9' }], [{ id: 'l9' }]).map((t) => t.id), ['lg9', 'l9'], '无名组/无名线照出行');
+eq(L.lineInfoTargets([{ name: '无 id 组' }], [{ name: '无 id 线', meta: {} }]), [], '缺 id 条目跳过');
+eq(L.lineInfoTargets(null, undefined), [], '非数组入参 → 空表');
 
 // ---------- 标定变换与瓦片数学（fmt/calibration@1 deg3 / @2 tps，文件存在时） ----------
 console.log('calibration:');

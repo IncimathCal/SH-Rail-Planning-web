@@ -94,10 +94,12 @@
 // MapLibre 样式规范（vendored maplibre-gl 5.24.1 bundle 亦无此属性字面量），退路＝从
 // dash 边界起始（起点首现整段实段）。聚焦重画分实/虚两层（focus-copy/-dash——虚线身份
 // 随线走，罩上 opacity 恒 1 的「聚焦豁免一切」语义不变）；分期调光/白罩叠加逻辑一律不动。
-// 2026-11-23 增：线路信息面板（lineinfo.md 用户手填的每线组介绍）——fetch 随数据同回退
+// 2026-11-23 增：线路信息面板（lineinfo.md 用户手填的每线路介绍）——fetch 随数据同回退
 //（net/lineinfo.md → build/net/lineinfo.md，缺失/失败＝静默无信息，不影响地图），解析在
-// VIEWER_CORE.parseLineInfo（文本全转义＋URL 白名单）；聚焦框与站点面板按所属线组追加
-// 信息节（固定字段区→正文→相关链接区，appendLineInfo），无数据的线组完全无痕。
+// VIEWER_CORE.parseLineInfo（文本全转义＋URL 白名单）；聚焦框与站点面板按成员线追加
+// 信息节（固定字段区→正文→相关链接区，appendLineInfo），无数据的线完全无痕。同日放宽
+// 节绑定＝「线组 id 或线 id」（VIEWER_CORE.lineInfoEntryOf 解析：先按所属线组 id 查节、
+// 查不到再落线自身 id——没建组的单线按线 id 写的介绍同样显示）。
 // 2026-11-23 省级界线底图（用户明示授权外部地理底图数据——省界属底图范畴，不受地铁数据
 // 外部源禁令约束）：中国省级界线常驻细灰线层。source 'provinces'（初始空 FC，
 // loadProvinces 异步读仓库静态件 basemap/provinces-wgs84.json 后 setData——零外部请求原则，
@@ -169,7 +171,7 @@
     fadeSet: new Set(),
     fadeConnPlan: [],
     connLayerIds: [],
-    lineInfo: {},                 // 线组id → { fields, bodyHtml, links }（lineinfo.md 解析结果；boot 填充，缺失＝空表＝一切线组无信息节）
+    lineInfo: {},                 // 线组id或线id → { fields, bodyHtml, links }（lineinfo.md 解析结果；boot 填充，缺失＝空表＝一切线路无信息节）
   };
 
   // ---------- 通用 ----------
@@ -1259,10 +1261,12 @@
     infoRow(body, '分段状态', '既有 ' + sum.segCounts.existing + ' 段 · 已批复 ' + sum.segCounts.approved + ' 段 · 远期 ' + sum.segCounts.future + ' 段');
     infoRow(body, '车站数', String(sum.stopCount));
     infoRow(body, '起讫站', V.formatTerminals(sum));
-    // 线路介绍（lineinfo.md 用户手填，2026-11-23 增）：聚焦线所属线组有手填信息才追加
-    //（节内顺序＝固定字段区→正文→相关链接区），插在导出按钮之前——阅读顺序＝摘要行→
-    // 介绍→导出操作；无数据的线组完全无痕（本框与原状逐像素一致）
-    appendLineInfo(body, grp ? [grp.id] : [], () => '线路介绍');
+    // 线路介绍（lineinfo.md 用户手填，2026-11-23 增；同日放宽节绑定「线组 id 或线 id」）：
+    // 聚焦线先按所属线组 id 查节、查不到再落线自身 id（没建组的单线按线 id 写也能显示），
+    // 一条线至多一节（组节优先）；节内顺序＝固定字段区→正文→相关链接区，插在导出按钮
+    // 之前——阅读顺序＝摘要行→介绍→导出操作；无数据的线完全无痕（本框与原状逐像素一致）
+    const liHit = V.lineInfoEntryOf(S.focus, S.linesMap, S.lineGroups, S.lineInfo);
+    appendLineInfo(body, liHit ? [liHit.id] : [], () => '线路介绍');
     // 2026-11-22 晚改版：原右上线路信息面板退役，导出按钮迁到这里（.info-actions 样式
     // 全局类直接复用）；S.focus 恒主线 id（setFocus 入口归一），导出即导主线
     const bar = document.createElement('div');
@@ -1392,28 +1396,31 @@
       if (rel.partners) infoRow(body, '换乘对端', rel.partners);
     }
     infoRow(body, pin.kind === 'group' ? '组 ID' : '站 ID', pin.kind === 'group' ? pin.groupId : pin.key);
-    // 线路介绍（lineinfo.md 用户手填，2026-11-23 增）：该站所属线组有手填信息才追加，
-    // 每组一节（节题＝线组名，与「所属线路」行同源），节内顺序＝固定字段区→正文→相关
-    // 链接区；无数据的线组完全无痕（行序＝pin.lineIds 即成员线序，去重）
-    const pinGroups = [];
-    const seenG = new Set();
+    // 线路介绍（lineinfo.md 用户手填，2026-11-23 增；同日放宽节绑定「线组 id 或线 id」）：
+    // 每条成员线先按其线组 id 查节、查不到再落线自身 id（没建组的单线也能显示），一条线
+    // 至多一节（组节优先；同组的主线支线解析到同组 → 合为一节）；节题＝组名或线名（与
+    // 「所属线路」行同源），节内顺序＝固定字段区→正文→相关链接区；无数据的线完全无痕
+    //（行序＝pin.lineIds 即成员线序，去重）
+    const pinSecs = [];
+    const seenSec = new Set();
     for (const lid of pin.lineIds || []) {
-      const g = S.lineGroups.ofLine.get(lid);
-      if (g && !seenG.has(g.id)) { seenG.add(g.id); pinGroups.push(g); }
+      const hit = V.lineInfoEntryOf(lid, S.linesMap, S.lineGroups, S.lineInfo);
+      if (hit && !seenSec.has(hit.id)) { seenSec.add(hit.id); pinSecs.push(hit); }
     }
-    appendLineInfo(body, pinGroups.map((g) => g.id),
-      (gid) => (pinGroups.find((g) => g.id === gid) || {}).name || gid);
+    appendLineInfo(body, pinSecs.map((h) => h.id),
+      (gid) => (pinSecs.find((h) => h.id === gid) || {}).name || gid);
   }
 
   // ---------- 线路信息节（lineinfo.md 用户手填介绍；2026-11-23 增） ----------
-  // appendLineInfo(host, groupIds, captionOf)：按线组 id 序在面板尾部追加信息节——节题
-  //（captionOf(gid) 给出，返回空串则不出节题行）→ 固定字段区（键值对，复用 .info-row
-  // 低调样式）→ 正文（parseLineInfo 预渲染的受控 HTML，见 core 侧安全注）→ 相关链接区。
-  // 没有 lineinfo 数据的线组完全无痕（不建节点不占位）。字段与链接文本一律 textContent
-  //（解析结果里的原文），只有 bodyHtml 走 innerHTML（解析侧已全量转义＋白名单标签）。
-  function appendLineInfo(host, groupIds, captionOf) {
+  // appendLineInfo(host, ids, captionOf)：按节绑定 id（线组 id 或线 id，2026-11-23 放宽）序
+  // 在面板尾部追加信息节——节题（captionOf(gid) 给出，返回空串则不出节题行）→ 固定字段区
+  //（键值对，复用 .info-row 低调样式）→ 正文（parseLineInfo 预渲染的受控 HTML，见 core 侧
+  // 安全注）→ 相关链接区。没有 lineinfo 数据的 id 完全无痕（不建节点不占位）。字段与链接
+  // 文本一律 textContent（解析结果里的原文），只有 bodyHtml 走 innerHTML（解析侧已全量
+  // 转义＋白名单标签）。
+  function appendLineInfo(host, ids, captionOf) {
     const seen = new Set();
-    for (const raw of Array.isArray(groupIds) ? groupIds : []) {
+    for (const raw of Array.isArray(ids) ? ids : []) {
       const gid = raw != null ? String(raw) : '';
       if (!gid || seen.has(gid)) continue;
       seen.add(gid);

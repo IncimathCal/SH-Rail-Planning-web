@@ -1207,6 +1207,31 @@
     if (!head.trim()) head = '# 线路信息（lineinfo.md）';
     return head + '\n\n';
   }
+  /** 线路介绍列表条目（纯逻辑，node 单测；2026-11-23 放宽「绑线组 id 或线 id」）：
+   *  建了线组的线路以组为编辑单元（绑组 id，行显组名），没建组的线各一行（绑该线自身 id，
+   *  行显线名）——没建组的单线同样是「用户眼里的一条线路」，也必须能写介绍；没建任何
+   *  线组时列表也不能是空的（全部线各占一行）。lineGroups＝编组节线组表（原序在前）；
+   *  orderedLines＝未入组候选线（序由调用方给定，在后）。groupId 指向现存组的线不重复
+   *  出行（已由组行覆盖）；groupId 悬空（指向不存在的组）的线照出行（保证每条线都有
+   *  介绍入口）。返回 [{id, name, color, kind:'group'|'line', archived}]，archived 仅线行有。
+   *  非数组入参 → 空表；缺 id 的条目跳过。 */
+  function lineInfoTargets(lineGroups, orderedLines) {
+    const out = [];
+    const lgs = Array.isArray(lineGroups) ? lineGroups : [];
+    for (const g of lgs) {
+      if (!g || g.id == null || g.id === '') continue;
+      out.push({ id: String(g.id), name: g.name || '', color: g.color || '#888', kind: 'group' });
+    }
+    const gidSet = new Set(lgs.filter(Boolean).map((g) => String(g.id)));
+    const lines = Array.isArray(orderedLines) ? orderedLines : [];
+    for (const l of lines) {
+      if (!l || l.id == null || l.id === '') continue;
+      if (l.groupId != null && l.groupId !== '' && gidSet.has(String(l.groupId))) continue;
+      out.push({ id: String(l.id), name: l.name || '', color: l.color || '#888', kind: 'line',
+        archived: !!(l.meta && l.meta.archived) });
+    }
+    return out;
+  }
 
   const SHLogic = { SEG_ORDER, SEG_LABEL, ROLE_LABEL, EPS, segInsert, segRemove,
     pruneSections, migrateLineToV2, planSectionSplit, applySectionMerge, sectionSpanOf, sectionIssuesOf,
@@ -1221,6 +1246,7 @@
     normalizeLineOrder, archivedIdList, LAYER_RESERVED, searchTermsOf, matchesTerms, groupSearchText, pageSlice,
     isReservedLine, segStatusesOf, lineDrawKey, sameLineDraw,
     extractLineInfoSection, replaceLineInfoSection, lineInfoSectionSkeleton, lineInfoTemplateHeader,
+    lineInfoTargets,
     calibForward, calibInverse, tpsForward, tpsInverse, poly3Forward, poly3Inverse,
     lonToTileX, latToTileY, tileXToLon, tileYToLat };
   global.SHEditorLogic = SHLogic;
@@ -2984,14 +3010,17 @@
   }
 
   // ---------- 线路介绍面板（lineinfo.md 用户手填介绍；2026-11-23 增） ----------
-  // 入口＝左栏「编组」节之后的「线路介绍」节。线组列表数据源＝S.groups.lineGroups（与「线组」
-  // 列表同源）；选中线组后 textarea 编辑该组在 lineinfo.md 中的那一节 md 原文（不搞结构化表单，
-  // 保留手写 md 习惯），防抖 300ms 实时预览——渲染复用查看器 VIEWER_CORE.parseLineInfo
-  // （editor.html 载入 src/viewer_core.js，实现零语义改动）。文件读写：载入见
-  // applyWorkspace／bootFetchData，落盘见 saveLineinfoIfChanged（只替换被编辑节，其余字节
-  // 逐位保留）；未保存改动＝S.lineinfoMd 与 S.lineinfoSavedMd 失配，列表行内 ● 标出，
-  // 文本与基线随自动暂存持久（刷新不丢），「保存工作区」后基线同步、标记清零。
-  let liSel = null;              // 当前选中线组 id（临时 UI 状态：不进快照/撤销/自动暂存）
+  // 入口＝左栏「编组」节之后的「线路介绍」节。列表数据源（2026-11-23 放宽「绑线组 id 或
+  // 线 id」，纯逻辑 lineInfoTargets）＝建了线组的线路以组为单位一行（绑组 id，行显组名），
+  // 没建组的线各一行（绑该线自身 id，行显线名）——没建组的单线同样是「用户眼里的一条
+  // 线路」，也必须能写介绍；没建任何线组时列表也不能是空的（全部线各占一行）。选中条目
+  // 后 textarea 编辑它在 lineinfo.md 中的那一节 md 原文（不搞结构化表单，保留手写 md
+  // 习惯），防抖 300ms 实时预览——渲染复用查看器 VIEWER_CORE.parseLineInfo（editor.html
+  // 载入 src/viewer_core.js，实现零语义改动）。文件读写：载入见 applyWorkspace／
+  // bootFetchData，落盘见 saveLineinfoIfChanged（只替换被编辑节，其余字节逐位保留）；
+  // 未保存改动＝S.lineinfoMd 与 S.lineinfoSavedMd 失配，列表行内 ● 标出，文本与基线随
+  // 自动暂存持久（刷新不丢），「保存工作区」后基线同步、标记清零。
+  let liSel = null;              // 当前选中条目 id（线组 id 或线 id；临时 UI 状态：不进快照/撤销/自动暂存）
   let liPrevTimer = null;        // 预览防抖计时
   const liVC = () => (global.VIEWER_CORE && typeof global.VIEWER_CORE.parseLineInfo === 'function')
     ? global.VIEWER_CORE : null;
@@ -3002,7 +3031,7 @@
     const parsed = (vc && secText) ? vc.parseLineInfo(secText)[liSel] : null;
     if (!parsed) {
       setHtml($('liPrev'), secText
-        ? '<span style="color:var(--warn)">标题 id 与所选线组不匹配（绑定靠「## <线组id>」的首个 token）</span>'
+        ? '<span style="color:var(--warn)">标题 id 与所选条目不匹配（绑定靠「## <线组id或线id>」的首个 token）</span>'
         : '<span style="color:var(--dim)">（无内容）</span>');
       return;
     }
@@ -3024,16 +3053,25 @@
     liPrevTimer = setTimeout(() => liRenderPreview(extractLineInfoSection(S.lineinfoMd, liSel)), 300);
   }
 
-  /** 编辑区随选中线组就位（值相同不重写 textarea——保住光标位置） */
+  /** 列表条目（纯逻辑 lineInfoTargets 的面板侧包装）：线组在前（编组节原序），没建组的线
+   *  在后（生效显示序 effectiveLineOrder）——没有组时全部线照出行，列表不能是空的 */
+  function liTargets() {
+    return lineInfoTargets((S.groups && S.groups.lineGroups) || [],
+      effectiveLineOrder().map((lid) => S.lines.get(lid)).filter(Boolean));
+  }
+  function liTargetOf(id) {
+    return (typeof id === 'string' && id) ? liTargets().find((t) => t.id === id) || null : null;
+  }
+  /** 编辑区随选中条目就位（值相同不重写 textarea——保住光标位置） */
   function liLoadEditor() {
-    const g = liSel && S.groups ? (S.groups.lineGroups || []).find((x) => x.id === liSel) : null;
-    const sec = g ? extractLineInfoSection(S.lineinfoMd, liSel) : null;
+    const t = liTargetOf(liSel);
+    const sec = t ? extractLineInfoSection(S.lineinfoMd, t.id) : null;
     const ta = $('liText');
     if (ta.value !== (sec || '')) ta.value = sec || '';
-    ta.disabled = !g || sec == null;
-    $('btnLiSkeleton').disabled = !g || sec != null;
-    setHtml($('liHint'), !g ? '左侧列表选一个线组，编辑它在 lineinfo.md 里的介绍节。'
-      : sec == null ? `线组 ${esc(g.id)} 还没有介绍节——点「生成骨架」创建（全占位符），也可改后再保存工作区。`
+    ta.disabled = !t || sec == null;
+    $('btnLiSkeleton').disabled = !t || sec != null;
+    setHtml($('liHint'), !t ? '左侧列表选一个线组或线路，编辑它在 lineinfo.md 里的介绍节。'
+      : sec == null ? `${t.kind === 'group' ? '线组' : '线路'} ${esc(t.id)} 还没有介绍节——点「生成骨架」创建（全占位符），也可改后再保存工作区。`
       : '');
     liRenderPreview(sec);
     liSyncState();
@@ -3045,24 +3083,25 @@
     st.textContent = dirty ? '有未保存改动（随「保存工作区」写入 lineinfo.md）' : '';
     st.style.color = dirty ? 'var(--warn)' : 'var(--dim)';
   }
-  /** 线组列表（数据源＝S.groups.lineGroups；行内标节有无＋未保存 ●）。只重画列表容器，
-   *  不动 textarea——输入逐键调用不失焦点 */
+  /** 列表（线组行显组名、线行显线名；行内标节有无＋未保存 ●，归档线带「归档」标）。
+   *  只重画列表容器，不动 textarea——输入逐键调用不失焦点 */
   function renderLineInfoList() {
-    const lgs = (S.groups && S.groups.lineGroups) || [];
-    setHtml($('liList'), lgs.length ? lgs.map((g) => {
-      const cur = extractLineInfoSection(S.lineinfoMd, g.id);
-      const dirty = cur != null && cur !== extractLineInfoSection(S.lineinfoSavedMd, g.id);
-      return `<div class="grp-row li-row${g.id === liSel ? ' li-sel' : ''}" data-lisel="${esc(g.id)}" title="点击编辑该线组的介绍节">`
-        + `<span class="chip" style="display:inline-block;width:11px;height:11px;background:${esc(g.color || '#888')};border-radius:3px"></span>`
-        + `<b>${esc(g.id)}</b> ${esc(g.name || '')}`
+    const ts = liTargets();
+    setHtml($('liList'), ts.length ? ts.map((t) => {
+      const cur = extractLineInfoSection(S.lineinfoMd, t.id);
+      const dirty = cur != null && cur !== extractLineInfoSection(S.lineinfoSavedMd, t.id);
+      return `<div class="grp-row li-row${t.id === liSel ? ' li-sel' : ''}" data-lisel="${esc(t.id)}" title="点击编辑${t.kind === 'group' ? '该线组' : '该线路'}的介绍节">`
+        + `<span class="chip" style="display:inline-block;width:11px;height:11px;background:${esc(t.color)};border-radius:3px"></span>`
+        + `<b>${esc(t.id)}</b> ${esc(t.name || '')}`
+        + (t.kind === 'line' && t.archived ? '<span class="badge arch">归档</span>' : '')
         + `<span class="li-mark">${dirty ? '<span style="color:var(--warn)">●</span>' : ''}`
         + (cur != null ? '有节' : '<span style="color:var(--dim)">无节</span>') + '</span>'
         + `</div>`;
-    }).join('') : '<div style="color:var(--dim);font-size:12px">（暂无线组——先在「编组」节新建线组）</div>');
+    }).join('') : '<div style="color:var(--dim);font-size:12px">（暂无线路——先在「线路」节新建线路）</div>');
   }
   function renderLineInfoPanel() {
-    // 组删了清选中（撤销/载入工作区后 liSel 可能悬空）
-    if (liSel && !(S.groups && (S.groups.lineGroups || []).some((x) => x.id === liSel))) liSel = null;
+    // 条目删了清选中（撤销/载入工作区后 liSel 可能悬空）
+    if (liSel && !liTargetOf(liSel)) liSel = null;
     renderLineInfoList();
     liLoadEditor();
   }
@@ -3073,12 +3112,12 @@
     liSel = row.dataset.lisel;
     renderLineInfoPanel();
   });
-  // 生成骨架（节不存在时可点）：文件不存在先按仓库 data/lineinfo.md 模板头新建（注释头＋该组
-  // 骨架，示例节不带进来）；生成即改内存文本＋自动暂存，落盘仍等「保存工作区」
+  // 生成骨架（节不存在时可点）：文件不存在先按仓库 data/lineinfo.md 模板头新建（注释头＋该
+  // 条目骨架，示例节不带进来）；生成即改内存文本＋自动暂存，落盘仍等「保存工作区」
   $('btnLiSkeleton').addEventListener('click', async () => {
-    const g = liSel && S.groups ? (S.groups.lineGroups || []).find((x) => x.id === liSel) : null;
-    if (!g) return;
-    const sec = lineInfoSectionSkeleton(g.id, g.name);
+    const t = liTargetOf(liSel);
+    if (!t) return;
+    const sec = lineInfoSectionSkeleton(t.id, t.name);
     if (typeof S.lineinfoMd !== 'string') {
       let tpl = S.liTplText;
       if (typeof tpl !== 'string') {
@@ -3086,10 +3125,10 @@
         if (typeof tpl === 'string') S.liTplText = tpl;
       }
       S.lineinfoMd = lineInfoTemplateHeader(tpl) + sec;
-      setStatus(`已新建 lineinfo.md（仓库模板注释头）并为 ${g.id} 生成介绍节骨架——全是占位符，请改掉 … 再保存工作区。`);
+      setStatus(`已新建 lineinfo.md（仓库模板注释头）并为 ${t.id} 生成介绍节骨架——全是占位符，请改掉 … 再保存工作区。`);
     } else {
       S.lineinfoMd = replaceLineInfoSection(S.lineinfoMd, liSel, sec);
-      setStatus(`已为 ${g.id} 生成介绍节骨架——全是占位符，请改掉 … 再保存工作区。`);
+      setStatus(`已为 ${t.id} 生成介绍节骨架——全是占位符，请改掉 … 再保存工作区。`);
     }
     renderLineInfoPanel();
     autosave();

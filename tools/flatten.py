@@ -70,7 +70,7 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
                         stops.geojson 的 groupId/groupType 仍只带直属组，
                         节点归属由消费端据本表自最外层组还原。消费端同步收
                         @1（旧快照）/@2/@3。
-  <out>/lineinfo.md    线路信息面板（2026-11-23）：数据目录下用户手填的每线组
+  <out>/lineinfo.md    线路信息面板（2026-11-23）：数据目录下用户手填的每线路
                         介绍（格式约定与模板见 data/lineinfo.md）**原样透传**
                         （字节级拷贝；不解析、不进 GeoJSON——解析在查看器侧
                         VIEWER_CORE.parseLineInfo）。数据目录无此文件则不产出
@@ -532,7 +532,7 @@ def main():
         encoding="utf-8")
     sz3 = (out / "index.json").stat().st_size
 
-    # lineinfo.md（线路信息面板，用户手填的每线组介绍，2026-11-23）：数据目录下有则
+    # lineinfo.md（线路信息面板，用户手填的每线路介绍，2026-11-23）：数据目录下有则
     # 原样透传进输出目录（字节级拷贝，不解析、不进 GeoJSON——解析在查看器侧
     # VIEWER_CORE.parseLineInfo）；数据目录无此文件则跳过（查看器静默无信息节）
     li_src = Path(args.data) / "lineinfo.md"
@@ -560,7 +560,7 @@ def main():
     if li_size is not None:
         print(f"written: {out / 'lineinfo.md'}（{li_size} B，线路手填介绍原样透传）")
     else:
-        print("提示：数据目录下没有 lineinfo.md（线路手填介绍），查看器一切线组无信息节")
+        print("提示：数据目录下没有 lineinfo.md（线路手填介绍），查看器一切线路无信息节")
     return 0
 
 
