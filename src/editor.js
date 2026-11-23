@@ -808,6 +808,14 @@
     }
     return keys.size;
   }
+  /** 绘制单元画不画药丸（2026-11-23 用户裁定「上级组无论有几个站圆，都按多线站生成药丸」）：带子组的
+   *  同站／接轨单元一律药丸、不论线数；平铺的同站单元按逻辑线数 ≥3（见 logicalLineCount）；接轨单元不画。
+   *  g＝单元组对象；kids＝其子组 id 列表；lines／lineGroups／allLines 同 logicalLineCount。 */
+  function unitIsPill(g, kids, lines, lineGroups, allLines) {
+    if (!g || (g.type !== 'same-station' && g.type !== 'junction')) return false;
+    if (Array.isArray(kids) && kids.length) return true;
+    return g.type === 'same-station' && logicalLineCount(lines, lineGroups, allLines) >= 3;
+  }
   /** 设站的「所属组」判脏键（lineDrawKey 的逐站组键；纯逻辑，node 单测覆盖）：
    *  `${直属组 id}|${直属组 type}|${h|v}`——直属组决定出闸黑边与提示文本；h＝站圈被绘制单元吸收隐去。
    *  嵌套组下上级组类型、子组关系、子组成员的变化，对本线画法的影响全部落在 h/v 这一位上。 */
@@ -1056,7 +1064,7 @@
 
   const SHLogic = { SEG_ORDER, SEG_LABEL, ROLE_LABEL, EPS, segInsert, segRemove,
     pruneSections, migrateLineToV2, planSectionSplit, applySectionMerge, sectionSpanOf, sectionIssuesOf,
-    canPlaceArrow, planGroupPillChain, nextStopKind,
+    canPlaceArrow, planGroupPillChain, nextStopKind, unitIsPill,
     nextStopSeq, fixStatusField, lineIssues, planBulkFill, stripConnectorColor, lineForSave,
     planStopImport, applyStopImport, suggestForStop, transferMarkForStop, conflictsForStop, backfillTransferNames,
     layerGroupsOf, junctionStroke, planStationGroup, connValidTargets,
@@ -1810,7 +1818,7 @@
                                            //   h＝站圈被单元吸收隐去——上级组类型/子组关系变化只经此位影响本线画法）
     const lineOfStop = new Map();          // sid -> lid（组内线数统计、合并圈成员查找用）
     for (const [lid0, line0] of S.lines) for (const st0 of line0.stops) lineOfStop.set(st0.id, lid0);
-    const pillGroups = new Set();          // 画药丸的 same-station 单元 id（逻辑线数 ≥3，口径见 logicalLineCount）
+    const pillGroups = new Set();          // 画药丸的单元 id（上级组一律、平铺同站单元逻辑线数 ≥3，见 unitIsPill）
     const mergedHidden = gplan.hidden;     // 同站/接轨单元（含药丸单元）吸收的全部叶站 sid
     for (const g of stationGroups) {
       for (const sid of g.stops) {
@@ -1820,9 +1828,8 @@
     }
     for (const gid of gplan.units) {
       const g = gplan.tree.byId.get(gid);
-      if (g.type !== 'same-station') continue;
       const lines = gplan.leafOf.get(gid).map((sid) => S.lines.get(lineOfStop.get(sid))).filter(Boolean);
-      if (logicalLineCount(lines, lineGroups, [...S.lines.values()]) >= 3) pillGroups.add(gid);   // ≥3 线画药丸（叶站圈一并隐去，见 buildGroupShape）
+      if (unitIsPill(g, gplan.tree.childrenOf.get(gid), lines, lineGroups, [...S.lines.values()])) pillGroups.add(gid);   // 叶站圈一并隐去，见 buildGroupShape
     }
     // 待编组集（瞬态）：待编组站＋待编入上层的整组及其全部子孙组的直属站——站圈/单元符号的待编组提示样式
     // 与就近提示的跳过判定同用（整组待编入时，它自己的站不该再被标成「就近候选」）
@@ -2056,7 +2063,7 @@
       pill.dataset.grp = g.id;
       const tp = el('title', {}, pill);
       const nLinesP = logicalLineCount(members.map((m) => m.line), ctx.lineGroups, [...S.lines.values()]);   // 线数口径：支线算一条、联络线不算
-      tp.textContent = `${g.id} 同站换乘（${nLinesP} 线药丸）：${leafText}${kidNote}`;
+      tp.textContent = `${g.id} ${g.type === 'junction' ? '接轨站' : '同站换乘'}（${nLinesP} 线药丸）：${leafText}${kidNote}`;
       return { isPill: true, sig, scale: NaN, pend: null, els: [under, pill] };
     }
     // 合并圈：位置取距所有成员线路最近点（投影质心迭代收敛）。

@@ -610,7 +610,9 @@
   //     无组站：kind 'stop'（白填充、线色描边）；
   //     same-station 单元（type null 同此）：全部叶站合成一个——逻辑线 ≥3 改画药丸（见 pills），
   //       否则合并一个「大圈」（叶站坐标均值，big=true，黑边）；内层组不单独出图形；
-  //     junction 单元：合并普通尺寸圈（big=false 不放大——接轨站不出大圈；描边色由渲染层按
+  //     上级组（带子组的同站／接轨单元，2026-11-23 用户裁定「无论有几个站圆都按多线站生成药丸」）：
+  //       一律药丸、不论线数；
+  //     junction 单元（平铺）：合并普通尺寸圈（big=false 不放大——接轨站不出大圈；描边色由渲染层按
   //       成员线角色优先级取，不用黑边），成员递归取全部叶站；
   //     out-of-station 单元：直属站各自普通尺寸圈（出闸换乘物理上是两个站，不并点，黑边），
   //       子组各自成单元；
@@ -688,8 +690,10 @@
       const leaves = tree.leafStops(gid);
       if (!leaves.length) return;   // 无站组（成员线已归档、全线路所组被上游剔除等）：不出图形不出标签
       const u = unitOf(leaves);
-      if (type === 'same-station' && logicalLineCount(u.lineIds, linesMap, lineGroups) >= 3) {
-        // 逻辑线 ≥3：药丸替代一切成员图形——成员个人小圈不再出现（药丸即换乘标识，
+      // 上级组（带子组的同站／接轨单元）一律药丸、不论线数（2026-11-23 用户裁定）；平铺组沿用逻辑线 ≥3
+      if (tree.childrenOf(gid).length > 0
+        || (type === 'same-station' && logicalLineCount(u.lineIds, linesMap, lineGroups) >= 3)) {
+        // 药丸替代一切成员图形——成员个人小圈不再出现（药丸即换乘标识，
         // 2026-11-22 用户裁定）；组 pin 挂在药丸条目上（不进 pins＝不被渲染成圈），
         // 渲染层在药丸线上挂点选/hover，用同一 key 查 pinByKey
         const order = planGroupPillChain(leaves.map((s) => planarOf(s.lon, s.lat, u.lat)));   // 共享参考纬度＝叶站均值

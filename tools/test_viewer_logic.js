@@ -1070,11 +1070,17 @@ eq(treeNx.typeOf('g9001') + ',' + treeNx.typeOf('g0148') + ',' + treeNx.typeOf('
 eq(treeNx.order, ['g9001', 'g0148', 'g9002', 'g0017', 'g9003', 'g9004', 'g9009'], '树：稳定序＝子树首个叶站的站表下标，无站组排最后');
 
 const svNx = V.buildStopView(stNx, { linesMap: lmNx, lineGroups: lgNx, tree: treeNx });
-// ② 中辰路：外层 same-station｛直属 1 站＋junction 子组 2 站｝——子组两条线属同一线组 → 逻辑线 2 → 一个合并黑边大圈、一个标签
+// ② 中辰路：外层 same-station｛直属 1 站＋junction 子组 2 站｝——子组两条线属同一线组 → 逻辑线 2；**上级组一律药丸**
+//（2026-11-23 用户裁定「无论有几个站圆都按多线站生成药丸」）：一枚药丸、一个标签
 {
-  const pin = svNx.pins.find((p) => p.key === 'g:g9001');
-  ok(pin && pin.kind === 'group' && pin.big === true && pin.groupType === 'same-station', '② 中辰路：整个节点一个合并黑边大圈');
-  ok(!svNx.pills.some((p) => p.groupId === 'g9001' || p.groupId === 'g0148'), '② 中辰路：不出药丸');
+  const pill = svNx.pills.find((p) => p.key === 'g:g9001');
+  const pin = pill ? pill.pin : null;
+  ok(!svNx.pins.some((p) => p.key === 'g:g9001') && pin && pin.kind === 'group' && pin.big === true && pin.groupType === 'same-station',
+    '② 中辰路：上级组不论线数——一枚药丸（组 pin 挂在药丸上、不进 pins）');
+  ok(svNx.pills.filter((p) => p.groupId === 'g9001' || p.groupId === 'g0148').length === 1, '② 中辰路：只出一枚药丸（内层 junction 子组不出图形）');
+  const ch = pill ? pill.chain : [];
+  ok(ch.length === 3 && ch[1][0] === 121.205 && ch[1][1] === 31.005
+    && [ch[0], ch[2]].map((c) => c.join(',')).sort().join(';') === '121.2,31;121.21,31.01', '② 中辰路：药丸链收三叶站、嘉松路线站居中');
   ok(!svNx.pins.some((p) => ['g:g0148', 'l0058-s11', 'l0075-s11', 'l0076-s01'].includes(p.key)), '② 中辰路：内层 junction 组与各叶站都不单独出圈');
   const lb = svNx.labels.find((l) => l.key === 'g:g9001');
   const lon = meanOf([121.205, 121.2, 121.21]), lat = meanOf([31.005, 31, 31.01]);
@@ -1087,11 +1093,12 @@ const svNx = V.buildStopView(stNx, { linesMap: lmNx, lineGroups: lgNx, tree: tre
   eq(V.buildStopView(stNx, { linesMap: lmNx, lineGroups: lgNx, tree: flatNx }).pins.filter((p) => p.groupId === 'g9001' || p.groupId === 'g0148').map((p) => p.key),
     ['g:g9001', 'g:g0148'], '② 对照：不嵌套＝两个符号');
 }
-// ③ 上海金山：直属 1 站＋junction 子组 2 站（其中一条是 connector）→ 联络线不计 → 逻辑线 2 → 一个合并大黑圈
+// ③ 上海金山：直属 1 站＋junction 子组 2 站（其中一条是 connector）→ 联络线不计 → 逻辑线 2；上级组一律药丸
 {
-  const pin = svNx.pins.find((p) => p.key === 'g:g9002');
-  ok(pin && pin.kind === 'group' && pin.big === true && pin.groupType === 'same-station', '③ 上海金山：联络线不计 → 逻辑线 2 → 合并黑边大圈');
-  ok(!svNx.pills.some((p) => p.groupId === 'g9002'), '③ 上海金山：不出药丸');
+  const pill3 = svNx.pills.find((p) => p.key === 'g:g9002');
+  const pin = pill3 ? pill3.pin : null;
+  ok(pin && pin.kind === 'group' && pin.big === true && pin.groupType === 'same-station', '③ 上海金山：上级组不论线数（联络线不计后仅 2）→ 药丸');
+  eq(pill3 ? pill3.chain.length : 0, 3, '③ 上海金山：药丸链收全部叶站（含联络线站）');
   eq((pin || {}).lineIds, ['l0057', 'l0007', 'l0008'], '③ 上海金山：pin.lineIds 仍收全部成员线（含联络线——调光/聚焦口径不变）');
   ok(!svNx.pins.some((p) => ['g:g0017', 'l0057-s15', 'l0007-s04', 'l0008-s01'].includes(p.key)), '③ 上海金山：内层 junction 组与各叶站不单独出圈');
   const lb = svNx.labels.find((l) => l.key === 'g:g9002') || {};
@@ -1119,8 +1126,8 @@ const svNx = V.buildStopView(stNx, { linesMap: lmNx, lineGroups: lgNx, tree: tre
     { key: 'g:g9004', name: '中华艺术宫', lon: meanOf([121.48, 121.47, 121.475]), lat: meanOf([31.18, 31.17, 31.175]), group: true, groupType: 'same-station',
       lineNames: ['19号线', '奉贤线', '机场快线'], lineIds: ['l0034', 'l0051', 'l0054'] },
     '④ 中华艺术宫：子组自己的标签');
-  eq(svNx.pins.map((p) => p.key), ['g:g9001', 'g:g9002', 'l0022-s20'], '④ 全视图 pins（无站组 g9009 不出图形）');
-  eq(svNx.pills.map((p) => p.key), ['g:g9004'], '④ 全视图药丸');
+  eq(svNx.pins.map((p) => p.key), ['l0022-s20'], '④ 全视图 pins（上级组与药丸组不进 pins；无站组 g9009 不出图形）');
+  eq(svNx.pills.map((p) => p.key), ['g:g9001', 'g:g9002', 'g:g9004'], '④ 全视图药丸（两枚上级组＋一枚 3 线组）');
   eq(svNx.labels.map((l) => l.key), ['g:g9001', 'g:g9002', 'g:g9003', 'g:g9004'], '④ 全视图标签：每个单元各一');
   // 出闸单元无直属站 → 不出自己的标签（把 8 号线站挪出直属表）
   const noDirect = nxTable.map((g) => (g.id === 'g9003' ? Object.assign({}, g, { stops: [] }) : g));
@@ -1134,19 +1141,23 @@ const svNx = V.buildStopView(stNx, { linesMap: lmNx, lineGroups: lgNx, tree: tre
     V.visibleLabels(svNx.labels, 12, { dimmedSet: ['l0057', 'l0007', 'l0008'] }).some((l) => l.key === 'g:g9002')],
   [true, false], '调光口径不变：联络线被调光不隐藏上海金山标签，三成员全调光才隐藏');
 }
-// junction 节点：成员递归取全部叶站、画法不变（合并普通尺寸圈、不出大圈不出药丸）
+// junction 节点：带子组＝上级组 → 一律药丸（pin 类型仍 junction、成员线递归取全部叶站）；平铺 junction 仍是合并普通尺寸圈
 {
   const stJ = V.stopList(fc(
     stopFeat('j1', '接轨枢纽', 'l0007', '沪乍线', 0.5, 10, 10, 'jN', 'junction'),
     stopFeat('j2', '接轨枢纽', 'l0034', '19号线', 0.5, 10.1, 10, 'jI', 'same-station'),
     stopFeat('j3', '接轨枢纽', 'l0051', '奉贤线', 0.5, 10, 10.1, 'jI', 'same-station'),
   ));
-  const svJ = V.buildStopView(stJ, { linesMap: lmNx, lineGroups: lgNx, tree: V.buildGroupTree([
-    { id: 'jN', type: 'junction', stops: ['j1'], groups: ['jI'] }, { id: 'jI', type: 'same-station', stops: ['j2', 'j3'], groups: [] }], stJ) });
-  eq(svJ.pins.map((p) => [p.key, p.kind, p.big, p.groupType, p.lineIds.join(',')]), [['g:jN', 'group', false, 'junction', 'l0007,l0034,l0051']],
-    'junction 节点：一个合并普通尺寸圈，成员线递归取全部叶站（渲染层按角色优先级取描边色不变）');
-  eq(svJ.pills, [], 'junction 节点：不出药丸');
+  const tblJ = [
+    { id: 'jN', type: 'junction', stops: ['j1'], groups: ['jI'] }, { id: 'jI', type: 'same-station', stops: ['j2', 'j3'], groups: [] }];
+  const svJ = V.buildStopView(stJ, { linesMap: lmNx, lineGroups: lgNx, tree: V.buildGroupTree(tblJ, stJ) });
+  eq(svJ.pins, [], 'junction 上级组：不出合并圈');
+  eq(svJ.pills.map((p) => [p.key, p.pin.kind, p.pin.big, p.pin.groupType, p.pin.lineIds.join(','), p.chain.length]),
+    [['g:jN', 'group', true, 'junction', 'l0007,l0034,l0051', 3]], 'junction 上级组：一枚药丸，pin 类型仍 junction、成员线递归取全部叶站');
   eq(svJ.labels.map((l) => l.key), ['g:jN'], 'junction 节点：一个标签');
+  const svJF = V.buildStopView(stJ, { linesMap: lmNx, lineGroups: lgNx, tree: V.buildGroupTree(tblJ.map((g) => Object.assign({}, g, { groups: [] })), stJ) });
+  eq([svJF.pins.map((p) => [p.key, p.big, p.groupType]), svJF.pills.length],
+    [[['g:jN', false, 'junction'], ['g:jI', true, 'same-station']], 0], 'junction 对照：平铺（无子组）＝合并普通尺寸圈、不出药丸');
 }
 // 出闸套出闸（三层）：子组按自身 type 递归
 {
@@ -1278,7 +1289,8 @@ ok(V.groupRelations('gP', true, treeD, lmCnt, lgCnt) === null, '⑥ 幽灵子组
   ));
   const svS = V.buildStopView(stS, { linesMap: lmCnt, lineGroups: lgCnt, tree: V.buildGroupTree([
     { id: 'sA', type: 'same-station', stops: ['q1'], groups: ['sB'] }, { id: 'sB', type: 'same-station', stops: ['q2'], groups: ['sA'] }], stS) });
-  eq([svS.pins.map((p) => p.key), svS.labels.map((l) => l.key), svS.pins[0].lineIds], [['g:sA'], ['g:sA'], ['cd', 'ce']], '⑥ 同站成环：一个合并大圈、一个标签（叶站不丢不重）');
+  eq([svS.pins.map((p) => p.key), svS.labels.map((l) => l.key), svS.pills.map((p) => [p.key, p.chain.length, p.pin.lineIds.join(',')])],
+    [[], ['g:sA'], [['g:sA', 2, 'cd,ce']]], '⑥ 同站成环：环上 id 最小者为根＝上级组 → 一个药丸、一个标签（叶站不丢不重）');
 }
 // 脏结构表条目：逐项判型跳过、不抛；重复 id 首条为准
 {

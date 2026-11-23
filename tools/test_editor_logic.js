@@ -1002,6 +1002,16 @@ eq(L.logicalLineCount([LN('l0009', 'standalone', 'lg02'), LN('l0010', 'standalon
   '传入全表：无主线的线组成员各算一条');
 eq(L.logicalLineCount([LN('l0003', 'branch', 'lg01')], LGS, ALL1), 1, '传入全表：单元里只有支线、主线不在单元内，仍按线组算一条');
 
+// 上级组一律药丸（2026-11-23 用户裁定「上级组无论有几个站圆，都按多线站生成药丸」）
+const G2 = (id, type, kids) => ({ id, type, stops: [], groups: kids || [] });
+eq(L.unitIsPill(G2('p1', 'same-station', ['k']), ['k'], [LN('l0001', 'standalone', null)]), true, 'unitIsPill：带子组的同站单元 1 条线也画药丸');
+eq(L.unitIsPill(G2('p2', 'junction', ['k']), ['k'], []), true, 'unitIsPill：带子组的接轨单元也画药丸');
+eq(L.unitIsPill(G2('p3', 'junction'), [], [LN('l0001', 'standalone', null), LN('l0002', 'standalone', null), LN('l0003', 'standalone', null)]), false, 'unitIsPill：平铺接轨单元不画药丸');
+eq(L.unitIsPill(G2('p4', 'same-station'), [], [LN('l0001', 'standalone', null), LN('l0002', 'standalone', null)]), false, 'unitIsPill：平铺同站单元 2 条线＝大圈');
+eq(L.unitIsPill(G2('p5', 'same-station'), [], [LN('l0001', 'standalone', null), LN('l0002', 'standalone', null), LN('l0003', 'standalone', null)]), true, 'unitIsPill：平铺同站单元 3 条线＝药丸');
+eq(L.unitIsPill(G2('p6', 'out-of-station', ['k']), ['k'], []), false, 'unitIsPill：出闸单元不画药丸（直属站各自成圈）');
+eq(L.unitIsPill(null, ['k'], []), false, 'unitIsPill：空组不崩');
+
 // ---------- 嵌套换乘组：编组判定（待编组单位可含既有顶层组） ----------
 console.log('nested station groups: plan');
 eq(L.planStationGroup([null], 1), { ok: true, type: 'same-station', allBlock: false }, '一站＋一整组＝2 个单位：默认同站（中辰路/上海金山型）');
