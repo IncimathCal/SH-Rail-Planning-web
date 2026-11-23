@@ -12,7 +12,7 @@
 //（三档透明/远期虚线/按 segStatus 拆层全删）；②分期四档循环按钮（无→既有→已批复→远期），
 // 非选中期的线半透明并隐站名；③左栏列表双击聚焦（其他线半透明隐站名、聚焦线站名常显、
 // 屏幕下方居中信息框）；④左栏按类别过滤（HIDDEN_LIST_LAYERS）＋他省线「仅显示」级
-//（不聚焦/不点选/一切调光场合恒半透明）；⑤普通站名门槛 12→11；⑥全局站名开关；
+//（一切调光场合恒半透明）；⑤普通站名门槛 12→11；⑥全局站名开关；
 // ⑦z<11 尺寸线性缩小（zoomInterp 冻结表达式）；⑧图例卡三档线样与「突出既有」开关退役。
 // 调光实现：S.dimmed＝computeDimmedSet 的线集，渲染特征带 dim 位，各层 paint 用
 // ['case',['==',['get','dim'],1], DIM_OPACITY, 1]；调光线站圈/药丸/大圈同步半透明
@@ -1180,18 +1180,14 @@
   //   cycleVeilOpacity/S.veilOpacity 两套对比开关——用户定案遮罩 70%，恒定值见
   //   FOCUS_VEIL_OPACITY，聚焦高亮不再有其他模式。）
   // 聚焦：双击列表行/双击地图线路切换（再双击同一对象退出、双击别的线切换）、Esc 退出；
-  // 「仅显示」级（他省线）不可聚焦——setFocus 入口统一拦截（列表双击/地图双击/搜索选中
-  // 都走这里）。2026-11-22 用户需求 1：进入聚焦时相机 fitBounds 跳到该线（退出聚焦
+  // 他省线与普通线路一样可聚焦（列表双击/搜索选中均经 setFocus）；其恒调光规则独立保留。
+  // 2026-11-22 用户需求 1：进入聚焦时相机 fitBounds 跳到该线（退出聚焦
   // 绝对不动相机——用户明令「再次双击不必跳回之前的视图」）。
   function setFocus(lineId) {
     // 2026-11-22 晚交互改版：入口统一归一到主线（地图点选支线线身等效聚焦主线组；
     // toggleFocus/pickEntry 原地归一由此收口，幂等——同线重复进入不动）
     const raw = lineId || null;
     const id = raw != null ? (S.lineGroups.mainOf.get(raw) || raw) : null;
-    if (id != null) {
-      const line = S.linesMap.get(id);
-      if (line && V.lineLayerRank(line) === 'displayOnly') return;
-    }
     S.focus = id;
     syncFocusRows();
     syncFocusBox();        // 先把聚焦框显示出来——focusPadding 量其 offsetHeight 才拿得到
@@ -1299,10 +1295,9 @@
     scheduleLabels();
   }
 
-  // ---------- 线路列表面板（按 layer 分组；双击聚焦；类别过滤＋「仅显示」级禁用态） ----------
+  // ---------- 线路列表面板（按 layer 分组；双击聚焦；类别过滤） ----------
   // 2026-11-22 改版：复选框与多选高亮整套删除；双击行＝聚焦该线（再双击/Esc 退出）。
-  // HIDDEN_LIST_LAYERS 类别（默认「联络线」）不出现在列表（地图照画、搜索照收）；
-  // 「仅显示」级（他省线）行加禁用态样式且双击不聚焦。类别在行上以 chip 小字展示。
+  // HIDDEN_LIST_LAYERS 类别（默认「联络线」）不出现在列表（地图照画、搜索照收）。类别在行上以 chip 小字展示。
   function buildLineList() {
     const host = $('lineList');
     host.textContent = '';
@@ -1337,14 +1332,8 @@
           chip.className = 'line-chip'; chip.textContent = line.layer;
           item.appendChild(chip);
         }
-        const displayOnly = V.lineLayerRank(line) === 'displayOnly';
-        if (displayOnly) {   // 「仅显示」级：双击不聚焦（setFocus 亦有兜底拦截），视觉弱化
-          item.classList.add('display-only');
-          item.title = '他省线（仅显示）：不参与聚焦与分期高亮';
-        } else {
-          item.title = '双击聚焦该线路（再双击同一行或按 Esc 退出）';
-          item.addEventListener('dblclick', () => toggleFocus(line.lineId));
-        }
+        item.title = '双击聚焦该线路（再双击同一行或按 Esc 退出）';
+        item.addEventListener('dblclick', () => toggleFocus(line.lineId));
         if (S.focus === line.lineId) item.classList.add('focused');
         gEl.appendChild(item);
       }
@@ -1543,20 +1532,8 @@
     input.value = '';
     input.blur();
     if (ent.type === 'line') {
-      // 搜索选中线路＝聚焦（多选高亮已删）；「仅显示」级（他省线）不聚焦不开面板，
-      // 仅飞过去看（与地图点选/列表双击的「仅显示、无交互」裁定一致）——保持自带
-      // fitBounds padding 80 定位。非「仅显示」级走 setFocus（2026-11-22 用户需求 1
-      // 起聚焦自带动态留白跳转），不再单独 fitBounds——避免双重跳转。
-      const line = S.linesMap.get(ent.id);
-      const displayOnly = !!line && V.lineLayerRank(line) === 'displayOnly';
-      if (displayOnly) {
-        const bb = S.dispBbox.get(ent.id) || (ent.ref && ent.ref.bbox);
-        if (bb) {
-          S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 80, duration: 600, maxZoom: 13 });
-        }
-      } else {
-        setFocus(ent.id);   // 2026-11-22 晚改版：原另开右上线路信息面板已删，聚焦即全部
-      }
+      // 搜索选中任何线路均按普通路径聚焦，信息由聚焦框展示。
+      setFocus(ent.id);   // 2026-11-22 晚改版：原另开右上线路信息面板已删，聚焦即全部。
     } else {
       const lb = ent.ref;
       if (!lb) return;

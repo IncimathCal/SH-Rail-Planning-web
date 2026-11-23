@@ -1153,8 +1153,8 @@
     return best;
   }
 
-  // 线路可交互层级（集中判断，勿散落 if）：'displayOnly'＝仅显示（他省线，见 DISPLAY_ONLY_LAYERS）
-  // ——列表双击不聚焦、地图点选不开面板、一切调光场合恒在半透明侧；'normal'＝可交互。
+  // 线路分类层级（集中判断）：他省线仍参与普通聚焦与点击交互；其特殊规则仅由
+  // computeDimmedSet 保留为调光场合恒半透明，不影响可见性、分类数据或其他交互行为。
   function lineLayerRank(line) {
     const layer = line && typeof line.layer === 'string' ? line.layer : '';
     return DISPLAY_ONLY_LAYERS.indexOf(layer) >= 0 ? 'displayOnly' : 'normal';
