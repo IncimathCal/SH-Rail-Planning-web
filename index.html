@@ -180,6 +180,18 @@
       border: 1px solid var(--panel-border); border-radius: 6px;
     }
     .info-actions button:hover { border-color: var(--accent); color: #fff; }
+    /* 线路信息节（lineinfo.md 用户手填介绍，2026-11-23 增）：聚焦框/站点面板尾部追加——
+       节题小字低调、字段区复用 .info-row、正文/链接从面板基调（深底浅字、强调色链接） */
+    .lineinfo { margin-top: 10px; border-top: 1px solid var(--panel-border); padding-top: 8px; }
+    .lineinfo-cap { color: var(--text-dim); font-size: 12px; letter-spacing: 1px; margin-bottom: 2px; }
+    .lineinfo-body { font-size: 13px; line-height: 1.6; word-break: break-all; margin-top: 4px; }
+    .lineinfo-body p { margin: 0 0 6px; }
+    .lineinfo-body p:last-child { margin-bottom: 0; }
+    .lineinfo-body ul { margin: 0 0 6px; padding-left: 18px; }
+    .lineinfo-body li { margin: 2px 0; }
+    .lineinfo a { color: var(--accent); }
+    .lineinfo-links { margin: 6px 0 0; padding: 0; list-style: none; }
+    .lineinfo-links li { margin: 2px 0; word-break: break-all; }
 
     /* 中央提示（加载中 / 暂无数据 / 加载失败） */
     #centerMsg {

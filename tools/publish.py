@@ -9,7 +9,8 @@
 流程：
   1. validate.py 校验 <data>（不过即中止）；
   2. flatten.py 把 <data> 经 data/calibration.json 变换为 GeoJSON → <out>/net/
-     （lines.geojson / stops.geojson / index.json＝线路显示顺序索引，随 net/ 整体产出）；
+     （lines.geojson / stops.geojson / index.json＝线路显示顺序索引，随 net/ 整体产出；
+     lineinfo.md＝用户手填线路介绍，数据目录里有则原样透传进 net/）；
   3. 白名单拷贝：index.html、src/viewer*.js、assets/vendor/（vendored MapLibre）。
 
 白名单恒定——editor.html、编辑器代码、过程文档、源资产、import/ 永不进入部署目录
@@ -63,6 +64,14 @@ def main():
     # （防未来重构改逐文件白名单时漏带）
     if not (out_dir / "net" / "index.json").is_file():
         print("错误：net/index.json 缺失（flatten 未输出线路顺序索引）", file=sys.stderr)
+        sys.exit(1)
+    # lineinfo.md（线路信息面板，用户手填介绍）由 flatten 原样透传进 net/——net/ 整体来自
+    # flatten，cp() 白名单只管仓库文件（加进去反而会落到 docs/data/ 错位）。故此处沿用
+    # index.json 的自检模式：数据目录里有该文件，docs/net/ 里就必须有（数据目录没有＝
+    # 合法的「无手填介绍」态，不检查）
+    if ((data_dir / "lineinfo.md").is_file()
+            and not (out_dir / "net" / "lineinfo.md").is_file()):
+        print("错误：net/lineinfo.md 缺失（flatten 未透传线路手填介绍）", file=sys.stderr)
         sys.exit(1)
 
     # 3. 白名单拷贝

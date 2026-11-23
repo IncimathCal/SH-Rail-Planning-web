@@ -80,6 +80,10 @@
 // linesMap/lineGroups/结构树三样入参）。结构树 S.groupTree（buildGroupTree）由视图与站点面板
 // 共用；站点面板对嵌套节点补「换乘节点／节点成员／换乘对端」行（平铺组一行不加，呈现与旧版
 // 一致）；单线导出对嵌套节点的站补节点信息。
+// 2026-11-23 增：线路信息面板（lineinfo.md 用户手填的每线组介绍）——fetch 随数据同回退
+//（net/lineinfo.md → build/net/lineinfo.md，缺失/失败＝静默无信息，不影响地图），解析在
+// VIEWER_CORE.parseLineInfo（文本全转义＋URL 白名单）；聚焦框与站点面板按所属线组追加
+// 信息节（固定字段区→正文→相关链接区，appendLineInfo），无数据的线组完全无痕。
 // 与编辑器完全独立：不加载 editor.js 的任何代码。中文标签走 HTML 叠加（架构方案 §6 备案路线）。
 
 (function (G) {
@@ -133,6 +137,7 @@
     fadeSet: new Set(),
     fadeConnPlan: [],
     connLayerIds: [],
+    lineInfo: {},                 // 线组id → { fields, bodyHtml, links }（lineinfo.md 解析结果；boot 填充，缺失＝空表＝一切线组无信息节）
   };
 
   // ---------- 通用 ----------
@@ -142,6 +147,12 @@
       return res.json();
     });
   }
+  function fetchText(url, opts) {
+    return fetch(url, opts).then((res) => {
+      if (!res.ok) throw new Error(url + ' → HTTP ' + res.status);
+      return res.text();
+    });
+  }
   // 数据目录候选（相对路径，docs/ 项目页部署不破）：'net'＝发布快照位（publish 产物），
   // 'build/net'＝本地 flatten 默认输出位。stops 缺失按零站容错（只看线网也成立）；
   // lines 在所有候选位都取不到才算加载失败。index.json（线路自定义显示序＋线组索引，编辑器
@@ -149,7 +160,8 @@
   // 旧 flatten 产物照常工作。fmt 严格校验（有校验故随 flatten 升版）：@2＝含 lineGroups
   //（主支线合并）；@1＝仅 lineOrder（旧快照，无组信息＝逐线独立显示）。三版都收 lineOrder；
   // 2026-11-23 增 @3＝另含 stationGroups（嵌套换乘组结构表，喂 buildGroupTree）。解读与判型
-  // 收在 VIEWER_CORE.parseNetIndex（单测覆盖）。
+  // 收在 VIEWER_CORE.parseNetIndex（单测覆盖）。lineinfo.md（线路手填介绍）同回退链
+  //（2026-11-23 增）：缺失＝静默无信息节。
   const NET_BASES = ['net', 'build/net'];
   async function fetchNetFiles() {
     let lastErr = null;
@@ -180,7 +192,13 @@
         stationGroups = parsed.stationGroups;
         if (parsed.problem) console.warn('提示：' + base + '/index.json ' + parsed.problem);
       } catch (e) { /* 无 index.json＝无自定义序/无线组/无换乘组结构，容错直通 */ }
-      return { linesFC, stopsFC, base, indexOrder, lineGroups, stationGroups };
+      // lineinfo.md（用户手填的每线组介绍，flatten 原样透传）：缺失/失败＝静默无信息，
+      // 不影响地图（连 console 都不打——没写信息是常态，不是异常）
+      let lineInfo = null;
+      try {
+        lineInfo = V.parseLineInfo(await fetchText(base + '/lineinfo.md', opts));
+      } catch (e) { /* 无 lineinfo.md＝一切线组无信息节 */ }
+      return { linesFC, stopsFC, base, indexOrder, lineGroups, stationGroups, lineInfo };
     }
     throw lastErr || new Error('net/lines.geojson 与 build/net/lines.geojson 均不可用');
   }
@@ -1069,6 +1087,10 @@
     infoRow(body, '分段状态', '既有 ' + sum.segCounts.existing + ' 段 · 已批复 ' + sum.segCounts.approved + ' 段 · 远期 ' + sum.segCounts.future + ' 段');
     infoRow(body, '车站数', String(sum.stopCount));
     infoRow(body, '起讫站', V.formatTerminals(sum));
+    // 线路介绍（lineinfo.md 用户手填，2026-11-23 增）：聚焦线所属线组有手填信息才追加
+    //（节内顺序＝固定字段区→正文→相关链接区），插在导出按钮之前——阅读顺序＝摘要行→
+    // 介绍→导出操作；无数据的线组完全无痕（本框与原状逐像素一致）
+    appendLineInfo(body, grp ? [grp.id] : [], () => '线路介绍');
     // 2026-11-22 晚改版：原右上线路信息面板退役，导出按钮迁到这里（.info-actions 样式
     // 全局类直接复用）；S.focus 恒主线 id（setFocus 入口归一），导出即导主线
     const bar = document.createElement('div');
@@ -1198,6 +1220,82 @@
       if (rel.partners) infoRow(body, '换乘对端', rel.partners);
     }
     infoRow(body, pin.kind === 'group' ? '组 ID' : '站 ID', pin.kind === 'group' ? pin.groupId : pin.key);
+    // 线路介绍（lineinfo.md 用户手填，2026-11-23 增）：该站所属线组有手填信息才追加，
+    // 每组一节（节题＝线组名，与「所属线路」行同源），节内顺序＝固定字段区→正文→相关
+    // 链接区；无数据的线组完全无痕（行序＝pin.lineIds 即成员线序，去重）
+    const pinGroups = [];
+    const seenG = new Set();
+    for (const lid of pin.lineIds || []) {
+      const g = S.lineGroups.ofLine.get(lid);
+      if (g && !seenG.has(g.id)) { seenG.add(g.id); pinGroups.push(g); }
+    }
+    appendLineInfo(body, pinGroups.map((g) => g.id),
+      (gid) => (pinGroups.find((g) => g.id === gid) || {}).name || gid);
+  }
+
+  // ---------- 线路信息节（lineinfo.md 用户手填介绍；2026-11-23 增） ----------
+  // appendLineInfo(host, groupIds, captionOf)：按线组 id 序在面板尾部追加信息节——节题
+  //（captionOf(gid) 给出，返回空串则不出节题行）→ 固定字段区（键值对，复用 .info-row
+  // 低调样式）→ 正文（parseLineInfo 预渲染的受控 HTML，见 core 侧安全注）→ 相关链接区。
+  // 没有 lineinfo 数据的线组完全无痕（不建节点不占位）。字段与链接文本一律 textContent
+  //（解析结果里的原文），只有 bodyHtml 走 innerHTML（解析侧已全量转义＋白名单标签）。
+  function appendLineInfo(host, groupIds, captionOf) {
+    const seen = new Set();
+    for (const raw of Array.isArray(groupIds) ? groupIds : []) {
+      const gid = raw != null ? String(raw) : '';
+      if (!gid || seen.has(gid)) continue;
+      seen.add(gid);
+      const info = S.lineInfo ? S.lineInfo[gid] : null;
+      if (!info) continue;
+      const fields = Array.isArray(info.fields) ? info.fields : [];
+      const links = Array.isArray(info.links) ? info.links : [];
+      const bodyHtml = typeof info.bodyHtml === 'string' ? info.bodyHtml : '';
+      if (!fields.length && !links.length && !bodyHtml) continue;
+      const sec = document.createElement('div');
+      sec.className = 'lineinfo';
+      const cap = captionOf ? captionOf(gid) : '';
+      if (cap) {
+        const capEl = document.createElement('div');
+        capEl.className = 'lineinfo-cap';
+        capEl.textContent = cap;
+        sec.appendChild(capEl);
+      }
+      for (const fv of fields) {
+        if (!Array.isArray(fv)) continue;
+        infoRow(sec, String(fv[0] == null ? '' : fv[0]), String(fv[1] == null ? '' : fv[1]));
+      }
+      if (bodyHtml) {
+        const b = document.createElement('div');
+        b.className = 'lineinfo-body';
+        b.innerHTML = bodyHtml;   // 解析侧已转义＋白名单标签（VIEWER_CORE.parseLineInfo 安全注）
+        sec.appendChild(b);
+      }
+      if (links.length) {
+        const ul = document.createElement('ul');
+        ul.className = 'lineinfo-links';
+        for (const lk of links) {
+          if (!lk || !safeHref(lk.url)) continue;
+          const li = document.createElement('li');
+          const a = document.createElement('a');
+          a.textContent = typeof lk.text === 'string' && lk.text ? lk.text : lk.url;
+          a.href = lk.url;   // 解析侧 safeLinkUrl 已限 http/https/相对路径
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          li.appendChild(a);
+          ul.appendChild(li);
+        }
+        if (ul.children.length) sec.appendChild(ul);
+      }
+      host.appendChild(sec);
+    }
+  }
+  // 链接区渲染前的最后一道闸（与 core 侧 safeLinkUrl 同规则——纵深防御，改一处必同步另一处）
+  function safeHref(url) {
+    const u = String(url == null ? '' : url).trim();
+    if (!u) return false;
+    if (/^https?:\/\//i.test(u)) return true;
+    const cut = u.search(/[/?#]/);
+    return (cut < 0 ? u : u.slice(0, cut)).indexOf(':') < 0;
   }
   function exportLine(lineId, kind) {
     const line = S.linesMap.get(lineId);
@@ -1437,6 +1535,7 @@
     }
     S.linesMap = V.normalizeLines(net.linesFC);
     S.stops = V.stopList(net.stopsFC);
+    S.lineInfo = net.lineInfo || {};   // 线路手填介绍（线组id → 信息；缺失＝空表＝全部无信息节）
     S.lineOrder = net.indexOrder || null;   // 线路列表自定义显示序（无则组内 id 升序）
     // 主支线线组归并（2026-11-22 用户裁定）：net/index.json lineGroups × line.groupId
     // 双向并集；无组信息（旧快照 @1）＝空结构，一切逐线独立＝旧行为
