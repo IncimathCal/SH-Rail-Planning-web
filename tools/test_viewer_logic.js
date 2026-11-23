@@ -31,6 +31,8 @@
 // 对干净夹具的输出快照逐字段冻结；防御＝未知子组 id、无站组、成环、自指、多父、表外组、脏条目）。
 // 2026-11-23 增：预控通道虚线分类（lineDashed/DASHED_LAYERS——meta.layer 判别，渲染层
 // 据此分虚实两层；viewer.js 侧 paint 参数不在纯逻辑层，不在此测）。
+// 2026-11-23 增：线路信息面板（parseLineInfo——lineinfo.md 手填介绍解析：多组/字段区切分/
+// 链接节/转义注入/恶意 URL 拒绝/空文件与缺组防御；safeLinkUrl 白名单）。
 // 用法：node tools/test_viewer_logic.js（纯 node，不引 jsdom/DOM/maplibre）
 
 const V = require(path_join('src', 'viewer_core.js'));
@@ -1407,6 +1409,101 @@ eq(V.groupRelations('g9004', false, treeNx, null, null),
   ok(!V.buildLineKML('l0034', lmNx, stNx).includes('换乘节点'), '导出 KML：不传 tree＝旧版输出');
   eq(V.buildLineGeoJSON('nope', lmNx, stNx, treeNx), null, '导出：未知线路照旧 null');
 }
+
+// ---------- parseLineInfo（lineinfo.md 线路手填介绍，2026-11-23） ----------
+console.log('parseLineInfo:');
+// 空文件/非字符串 → 空表（查看器一切线组无信息节，不报错）
+eq(V.parseLineInfo(''), {}, '空文件 → 空表');
+eq(V.parseLineInfo(null), {}, 'null → 空表');
+eq(V.parseLineInfo(42), {}, '非字符串 → 空表');
+eq(V.parseLineInfo('首个标题之前的散行不绑定任何组\n\n随便写'), {}, '标题前散行忽略');
+// 多组＋字段区＋正文＋相关链接节（手造 fixture）
+const liMd = [
+  '## lg01 1号线',
+  '起讫点: A — B',
+  '编组: 6A',
+  '全角冒号：也收',
+  '',
+  '这是 **正文第一段**，含链接 [官网](https://example.com/a?x=1&y=2)。',
+  '段内第二行',
+  '',
+  '- 项目一',
+  '- 项目二 *斜体*',
+  '',
+  '### 相关链接',
+  '[线路图](https://example.com/map)',
+  '[相对路径](docs/intro.html)',
+  '',
+  '## lg02 2号线',
+  '仅字段: 无正文',
+  '',
+].join('\n');
+const li = V.parseLineInfo(liMd);
+eq(Object.keys(li), ['lg01', 'lg02'], '多组按标题序');
+eq(li.lg01.fields, [['起讫点', 'A — B'], ['编组', '6A'], ['全角冒号', '也收']], '字段区按原序、半/全角冒号均可');
+ok(li.lg01.bodyHtml.indexOf('<strong>正文第一段</strong>') >= 0, '粗体 **x** → <strong>');
+ok(li.lg01.bodyHtml.indexOf('<em>斜体</em>') >= 0, '斜体 *x* → <em>');
+ok(li.lg01.bodyHtml.indexOf('<a href="https://example.com/a?x=1&amp;y=2" target="_blank" rel="noopener noreferrer">官网</a>') >= 0,
+  '链接 href 经转义（&→&amp;）＋新窗安全属性');
+ok(li.lg01.bodyHtml.indexOf('<br>') >= 0, '段内换行 → <br>');
+ok(li.lg01.bodyHtml.indexOf('<ul><li>项目一</li><li>项目二 <em>斜体</em></li></ul>') >= 0, '无序列表（- 开头连续行）');
+eq(li.lg01.links, [{ text: '线路图', url: 'https://example.com/map' }, { text: '相对路径', url: 'docs/intro.html' }],
+  '相关链接节逐行收 md 链接');
+eq(li.lg02.fields, [['仅字段', '无正文']], '缺字段行不炸');
+eq(li.lg02.bodyHtml, '', '无正文 → 空 bodyHtml');
+eq(li.lg02.links, [], '无链接节 → 空 links');
+// 只有标题、什么都没写 → 表中省去（＝查看器无痕）
+eq(V.parseLineInfo('## g0 空组\n').g0, undefined, '空组（只有标题）从表中省去');
+// 没写的线组：表中无该键（lg03 未写 → undefined，查看器不显示信息节）
+ok(!('lg03' in li), '没写的线组无键');
+// 转义：script/标签注入只落成文字；正文内恶意 URL 链接退纯文字
+const liEsc = V.parseLineInfo([
+  '## gx 组',
+  '键: <script>alert(1)</script>',
+  '',
+  '正文 <img src=x onerror=alert(2)> 与 [坏](javascript:alert(3)) 与 [也坏](data:text/html,1) 结束',
+].join('\n'));
+ok(!/<(script|img|a\b|em|strong)/i.test(liEsc.gx.bodyHtml), '正文无任何未转义标签（script/img 注入失败）');
+ok(liEsc.gx.bodyHtml.indexOf('&lt;img src=x onerror=alert(2)&gt;') >= 0,
+  '注入文本转义后保留（不丢字；字段里的 <script> 存原文进 fields）');
+ok(liEsc.gx.bodyHtml.indexOf('<a ') < 0 && liEsc.gx.bodyHtml.indexOf('坏') >= 0
+  && liEsc.gx.bodyHtml.indexOf('也坏') >= 0,
+  '恶意 URL：不渲染 <a>，链接文字保留');
+eq(liEsc.gx.fields, [['键', '<script>alert(1)</script>']], 'fields 存原文（渲染侧 textContent，不预转义）');
+// safeLinkUrl 白名单：http/https/相对路径放行，其余带 scheme 一律拒
+eq(V.safeLinkUrl('https://例.example/路?一=二'), 'https://例.example/路?一=二', 'https 放行（含中文与查询串）');
+eq(V.safeLinkUrl('HTTP://X.EXAMPLE'), 'HTTP://X.EXAMPLE', 'http 大写放行（大小写不敏感）');
+eq(V.safeLinkUrl('docs/intro.html'), 'docs/intro.html', '相对路径放行');
+eq(V.safeLinkUrl('/root.html'), '/root.html', '根相对放行');
+eq(V.safeLinkUrl('//cdn.example/x'), '//cdn.example/x', '协议相对放行');
+eq(V.safeLinkUrl('#sec'), '#sec', '纯锚点放行');
+eq(V.safeLinkUrl('javascript:alert(1)'), null, 'javascript: 拒绝');
+eq(V.safeLinkUrl(' data:text/html,<b>x</b> '), null, 'data: 拒绝（含首尾空白）');
+eq(V.safeLinkUrl('vbscript:x'), null, 'vbscript: 拒绝');
+eq(V.safeLinkUrl('mailto:a@b.c'), null, 'mailto: 拒绝');
+eq(V.safeLinkUrl(''), null, '空串拒绝');
+// 相关链接节：恶意 URL 与非链接行整行剔除；未知三级节按正文处理（不吞后续链接节）
+const liSec = V.parseLineInfo([
+  '## gs 组',
+  '',
+  '正文一',
+  '',
+  '### 运营时间（未来扩展位）',
+  '### 相关链接',
+  '[坏](javascript:alert(1))',
+  '非链接行',
+  '[好](https://ok.example)',
+].join('\n'));
+ok(liSec.gs.bodyHtml.indexOf('运营时间') >= 0 && liSec.gs.bodyHtml.indexOf('<h') < 0,
+  '未知三级节按正文处理（标题行当正文文字）');
+eq(liSec.gs.links, [{ text: '好', url: 'https://ok.example' }], '链接节：坏 URL/非链接行剔除、好链接保留');
+// 字段区不成形的行按正文收（不丢字）
+const liMix = V.parseLineInfo('## gm 组\n键: 值\n不成形的一行\n\n正文\n');
+eq(liMix.gm.fields, [['键', '值']], '字段区成形行照收');
+ok(liMix.gm.bodyHtml.indexOf('不成形的一行') >= 0, '字段区不成形行落正文（不丢字）');
+// 同 id 多节：后者覆盖（重写时以新为准）
+const liDup = V.parseLineInfo('## d1 A\nk: 1\n\n## d1 B\nk: 2\n');
+eq(liDup.d1.fields, [['k', '2']], '同 id 多节后者覆盖');
 
 console.log(fails ? `\nFAIL - ${fails} assertion(s)` : '\nPASS - viewer logic OK');
 process.exit(fails ? 1 : 0);

@@ -70,6 +70,11 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
                         stops.geojson 的 groupId/groupType 仍只带直属组，
                         节点归属由消费端据本表自最外层组还原。消费端同步收
                         @1（旧快照）/@2/@3。
+  <out>/lineinfo.md    线路信息面板（2026-11-23）：数据目录下用户手填的每线组
+                        介绍（格式约定与模板见 data/lineinfo.md）**原样透传**
+                        （字节级拷贝；不解析、不进 GeoJSON——解析在查看器侧
+                        VIEWER_CORE.parseLineInfo）。数据目录无此文件则不产出
+                        （查看器静默无信息节）。
 
 复用（绝不重推导）：
   - tools/svg_parse.py  path_from_d（= parse_path + flatten + ArcPath）：
@@ -527,6 +532,15 @@ def main():
         encoding="utf-8")
     sz3 = (out / "index.json").stat().st_size
 
+    # lineinfo.md（线路信息面板，用户手填的每线组介绍，2026-11-23）：数据目录下有则
+    # 原样透传进输出目录（字节级拷贝，不解析、不进 GeoJSON——解析在查看器侧
+    # VIEWER_CORE.parseLineInfo）；数据目录无此文件则跳过（查看器静默无信息节）
+    li_src = Path(args.data) / "lineinfo.md"
+    li_size = None
+    if li_src.is_file():
+        (out / "lineinfo.md").write_bytes(li_src.read_bytes())
+        li_size = (out / "lineinfo.md").stat().st_size
+
     # 汇总（含有限性抽检：任一坐标非有限数即报错；兼容 LineString/Point 两层结构）
     n_pts = sum(len(f["geometry"]["coordinates"]) for f in line_feats)
     for f in line_feats + stop_feats:
@@ -543,6 +557,10 @@ def main():
           + f"lineGroups {len(index_line_groups)} 组（其中含 main {sum(1 for g in index_line_groups if g['mainId'])} 组）"
           + f"、stationGroups {len(station_groups)} 组"
           + (f"，自定义序前 {len(set(manifest_order or []))} 列" if manifest_order else "，无自定义顺序") + "）")
+    if li_size is not None:
+        print(f"written: {out / 'lineinfo.md'}（{li_size} B，线路手填介绍原样透传）")
+    else:
+        print("提示：数据目录下没有 lineinfo.md（线路手填介绍），查看器一切线组无信息节")
     return 0
 
 

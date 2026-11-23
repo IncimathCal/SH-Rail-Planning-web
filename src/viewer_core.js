@@ -45,6 +45,9 @@
 // 成员递归取全部叶站；药丸线数改按逻辑线计（logicalLineCount：联络线不计、同一线组算一条，一切
 // 同站单元适用）；groupRelations 嵌套关系描述（信息面板用；平铺组返回 null＝面板呈现不变）；
 // 单线导出可选补嵌套节点信息。平铺数据下 pins/pills/labels 与旧版逐项一致（单测＋真数据对拍）。
+// 2026-11-23 增：线路信息面板（parseLineInfo——lineinfo.md 用户手填的每线组介绍解析为
+// { fields, bodyHtml, links }；轻量 md→HTML 白名单标签、一切文本先转义再标记替换、
+// 链接 URL 只放行 http/https/相对路径，见该节注）。
 
 (function (G) {
   'use strict';
@@ -1315,6 +1318,132 @@
     return stopDisplayName(a) + ' — ' + stopDisplayName(b);
   }
 
+  // ---------- 线路信息面板（2026-11-23 增：lineinfo.md 用户手填介绍） ----------
+  // 数据链：数据目录的 lineinfo.md（用户手填）→ flatten 原样透传进 net/ → 查看器按
+  // lines.geojson 同款 net/ → build/net 回退拉取并解析。本函数只做解析：
+  // parseLineInfo(md) → { [线组id]: { fields:[[键,值]…]（原序）, bodyHtml, links:[{text,url}] } }。
+  // md 约定（格式模板见 data/lineinfo.md）：
+  //   ## <线组id> <线组名>      二级标题绑定线组（id＝首个空白前 token，以 groups.json 的
+  //                            lineGroups.id 为准；标题名不参与绑定，同 id 多节后者覆盖）
+  //   标题行到第一个空行        形如「键: 值」的行＝固定显示项（半/全角冒号均可；键名开放
+  //                            集合——解析器不做白名单，任意键照收照显，用户加新键零代码
+  //                            改动；不成形的行按正文收，不丢字）
+  //   空行后到下一个标题        自由正文，轻量 md：段落（空行分段、段内换行→<br>）／
+  //                            无序列表（- 或 * 开头行）／粗体 **x**／斜体 *x*／
+  //                            链接 [文字](url)
+  //   ### 相关链接              链接列表区：该节下每行一个 md 链接；其余三级节名＝未来
+  //                            扩展位，按正文处理
+  // 没写信息的线组＝结果表无该键（查看器不显示信息节，不报错）；空文件/非字符串 → {}；
+  // 只有标题、什么都没写的组同样从表中省去。
+  // 安全（硬要求）：一切用户文本先 HTML 转义（xmlEscape）再做标记替换，产物只含受控
+  // 白名单标签（a/strong/em/p/ul/li/br）——<script>/<img onerror> 等注入只落成转义后的
+  // 文字；链接 URL 只放行 http/https 与相对路径（safeLinkUrl），被拒时正文内链接退纯
+  // 文字（内容不丢）、相关链接区整行剔除。
+  const LINK_MARKDOWN_RE = /\[([^\]]+)\]\(([^)]*)\)/g;
+  // 链接 URL 白名单：http(s):// 放行（大小写不敏感）；无 scheme 的相对路径放行（含协议
+  // 相对 //、根相对 /x、普通相对与纯锚 #x）——判定＝首个「:」不得出现在「/?#」之前，
+  // javascript:/data:/vbscript: 等一切带 scheme 的其他形态一律拒绝；空串/非法 → null。
+  function safeLinkUrl(url) {
+    const u = String(url == null ? '' : url).trim();
+    if (!u) return null;
+    if (/^https?:\/\//i.test(u)) return u;
+    const cut = u.search(/[/?#]/);
+    if ((cut < 0 ? u : u.slice(0, cut)).indexOf(':') >= 0) return null;
+    return u;
+  }
+  // 行内标记（粗体/斜体）：输入先转义再做替换——标记替换发生在转义后的纯文本上，
+  // 产物不可能带未转义的标签（**x** → <strong>、*x* → <em>）
+  function markupHtml(raw) {
+    return xmlEscape(raw)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  }
+  // 行内渲染（链接＋粗体/斜体）：链接按结构切出（URL 校验在原始串上做），链接文本走
+  // markupHtml（不支持嵌套链接），非链接片段同样 markupHtml；URL 被拒 → 该链接退纯文字
+  function inlineHtml(raw) {
+    const s = String(raw == null ? '' : raw);
+    let out = '', last = 0, m;
+    LINK_MARKDOWN_RE.lastIndex = 0;
+    while ((m = LINK_MARKDOWN_RE.exec(s)) !== null) {
+      out += markupHtml(s.slice(last, m.index));
+      const url = safeLinkUrl(m[2]);
+      if (url) {
+        out += '<a href="' + xmlEscape(url) + '" target="_blank" rel="noopener noreferrer">'
+          + markupHtml(m[1]) + '</a>';
+      } else out += markupHtml(m[1]);
+      last = m.index + m[0].length;
+    }
+    return out + markupHtml(s.slice(last));
+  }
+  // 正文块级渲染：段落（空行分段、段内逐行 inlineHtml 后以 <br> 连接）＋无序列表
+  //（-/* 开头的连续行合成一个 <ul>）；段落与列表互斥，互相切入时先收前一块
+  function bodyHtmlOf(lines) {
+    const out = [];
+    let para = null, list = null;
+    const flush = () => {
+      if (para) { out.push('<p>' + para.map(inlineHtml).join('<br>') + '</p>'); para = null; }
+      if (list) { out.push('<ul>' + list.map((t) => '<li>' + inlineHtml(t) + '</li>').join('') + '</ul>'); list = null; }
+    };
+    for (const raw of Array.isArray(lines) ? lines : []) {
+      const line = String(raw).replace(/[ \t]+$/, '');
+      const li = line.match(/^\s*[-*][ \t]+(.*)$/);
+      if (li) { if (para) flush(); if (!list) list = []; list.push(li[1]); continue; }
+      if (!line.trim()) { flush(); continue; }
+      if (list) flush();
+      if (!para) para = [];
+      para.push(line);
+    }
+    flush();
+    return out.join('');
+  }
+  // 主解析：逐行状态机（head＝字段区 / body＝正文 / links＝相关链接节），见节首约定注
+  function parseLineInfo(md) {
+    const out = {};
+    if (typeof md !== 'string') return out;
+    const lines = md.replace(/\r\n?/g, '\n').split('\n');
+    let cur = null;   // { id, fields, body, links, stage }
+    const closeCur = () => {
+      if (!cur) return;
+      const bodyHtml = bodyHtmlOf(cur.body);
+      if (cur.fields.length || bodyHtml || cur.links.length) {
+        out[cur.id] = { fields: cur.fields, bodyHtml, links: cur.links };
+      }
+      cur = null;
+    };
+    for (const raw of lines) {
+      const line = raw.replace(/\s+$/, '');
+      let m = line.match(/^##(?!#)[ \t]*(.*)$/);
+      if (m) {                                  // 二级标题＝新线组（无 id 的坏标题整节丢弃）
+        closeCur();
+        const id = m[1].trim().split(/\s+/)[0] || '';
+        if (id) cur = { id, fields: [], body: [], links: [], stage: 'head' };
+        continue;
+      }
+      if (!cur) continue;                       // 首个标题之前的散行（文件头说明等）忽略
+      m = line.match(/^###[ \t]*(.*)$/);
+      if (m) {                                  // 三级节：「相关链接」＝链接区，其余按正文
+        cur.stage = m[1].trim() === '相关链接' ? 'links' : 'body';
+        if (cur.stage === 'body') cur.body.push(line);
+        continue;
+      }
+      if (cur.stage === 'links') {
+        if (!line.trim()) continue;             // 空行＝分隔，链接节到下一标题为止
+        const lk = line.trim().match(/^\[([^\]]+)\]\(([^)]*)\)$/);
+        if (lk) {
+          const url = safeLinkUrl(lk[2]);
+          if (url) cur.links.push({ text: lk[1], url });
+        }
+        continue;                               // 非链接行／坏 URL 行剔除（链接区不留纯文字）
+      }
+      if (!line.trim()) { cur.stage = 'body'; continue; }     // 第一个空行＝字段区结束
+      const fv = line.match(/^([^:：]+)[ \t]*[:：][ \t]*(.*)$/);
+      if (fv && cur.stage === 'head') cur.fields.push([fv[1].trim(), fv[2].trim()]);
+      else cur.body.push(line);                 // 字段区不成形的行按正文收（不丢字）
+    }
+    closeCur();
+    return out;
+  }
+
   // ---------- 单线导出 ----------
   // 嵌套节点补注（2026-11-23）：导出函数的 tree 入参可选——传入且该站所属组处在嵌套节点
   //（有上级，或有带输出站点的子组）时，GeoJSON 站属性补 nodeGroupId/nodeGroupType（最外层组
@@ -1409,6 +1538,7 @@
     pointToScreenPolylineDist,
     buildLineGroups, lineSearchEntries, lineLabelOf, linesOfPin,
     matchEntries, filterLabels, visibleLabels,
+    parseLineInfo, safeLinkUrl,
     buildLineGeoJSON, buildLineKML,
     outOfChina, wgs84ToGcj02, makeDispCoord,
   };
