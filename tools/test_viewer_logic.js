@@ -254,6 +254,22 @@ eq(scaleLabels.length, 1080, '规模样本：1080 个普通站标签单元（＞
 eq(V.visibleLabels(scaleLabels, 10.99, {}).length, 0, '规模样本 z10.99：门槛下无标签（组站统一 11）');
 eq(V.visibleLabels(scaleLabels, 11, {}).length, 1080, '规模样本 z11：1080 个普通站名全部显示（旧 LABEL_CAP 下为 0）');
 eq(V.visibleLabels(scaleLabels, 11, { dimmedSet: new Set(['l3']) }).length, 1062, '规模样本 z11 调光一条线：仅该线 18 站隐去');
+const statusStops = V.stopList(fc(
+  { type: 'Feature', geometry: { type: 'Point', coordinates: [121, 31] }, properties: { sid: 'sf', name: '龙居路', lineId: 'l14', lineName: '14号线', t: 0.2, stopStatus: 'future' } },
+  { type: 'Feature', geometry: { type: 'Point', coordinates: [121.1, 31.1] }, properties: { sid: 'sn', name: '普通站', lineId: 'lOther', lineName: '其他线', t: 0.4 } },
+));
+eq(statusStops[0].stopStatus, 'future', 'stopStatus 合法值从 stops.geojson 读入');
+ok(!Object.prototype.hasOwnProperty.call(statusStops[1], 'stopStatus'), '无 stopStatus 时不添加键以兼容旧结构');
+const statusLabels = V.buildStopView(statusStops).labels;
+eq(V.visibleLabels(statusLabels, 11, { phase: 'existing' }).map((l) => l.key), ['sn'], '站点分期覆盖：future 站名在既有档隐藏，未标注站名沿用线路期次行为');
+eq(V.visibleLabels(statusLabels, 11, { phase: 'future', dimmedSet: new Set(['lOther']) }).map((l) => l.key), ['sf'], '站点分期覆盖：future 站名在远期档显示，非匹配线路按旧行为隐藏');
+eq(V.visibleLabels(statusLabels, 11, { phase: 'existing', focus: 'l14' }).map((l) => l.key), ['sf'], '聚焦站名常显优先于站点分期覆盖');
+eq(V.visibleLabels(statusLabels, 11, { phase: 'existing', hiddenLineIds: ['l14', 'lOther'] }).length, 0, '分期态他省线路站名可通过 hiddenLineIds 隐藏');
+eq(V.stopUnitMatchesPhase([{ lineId: 'lA', status: 'future' }, { lineId: 'lB' }], 'future', new Set(['lB'])), true, '混合覆盖组：任一覆盖匹配成员即可正常显示');
+eq(V.stopUnitMatchesPhase([{ lineId: 'lA' }, { lineId: 'lB' }], 'future', new Set(['lA'])), true, '未覆盖组成员按 lineId 回退 dimSet，任一未调光则正常');
+eq(V.stopUnitMatchesPhase([{ lineId: 'lA' }, { lineId: 'lB' }], 'future', new Set(['lA', 'lB'])), false, '未覆盖组成员全部调光则整组调光');
+ok(!Object.prototype.hasOwnProperty.call(V.buildStopView(statusStops.slice(1)).labels[0] || {}, 'stopPhaseMembers'), '无覆盖的普通组/站标签不写 stopPhaseMembers');
+
 
 // ---------- 调光纯逻辑：linePhaseOf / lineLayerRank / computeDimmedSet / nextPhase ----------
 console.log('dim / phase:');
@@ -268,6 +284,81 @@ eq(V.linePhaseOf({ segments: [] }), null, '无段线 → null（防御）');
 eq(V.linePhaseOf(null), null, 'null 线不崩');
 eq(V.linePhaseOf({ segments: [{ segStatus: 'existing' }, { segStatus: 'approved' }] }), 'existing', 'existing＞approved');
 eq(V.linePhaseOf({ segments: [{ segStatus: 'future' }, { segStatus: 'approved' }] }), 'approved', 'approved＞future');
+// 多选分期按段状态；全选总览、部分/空集进入分期态，不存在整线期次归类。
+eq([...V.normalizePhaseSelection(['existing', 'future', 'bogus'])], ['existing', 'future'], '选择集合过滤非法值');
+eq(V.phaseSelectionActive(['existing', 'future']), true, '多选子集启用分期');
+eq(V.phaseSelectionActive([]), true, '空集启用分期');
+eq(V.phaseSelectionActive(['existing', 'approved', 'future']), false, '全选为总览');
+eq(V.phaseStatusSelected('approved', ['existing', 'approved']), true, '选中段 status 高亮');
+eq(V.phaseStatusSelected('future', ['existing', 'approved']), false, '未选段按逐段状态处理');
+const mercatorRanges = V.segmentProgressRanges([
+  { segIndex: 0, coords: [[0, 0], [1, 0]] },
+  { segIndex: 1, coords: [[1, 0], [2, 0]] },
+]);
+eq(mercatorRanges[0].start, 0, 'WebMercator 首段从 0 开始');
+eq(mercatorRanges[0].end, 0.5, '等长 WebMercator 分段边界连续');
+eq(mercatorRanges[1].start, mercatorRanges[0].end, '后段起点等于前段终点');
+const oneDegreeMercatorLat = (2 * Math.atan(Math.exp(Math.PI / 180)) - Math.PI / 2) * 180 / Math.PI;
+const equalAxisRanges = V.segmentProgressRanges([
+  { segIndex: 0, coords: [[0, 0], [1, 0]] },
+  { segIndex: 1, coords: [[1, 0], [1, oneDegreeMercatorLat]] },
+]);
+ok(Math.abs(equalAxisRanges[0].end - 0.5) < 1e-12 && Math.abs(equalAxisRanges[1].start - 0.5) < 1e-12,
+  '相同 WebMercator 横纵长度的分段各占 0.5');
+const displacedRanges = V.segmentProgressRanges([
+  { segIndex: 0, coords: [[0, 0], [1, 0]] },
+  { segIndex: 1, coords: [[1, 0], [2, 0]] },
+], [[[0, 0], [3, 0]], [[3, 0], [4, 0]]]);
+eq(displacedRanges[0].end, 0.75, '进度范围采用传入的已变换坐标');
+const phaseLine = { loop: false, segments: [{ segIndex: 0, segStatus: 'existing' }, { segIndex: 1, segStatus: 'future' }] };
+const phaseStops = [{ sid: 'a', lineId: 'l', t: 0 }, { sid: 'b', lineId: 'l', t: 0.5 }, { sid: 'c', lineId: 'l', t: 1 }];
+eq(V.stopPhaseOf(phaseLine, phaseStops[1], phaseStops), 'existing', '中间站取入站与出站段中较早期次');
+eq(V.stopPhaseOf(phaseLine, Object.assign({}, phaseStops[1], { stopIndex: 0 }), phaseStops), 'existing', '显式 stopIndex 优先于站序回退推导');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 0, segStatus: 'future' }, { segIndex: 1, segStatus: 'existing' }] }, Object.assign({}, phaseStops[1], { stopIndex: 1 }), phaseStops), 'existing', '相反站序仍取较早期次');
+eq(V.stopPhaseOf(phaseLine, phaseStops[0], phaseStops), 'existing', '首站取唯一出站段');
+eq(V.stopPhaseOf(phaseLine, phaseStops[2], phaseStops), 'future', '末站取唯一入站段');
+const loopPhaseLine = { loop: true, segments: [{ segIndex: 0, segStatus: 'future' }, { segIndex: 1, segStatus: 'approved' }, { segIndex: 2, segStatus: 'existing' }] };
+eq(V.stopPhaseOf(loopPhaseLine, { sid: 'loop-first', lineId: 'l', stopIndex: 0 }, phaseStops), 'existing', '环线首站比较首段与末段');
+eq(V.stopPhaseOf({ loop: true, segments: [{ segIndex: 0, segStatus: 'future' }, { segIndex: 1, segStatus: 'approved' }, { segIndex: 2, segStatus: 'future' }] }, { sid: 'loop-last', lineId: 'l', stopIndex: 2 }, phaseStops), 'approved', '环线末站比较入站与绕回段');
+eq(V.stopPhaseOf(phaseLine, Object.assign({}, phaseStops[1], { stopIndex: 1, stopStatus: 'future' }), phaseStops), 'future', '显式 future 覆盖较早既有段');
+const blockGapLine = { loop: false, segments: [{ segIndex: 1, segStatus: 'approved' }, { segIndex: 2, segStatus: 'future' }] };
+eq(V.stopPhaseOf(blockGapLine, { sid: 'after-block', lineId: 'l', stopIndex: 2 }, phaseStops), 'approved', 'block 索引空位不压缩原始区段索引');
+eq(V.stopPhaseOf({ loop: false, segments: phaseLine.segments }, { sid: 'missing-status', lineId: 'l', stopIndex: 1 }, phaseStops), 'existing', '无 stopStatus 时仍按有效相邻段兼容推导');
+eq(V.stopPhaseOf(phaseLine, { sid: 'hidden-block-gap', lineId: 'l' }, [{ sid: 'a', lineId: 'l', t: 0 }, { sid: 'c', lineId: 'l', t: 1 }]), null, '旧 net 缺 stopIndex 且段数不符时防止错误映射');
+eq(V.stopPhaseOf(phaseLine, { sid: 'explicit', lineId: 'l', stopStatus: 'approved' }, []), 'approved', '合法显式状态不依赖区段数据');
+eq(V.stopPhaseOf(phaseLine, { sid: 'invalid', lineId: 'l', stopStatus: 'invalid', stopIndex: 99 }, phaseStops), null, '越界站序且无相邻段返回 null');
+// 真实回归形状：5号线奉贤新城、29号线国家会展中心的入站期次早于出站期次。
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 13, segStatus: 'existing' }, { segIndex: 14, segStatus: 'future' }] }, { sid: 'fengxian', lineId: 'l0019', stopIndex: 14 }, []), 'existing', '5号线奉贤新城：入站既有、出站远期');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 10, segStatus: 'approved' }, { segIndex: 11, segStatus: 'future' }] }, { sid: 'national-exhibition', lineId: 'l0044', stopIndex: 11 }, []), 'approved', '29号线国家会展中心：入站近期、出站远期');
+eq(V.stopPhaseOf(Object.assign({}, phaseLine, { segments: [] }), { sid: 'empty', lineId: 'l', stopIndex: 0 }, []), null, '缺少区段时防御性返回 null');
+eq(V.stopPhaseOf(null, { sid: 'no-line', lineId: 'l', stopIndex: 0 }, []), null, '缺少线路时防御性返回 null');
+eq(V.stopPhaseOf(phaseLine, null, phaseStops), null, '缺少站点时防御性返回 null');
+eq(V.stopPhaseOf(phaseLine, { sid: 'b', lineId: 'l', t: 0.5 }, phaseStops), 'existing', '旧 net 缺 stopIndex 仍按站序兼容');
+eq(V.stopPhaseOf(phaseLine, Object.assign({}, phaseStops[1], { stopIndex: 1, stopStatus: 'future' }), phaseStops), 'future', '站 stopStatus 合法枚举优先');
+eq(V.stopPhaseOf(phaseLine, Object.assign({}, phaseStops[1], { stopIndex: 1, stopStatus: 'unknown' }), phaseStops), 'existing', '非法显式状态回退相邻区段');
+eq(V.stopPhaseOf(phaseLine, { sid: 'non-integer', lineId: 'l', stopIndex: 1.5 }, phaseStops), null, '非整数 stopIndex 走旧兼容且无法定位时防御返回 null');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 0, segStatus: 'future' }] }, { sid: 'last', lineId: 'l', stopIndex: 1 }, phaseStops), 'future', '单相邻末站保留唯一入站段');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 0, segStatus: 'existing' }, { segIndex: 1, segStatus: 'approved' }] }, { sid: 'middle', lineId: 'l', stopIndex: 1 }, phaseStops), 'existing', 'existing 优先于 approved');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 0, segStatus: 'approved' }, { segIndex: 1, segStatus: 'future' }] }, { sid: 'middle', lineId: 'l', stopIndex: 1 }, phaseStops), 'approved', 'approved 优先于 future');
+eq(V.stopPhaseOf({ loop: true, segments: [{ segIndex: 0, segStatus: 'existing' }] }, { sid: 'loop-single', lineId: 'l', stopIndex: 0 }, phaseStops), 'existing', '单段环线的首末相邻均有防御处理');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 4, segStatus: 'future' }] }, { sid: 'gap', lineId: 'l', stopIndex: 0 }, phaseStops), null, '缺失相邻 segIndex 不推断为其它区段');
+eq(V.stopPhaseOf(phaseLine, { sid: 'duplicate-id', lineId: 'other', stopIndex: 1 }, phaseStops), 'existing', '带原始 stopIndex 的站不依赖当前 stop 列表');
+eq(V.stopPhaseOf(phaseLine, { sid: 'legacy-missing-line', t: 0 }, []), null, '旧 net 缺 lineId 时安全返回 null');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 0, segStatus: 'unexpected' }] }, { sid: 'bad-status', lineId: 'l', stopIndex: 0 }, phaseStops), 'unexpected', '异常段状态保留防御兼容而不引发异常');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 0, segStatus: 'future' }, { segIndex: 1, segStatus: 'existing' }] }, { sid: 'non-array-stops', lineId: 'l', t: 0.5 }, null), null, '旧 net 无可用站序表时返回 null');
+eq(V.stopPhaseOf(phaseLine, { sid: 'b', lineId: 'l', t: 0.5 }, phaseStops), 'existing', '旧 net 按原始站序取相邻较早期次');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 0, segStatus: 'existing' }, { segIndex: 1, segStatus: 'future' }] }, { sid: 'bad-id', lineId: 'l', t: 0.5 }, [{ sid: 'different', lineId: 'l', t: 0.5 }]), null, '旧 net 找不到站点时返回 null');
+eq(V.stopPhaseOf(phaseLine, { sid: 'b', lineId: 'l', stopIndex: -1, t: 0.5 }, phaseStops), 'existing', '负 stopIndex 依旧回退旧站序兼容');
+eq(V.stopPhaseOf(phaseLine, { sid: 'b', lineId: 'l', stopIndex: null, t: 0.5 }, phaseStops), 'existing', 'null stopIndex 依旧回退旧站序兼容');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 0, segStatus: 'existing' }, { segIndex: 1, segStatus: 'future' }] }, { sid: 'index-zero', lineId: 'l', stopIndex: 0 }, phaseStops), 'existing', '边界首站索引正确');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 0, segStatus: 'existing' }, { segIndex: 1, segStatus: 'future' }] }, { sid: 'index-one', lineId: 'l', stopIndex: 1 }, phaseStops), 'existing', '中间站索引按两侧段判定');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 0, segStatus: 'existing' }, { segIndex: 1, segStatus: 'future' }] }, { sid: 'index-two', lineId: 'l', stopIndex: 2 }, phaseStops), 'future', '末站索引正确');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 0, segStatus: 'approved' }, { segIndex: 1, segStatus: 'future' }] }, { sid: 'approved-future', lineId: 'l', stopIndex: 1 }, phaseStops), 'approved', '较早分期排序包含 approved');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 0, segStatus: 'future' }, { segIndex: 1, segStatus: 'approved' }] }, { sid: 'future-approved', lineId: 'l', stopIndex: 1 }, phaseStops), 'approved', '站序反转也按期次而非入出方向排序');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 0, segStatus: 'approved' }] }, { sid: 'single', lineId: 'l', stopIndex: 1 }, phaseStops), 'approved', '仅有入站段时采用唯一有效相邻段');
+eq(V.stopPhaseOf({ loop: false, segments: [{ segIndex: 1, segStatus: 'future' }] }, { sid: 'single-out', lineId: 'l', stopIndex: 1 }, phaseStops), 'future', '仅有出站段时采用唯一有效相邻段');
+eq(V.stopPhaseOf({ loop: true, segments: [{ segIndex: 0, segStatus: 'future' }, { segIndex: 1, segStatus: 'existing' }] }, { sid: 'loop-start', lineId: 'l', stopIndex: 0 }, phaseStops), 'existing', '环线首站入站取最后环绕段');
+eq(V.stopPhaseOf({ loop: true, segments: [{ segIndex: 0, segStatus: 'existing' }, { segIndex: 1, segStatus: 'future' }] }, { sid: 'loop-end', lineId: 'l', stopIndex: 1 }, phaseStops), 'existing', '环线末站出站取最后环绕段');
 // 分期四档循环
 eq(V.nextPhase('none'), 'existing', '循环 无→既有');
 eq(V.nextPhase('existing'), 'approved', '既有→已批复');

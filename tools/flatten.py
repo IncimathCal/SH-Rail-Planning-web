@@ -353,7 +353,7 @@ def flatten_line(line, ap, tps, group_color, stop_group, conn_target_index=None)
         return (best or {}).get("color") or "#555555"
 
     stop_feats = []
-    for st in stops:
+    for stop_index, st in enumerate(stops):
         if st.get("kind") == "block":
             continue
         geo = st.get("geo")
@@ -364,6 +364,7 @@ def flatten_line(line, ap, tps, group_color, stop_group, conn_target_index=None)
         gid, gtype = stop_group.get(st["id"], (None, None))
         props = {
             "sid": st["id"],
+            "stopIndex": stop_index,
             "name": st.get("name") or "",
             "lineId": lid,
             "lineName": line.get("name") or "",
@@ -374,6 +375,9 @@ def flatten_line(line, ap, tps, group_color, stop_group, conn_target_index=None)
         # 出省箭头（v1.5，非真正站点）：仅 arrow 写 kind 键，普通站无该键
         if st.get("kind") == "arrow":
             props["kind"] = "arrow"
+        # 站点级显式分期覆盖（缺省不写，消费端可继续沿用邻接区段语义）。
+        if st.get("status") in ("existing", "approved", "future"):
+            props["stopStatus"] = st["status"]
         # 联络线站圈描边＝最近端目标线色（仅 connector 线的站携带，见上注）
         if is_conn:
             props["stroke"] = conn_stop_stroke(st["t"])

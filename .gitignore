@@ -13,6 +13,16 @@
 /标定试验-*.md
 /源资产分析-*.md
 
+# 用户留档的报告与流程图（2026-11-25 裁定：仅本地）
+/线路数据建模报告.md
+/线路数据建模报告.pdf
+/项目流程图.md
+/项目组织架构图.md
+
+# 本地会话与 Claude Code 运行文件（worktree、会话导出等，绝不入库）
+/claude-sessions/
+/.claude/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -782,6 +782,29 @@ let sf4 = mkSecLine(false, ['existing', 'future']);   // ≥2 站、status=null
 L.migrateLineToV2(sf4);
 eq(sf4.status, null, '站数≥2 status=null 不动（状态挂分段）');
 
+// ---------- 站点分期覆盖：缺省取出站段、末站取入站段，显式覆盖优先 ----------
+console.log('stop status override:');
+const stopStatusLine = mkSecLine(false, ['existing', 'future']);
+eq(L.stopStatusOf(stopStatusLine, 0), 'existing', '首站缺省跟随出站段');
+eq(L.stopStatusOf(stopStatusLine, 1), 'future', '中间站缺省跟随出站段');
+eq(L.stopStatusOf(stopStatusLine, 2), 'future', '末站缺省跟随入站段');
+stopStatusLine.stops[1].status = 'approved';
+eq(L.stopStatusOf(stopStatusLine, 1), 'approved', '站点显式覆盖优先');
+eq(L.stopStatusIssues(stopStatusLine), [], '合法站点状态无校验错误');
+stopStatusLine.stops[1].status = 'invalid';
+eq(L.stopStatusIssues(stopStatusLine).length, 1, '非法站点状态被编辑器逻辑拦截');
+L.setStopStatus(stopStatusLine.stops[1], '');
+ok(!Object.hasOwn(stopStatusLine.stops[1], 'status'), '选择跟随区段删除显式覆盖字段');
+stopStatusLine.stops[1].status = 'future';
+const ssRoundTrip = JSON.parse(JSON.stringify(stopStatusLine));
+eq(ssRoundTrip.stops[1].status, 'future', '站点覆盖序列化/恢复保真');
+const lone = mkLine(false); lone.stops = [{ id: 'l0001-s01' }]; lone.status = 'approved';
+eq(L.stopStatusOf(lone, 0), 'approved', '无分段时回退线路级状态');
+const loneFallback = { ...lone, status: null };
+eq(L.stopStatusOf(loneFallback, 0), 'future', '无区段/线路状态时回退 future');
+
+
+
 // ---------- 多线换乘药丸串法 planGroupPillChain（同站组 ≥3 线；确定性） ----------
 console.log('planGroupPillChain:');
 eq(L.planGroupPillChain([]), [], '空集返回空');
@@ -860,6 +883,7 @@ ok(!sameDraw((l) => { l.status = 'existing'; }), '线路级状态变（预控通
 ok(!sameDraw((l) => { l.meta.layer = '预控通道'; }), '类别变成预控通道');
 ok(!sameDraw((l) => { l.stops[0].t = 0.2; }), '站位置变');
 ok(!sameDraw((l) => { l.stops[0].name = '丁站'; }), '站名变（title 文本）');
+ok(!sameDraw((l) => { l.stops[0].status = 'future'; }), '站点显式分期覆盖变，触发画布重绘');
 ok(!sameDraw((l) => { delete l.stops[1].kind; }), '站类型变');
 ok(!sameDraw((l) => { l.stops[1].id = 'l0001-s09'; }), '站号变');
 ok(!sameDraw((l) => { l.stops.push({ id: 'l0001-s04', name: '', t: 0.95, geo: null }); }), '加站');

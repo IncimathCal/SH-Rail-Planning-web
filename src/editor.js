@@ -328,6 +328,7 @@
       }
     });
     for (const si of sectionIssuesOf(l)) issues.push(si);
+    for (const si of stopStatusIssues(l)) issues.push(si);
     if (l.stops.length < 2 && !l.status) issues.push('站数<2 但未设线路级 status');
     if (l.stops.length >= 2 && l.status) issues.push('站数≥2 时 status 应为 null');
     if ((l.role === 'main' || l.role === 'branch') && !l.groupId) issues.push('main/branch 必须有线组');
@@ -594,6 +595,24 @@
     }
     return out;
   }
+  /** 站点默认分期取邻接区段（非末站取出站段、末站取入站段）；可选 stop.status 覆盖。 */
+  function stopStatusOf(line, index) {
+    const st = (line.stops || [])[index];
+    if (st && SEG_ORDER.includes(st.status)) return st.status;
+    const statuses = segStatusesOf(line);
+    if (!statuses.length) return SEG_ORDER.includes(line.status) ? line.status : 'future';
+    return statuses[Math.min(index, statuses.length - 1)] || 'existing';
+  }
+  function stopStatusIssues(line) {
+    return (line.stops || []).flatMap((st) => st.status !== undefined && !SEG_ORDER.includes(st.status)
+      ? [`${st.id} status 枚举非法（${st.status}）`] : []);
+  }
+  function setStopStatus(stop, value) {
+    if (value === '') delete stop.status;
+    else if (SEG_ORDER.includes(value)) stop.status = value;
+    else return false;
+    return true;
+  }
   /** 线路「画法输入」比对键：线级字段 path/loop/color/role/status/是否预控通道＋逐站 [id,t,name,kind,
    *  所属组键]＋各站间段绘制状态。grpKeyOf：sid -> 所属换乘组的 `${id}|${type}|${h|v}`（无组可缺；
    *   id/type＝**直属**组，决定出闸黑边与提示文本；h/v＝站圈是否被绘制单元吸收隐去——嵌套组下
@@ -604,7 +623,7 @@
     const stops = line.stops || [], stopKeys = new Array(stops.length);
     for (let i = 0; i < stops.length; i++) {
       const a = stops[i];
-      stopKeys[i] = [a.id, a.t, a.name, a.kind, (grpKeyOf ? grpKeyOf.get(a.id) : '') || ''];
+      stopKeys[i] = [a.id, a.t, a.name, a.kind, a.status, (grpKeyOf ? grpKeyOf.get(a.id) : '') || ''];
     }
     return { path: line.path, loop: !!line.loop, color: line.color, role: line.role, status: line.status,
       reserved: isReservedLine(line), stopKeys, segStatus: segStatusesOf(line) };
@@ -618,7 +637,7 @@
     if (x.length !== y.length) return false;
     for (let i = 0; i < x.length; i++) {
       const p = x[i], q = y[i];
-      if (p[0] !== q[0] || p[1] !== q[1] || p[2] !== q[2] || p[3] !== q[3] || p[4] !== q[4]) return false;
+      if (p[0] !== q[0] || p[1] !== q[1] || p[2] !== q[2] || p[3] !== q[3] || p[4] !== q[4] || p[5] !== q[5]) return false;
     }
     const sx = a.segStatus, sy = b.segStatus;
     if (sx.length !== sy.length) return false;
@@ -1244,7 +1263,7 @@
     stopGroupKey, groupUnitSig,
     cascadeStationGroups, pruneStationGroups, normalizeStationGroups, pendingGroupIssues,
     normalizeLineOrder, archivedIdList, LAYER_RESERVED, searchTermsOf, matchesTerms, groupSearchText, pageSlice,
-    isReservedLine, segStatusesOf, lineDrawKey, sameLineDraw,
+    isReservedLine, segStatusesOf, stopStatusOf, stopStatusIssues, setStopStatus, lineDrawKey, sameLineDraw,
     extractLineInfoSection, replaceLineInfoSection, lineInfoSectionSkeleton, lineInfoTemplateHeader,
     lineInfoTargets,
     calibForward, calibInverse, tpsForward, tpsInverse, poly3Forward, poly3Inverse,
@@ -2768,6 +2787,10 @@
         ${cfl && hasName ? `<span class="stop-trans" title="${esc(cflTitle)}">⚠ 异名</span>` : ''}
         <input type="text" value="${st.t.toFixed(6)}" data-tedit="${st.id}"
           class="tin${tBad ? ' warn' : ''}" title="弧长位置 t∈[0,1]，可手改（如起点改 0、开线终点改 1）">
+        <select class="stop-status" data-stopstatus="${st.id}" title="站点分期：默认跟随所在区段；选择具体期次将覆盖区段状态">
+          <option value="" ${st.status === undefined ? 'selected' : ''}>跟随区段</option>
+          ${SEG_ORDER.map((s2) => `<option value="${s2}" ${st.status === s2 ? 'selected' : ''}>${SEG_LABEL[s2]}</option>`).join('')}
+        </select>
         <button class="mini kind-tgl ${cur ? 'primary' : ''}" data-kind="${st.id}"
           title="当前：${kindName(cur)}。点击转为${kindName(nk)}：${kindDesc(nk)}">${kindChar(cur)}</button>
         <button class="mini danger" data-del="${st.id}" title="删除设站">✕</button>
@@ -4006,6 +4029,18 @@
   });
 
   $('stopList').addEventListener('change', (e) => {
+    const stopStatusId = e.target.dataset.stopstatus;
+    if (stopStatusId) {
+      const line = S.lines.get(S.activeLine);
+      const st = line && line.stops.find((s) => s.id === stopStatusId);
+      if (!st) return;
+      snapshot();
+      if (!setStopStatus(st, e.target.value)) { renderStopList(); return; }
+      line.meta.updated = today();
+      renderWorld(); autosave();
+      setStatus(st.status ? `${stopStatusId} 站点状态覆盖为${SEG_LABEL[st.status]}。` : `${stopStatusId} 已恢复跟随区段状态。`);
+      return;
+    }
     const sid = e.target.dataset.tedit;
     if (!sid) return;
     const line = S.lines.get(S.activeLine);

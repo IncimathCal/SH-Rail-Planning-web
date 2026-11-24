@@ -65,10 +65,10 @@
   const DEFAULT_LINE_COLOR = '#888888';
   const GROUP_TYPE_ZH = { 'same-station': '同站换乘', 'out-of-station': '出闸换乘', junction: '接轨站' };
   const ROLE_ZH = { main: '主线', branch: '支线', connector: '联络线', standalone: '独立线' };
-  const SEG_STATUS_ZH = { existing: '既有', approved: '已批复', future: '远期' };
+  const SEG_STATUS_ZH = { existing: '既有', approved: '近期', future: '远期' };
   // 分期四档循环（顶栏按钮）：无 → 既有 → 已批复 → 远期 → 无
   const PHASE_CYCLE = ['none', 'existing', 'approved', 'future'];
-  const PHASE_LABEL_ZH = { none: '无', existing: '既有', approved: '已批复', future: '远期' };
+  const PHASE_LABEL_ZH = { none: '无', existing: '既有', approved: '近期', future: '远期' };
   // 左栏线路列表隐藏的类别（2026-11-22 用户裁定：仅「联络线」隐藏；地图照画、搜索照收）
   const HIDDEN_LIST_LAYERS = ['联络线'];
   // 「仅显示」级类别（2026-11-22 用户裁定：他省线）——列表双击不聚焦、地图点选不开面板、
@@ -374,9 +374,11 @@
         lineId: p.lineId != null ? String(p.lineId) : '',
         lineName: typeof p.lineName === 'string' ? p.lineName : '',
         t: Number.isFinite(p.t) ? p.t : null,
+        ...(Number.isInteger(p.stopIndex) && p.stopIndex >= 0 ? { stopIndex: p.stopIndex } : {}),
         groupId: p.groupId != null && p.groupId !== '' ? String(p.groupId) : null,
         groupType: Object.prototype.hasOwnProperty.call(GROUP_TYPE_ZH, p.groupType) ? p.groupType : null,
         kind: typeof p.kind === 'string' && p.kind ? p.kind : 'stop',
+        ...(['existing', 'approved', 'future'].includes(p.stopStatus) ? { stopStatus: p.stopStatus } : {}),
         // 联络线站的描边色（2026-11-22 用户需求 2：flatten 产出＝最近端目标线色，
         // 仅 connector 线的站携带；其余站 null——渲染层退线色）。中转字段不参与
         // 任何几何/组归并逻辑
@@ -718,13 +720,14 @@
       // 联络线站描边色透传（stopList 保留字段，见其注；组 pin 不携带——组符号
       // 描边另有 junction 角色优先级色/黑边规则，不与联络线站圈规则混流）
       stroke: s.stroke || null,
+      ...(s.stopStatus ? { stopStatus: s.stopStatus } : {}),
       big: false, lon: s.lon, lat: s.lat,
     });
     for (const s of singles) {
       pins.push(pinOfStop(s, null));
       // lineIds＝站名可见性判定用（全局开关/聚焦常显/调光隐藏，见 visibleLabels）
       labels.push({ key: s.sid, name: s.name, lon: s.lon, lat: s.lat, group: false, groupType: null,
-        lineNames: s.lineName ? [s.lineName] : [], lineIds: s.lineId ? [s.lineId] : [] });
+        lineNames: s.lineName ? [s.lineName] : [], lineIds: s.lineId ? [s.lineId] : [], ...(s.stopStatus ? { stopStatus: s.stopStatus } : {}) });
     }
     // 单元公共量（旧算法原样，成员改喂叶站）：坐标＝成员均值；名取首个非空；成员线去重
     const unitOf = (members) => {
@@ -735,11 +738,12 @@
         name: (members.find((s) => s.name) || {}).name || '',
         lineNames: [...new Set(members.map((s) => s.lineName).filter(Boolean))],
         lineIds: [...new Set(members.map((s) => s.lineId).filter(Boolean))],
+        ...(members.some((s) => s.stopStatus) ? { stopPhaseMembers: members.map((s) => ({ sid: s.sid || '', lineId: s.lineId || '', ...(s.stopStatus ? { status: s.stopStatus } : {}) })) } : {}),
       };
     };
     const unitLabel = (gid, type, u) => ({
       key: 'g:' + gid, name: u.name, lon: u.lon, lat: u.lat, group: true, groupType: type,
-      lineNames: u.lineNames, lineIds: u.lineIds,
+      lineNames: u.lineNames, lineIds: u.lineIds, ...(u.stopPhaseMembers ? { stopPhaseMembers: u.stopPhaseMembers } : {}),
     });
     // 一个组至多出一个绘制单元（成环/多父脏数据防御：重复到达直接返回）
     const emitted = new Set();
@@ -775,6 +779,7 @@
           pin: {
             kind: 'group', key: 'g:' + gid, groupId: gid, name: u.name, lineNames: u.lineNames,
             lineIds: u.lineIds, groupType: type, big: true, lon: u.lon, lat: u.lat,
+            ...(u.stopPhaseMembers ? { stopPhaseMembers: u.stopPhaseMembers } : {}),
           },
         });
       } else {
@@ -782,6 +787,7 @@
           kind: 'group', key: 'g:' + gid, groupId: gid, name: u.name, lineNames: u.lineNames,
           lineIds: u.lineIds,
           groupType: type, big: type === 'same-station', lon: u.lon, lat: u.lat,
+          ...(u.stopPhaseMembers ? { stopPhaseMembers: u.stopPhaseMembers } : {}),
         });
       }
       labels.push(unitLabel(gid, type, u));
@@ -1089,6 +1095,77 @@
     return hits.slice(0, cap).map((h) => h.ent);
   }
 
+  // 多选分期的纯逻辑：全选视作总览（不启用分期），其余集合按每段状态判断。
+  const PHASE_VALUES = ['existing', 'approved', 'future'];
+  function normalizePhaseSelection(values) {
+    const src = values instanceof Set ? [...values] : (Array.isArray(values) ? values : []);
+    return new Set(src.map(String).filter((v) => PHASE_VALUES.includes(v)));
+  }
+  function phaseSelectionActive(values) { return normalizePhaseSelection(values).size !== PHASE_VALUES.length; }
+  function phaseStatusSelected(status, values) {
+    const selected = normalizePhaseSelection(values);
+    return selected.size === PHASE_VALUES.length || selected.has(String(status));
+  }
+  // 按原整线拼接几何的累计 WebMercator 长度，为各 segIndex 计算 line-progress 区间。
+  // 可传入已变换坐标（如 dispCoord），使长度口径与实际绘制几何一致。
+  function segmentProgressRanges(segments, transformedSegments) {
+    const src = Array.isArray(segments) ? segments : [];
+    const transformed = Array.isArray(transformedSegments) ? transformedSegments : null;
+    const lengths = src.map((seg, index) => {
+      const input = transformed ? transformed[index] : seg;
+      const pts = Array.isArray(input) ? input : (input && Array.isArray(input.coords) ? input.coords : []);
+      const valid = pts.filter((pt) => Array.isArray(pt) && Number.isFinite(pt[0]) && Number.isFinite(pt[1]));
+      let length = 0;
+      for (let i = 1; i < valid.length; i++) {
+        const latA = Math.max(-85.05112878, Math.min(85.05112878, valid[i - 1][1])) * Math.PI / 180;
+        const latB = Math.max(-85.05112878, Math.min(85.05112878, valid[i][1])) * Math.PI / 180;
+        const mercatorY = (lat) => Math.log(Math.tan(Math.PI / 4 + lat / 2));
+        length += Math.hypot((valid[i][0] - valid[i - 1][0]) * Math.PI / 180,
+          mercatorY(latB) - mercatorY(latA));
+      }
+      return length;
+    });
+    const total = lengths.reduce((sum, length) => sum + length, 0);
+    let offset = 0;
+    return src.map((seg, i) => {
+      const start = total > 0 ? offset / total : 0;
+      offset += lengths[i];
+      return { segIndex: seg && seg.segIndex != null ? seg.segIndex : i,
+        start, end: total > 0 ? offset / total : 1 };
+    });
+  }
+  function phaseSegments(segments, values) {
+    return (Array.isArray(segments) ? segments : []).filter((seg) => phaseStatusSelected(seg && seg.segStatus, values));
+  }
+  // 站点状态：显式覆盖优先；否则取相邻区段中较早的分期。
+  function stopPhaseOf(line, stop, stops) {
+    if (stop && PHASE_VALUES.includes(stop.stopStatus)) return stop.stopStatus;
+    if (!line || !stop || !Array.isArray(line.segments) || !line.segments.length) return null;
+    let stopIndex = Number.isInteger(stop.stopIndex) && stop.stopIndex >= 0 ? stop.stopIndex : null;
+    if (stopIndex == null) {
+      // 旧版 net 缺 stopIndex 时，仅在线段数未受隐藏线路所影响时回推原始站序。
+      const ordered = (Array.isArray(stops) ? stops : []).filter((s) => s && s.lineId === stop.lineId)
+        .sort((a, b) => (a.t == null ? 1 : 0) - (b.t == null ? 1 : 0) || num(a.t) - num(b.t));
+      const at = ordered.findIndex((s) => s.sid === stop.sid);
+      if (at < 0) return null;
+      const expected = line.loop ? ordered.length : Math.max(0, ordered.length - 1);
+      if (line.segments.length !== expected) return null;
+      stopIndex = at;
+    }
+    const byIndex = new Map(line.segments.map((seg) => [seg.segIndex, seg]));
+    const adjacent = [];
+    const outgoing = byIndex.get(stopIndex);
+    if (outgoing) adjacent.push(outgoing);
+    const incomingIndex = stopIndex - 1 >= 0 ? stopIndex - 1 : (line.loop ? line.segments.length - 1 : -1);
+    const incoming = incomingIndex >= 0 ? byIndex.get(incomingIndex) : null;
+    if (incoming) adjacent.push(incoming);
+    if (!adjacent.length) return null;
+    const rank = { existing: 0, approved: 1, future: 2 };
+    adjacent.sort((a, b) => (Object.prototype.hasOwnProperty.call(rank, a.segStatus) ? rank[a.segStatus] : 3)
+      - (Object.prototype.hasOwnProperty.call(rank, b.segStatus) ? rank[b.segStatus] : 3));
+    return adjacent[0].segStatus;
+  }
+
   // ---------- 标签分级（zoom 门槛层；上层优先级见 visibleLabels） ----------
   // 换乘组/出闸换乘标签 z≥10 渐显；普通单线站 z≥11 渐显。标签的 group/groupType
   // 来自结构关系字段，不依赖站名文字；不设总数上限，视口裁剪由渲染层处理。
@@ -1121,6 +1198,11 @@
     for (const id of ids) if (!dimSet.has(id)) return true;    // 任一成员线未调光 → 显示
     return false;                                              // 全部成员线被调光 → 隐藏
   }
+  function stopUnitMatchesPhase(stopPhaseMembers, phase, dimmedSet) {
+    if (!phase || !Array.isArray(stopPhaseMembers) || !stopPhaseMembers.length) return null;
+    const dimmed = dimmedSet instanceof Set ? dimmedSet : new Set(Array.isArray(dimmedSet) ? dimmedSet.map(String) : []);
+    return stopPhaseMembers.some((m) => m && (m.status ? m.status === phase : !dimmed.has(String(m.lineId || ''))));
+  }
   function visibleLabels(labels, zoom, state) {
     const st = state || {};
     if (st.hideAll) return [];
@@ -1128,6 +1210,17 @@
       : new Set(Array.isArray(st.dimmedSet) ? st.dimmedSet.map(String) : []);
     const arr = Array.isArray(labels) ? labels.filter(Boolean) : [];
     const focus = st.focus != null && st.focus !== '' ? String(st.focus) : null;
+    const phase = st.phase && st.phase !== 'none' ? st.phase : null;
+    const hiddenLineIds = st.hiddenLineIds instanceof Set ? st.hiddenLineIds : new Set(Array.isArray(st.hiddenLineIds) ? st.hiddenLineIds.map(String) : []);
+    const labelNotHidden = (l) => {
+      const ids = Array.isArray(l.lineIds) ? l.lineIds : [];
+      return !phase || !ids.length || ids.some((id) => !hiddenLineIds.has(String(id)));
+    };
+    const stopMatches = (l) => {
+      if (l.stopPhaseMembers) return stopUnitMatchesPhase(l.stopPhaseMembers, phase, dimSet);
+      if (l.stopStatus && phase) return l.stopStatus === phase;
+      return null;
+    };
     if (focus) {
       // 聚焦组成员集（脏项过滤；空集退 [focus]——S.focus 恒主线 id，胶水层无组时同此）
       let members = Array.isArray(st.focusMembers)
@@ -1135,9 +1228,9 @@
       if (!members.length) members = [focus];
       // 聚焦优先级：成员标签常显（无视分期调光与 zoom 门槛——分期态下聚焦组照显、
       // 其余隐藏，分期隐藏维度在聚焦时整体让位），其余标签一律隐藏
-      return arr.filter((l) => labelHasFocus(l, members));
+      return arr.filter((l) => labelHasFocus(l, members) && labelNotHidden(l));
     }
-    return filterLabels(arr.filter((l) => labelShownUnderDim(l, dimSet)), zoom);
+    return filterLabels(arr.filter((l) => labelNotHidden(l) && (stopMatches(l) === null ? labelShownUnderDim(l, dimSet) : stopMatches(l))), zoom);
   }
 
   // ---------- 调光纯逻辑（2026-11-22 改版：分期四档＋聚焦双模式，任一条件调光即调光） ----------
@@ -1619,12 +1712,12 @@
     normalizeLines, lineBboxOf, stopList, buildStopView,
     parseNetIndex, buildGroupTree, logicalLineCount, groupRelations,
     planGroupPillChain, planarOf, lineSummaries, layerGroups, visibleListGroups,
-    linePhaseOf, lineLayerRank, lineDashed, computeDimmedSet, nextPhase, connectorFadePlan,
+    linePhaseOf, lineLayerRank, lineDashed, computeDimmedSet, nextPhase, normalizePhaseSelection, phaseSelectionActive, phaseStatusSelected, phaseSegments, segmentProgressRanges, stopPhaseOf, connectorFadePlan,
     connectorBlendPlan, arrowFadePlan, arrowFadeGradient, ARROW_FADE_M,
     zoomInterp, scaledSize, LINE_WIDTH_PX, DBLCLICK_TOL_PX, lineWidthAt,
     pointToScreenPolylineDist,
     buildLineGroups, lineSearchEntries, lineLabelOf, linesOfPin,
-    matchEntries, filterLabels, visibleLabels,
+    matchEntries, filterLabels, visibleLabels, stopUnitMatchesPhase,
     parseLineInfo, safeLinkUrl, lineInfoEntryOf,
     buildLineGeoJSON, buildLineKML,
     outOfChina, wgs84ToGcj02, gcj02ToWgs84, makeDispCoord,

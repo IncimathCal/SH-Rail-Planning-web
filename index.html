@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>上海轨道交通远期规划图</title>
-  <meta name="description" content="上海轨道交通远期线网规划交互图：线路走向、设站与换乘节点、分段建设状态（既有 / 已批复 / 远期），数据纯手工录入。">
+  <meta name="description" content="上海轨道交通远期线网规划交互图：线路走向、设站与换乘节点、分段建设状态（既有 / 近期 / 远期），数据纯手工录入。">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#ffffff">
   <!-- 2026-11-23 浅色化：favicon 深底白毂 → 白底＋强调色十字＋深色毂 -->
@@ -90,7 +90,7 @@
       -webkit-text-stroke: 3.25px #fff;
     }
 
-    /* 顶栏：标题 + 搜索 + 分期/站名/底图按钮（旧「突出既有」开关与高亮对比按钮已退役）；
+    /* 顶栏：标题 + 搜索 + 分期勾选框/站名/底图控件（旧「突出既有」开关与高亮对比按钮已退役）；
        玻璃底/blur 走本表顶部 #topbar 组规则 */
     #topbar {
       position: absolute; top: 0; left: 0; right: 0; z-index: 10;
@@ -110,14 +110,20 @@
     }
     #searchInput::placeholder { color: var(--text-dim); }
     #searchInput:focus { border-color: var(--accent); }
-    /* 顶栏按钮共用样式（2026-11-22 改版）：分期四档循环 / 全局站名开关 / 测试阶段底图。
+    /* 顶栏按钮共用样式：全局站名开关 / 测试阶段底图。
        2026-11-23 浅色化：ghost 风——透明底＋细边框，hover 描边变强调色 */
-    #btnPhase, #btnNames, #btnBasemap {
+    #btnNames, #btnBasemap {
       flex: none; padding: 6px 10px; cursor: pointer; white-space: nowrap;
       background: transparent; color: var(--text);
       border: 1px solid var(--control-border); border-radius: 10px;
     }
-    #btnPhase:hover, #btnNames:hover, #btnBasemap:hover { border-color: var(--accent); }
+    #btnNames:hover, #btnBasemap:hover { border-color: var(--accent); }
+    #phase-controls {
+      display: flex; align-items: center; gap: 9px; flex: none;
+      color: var(--text); font-size: 13px; white-space: nowrap;
+    }
+    #phase-controls label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+    #phase-controls input { margin: 0; accent-color: var(--accent); }
     /* 保留 MapLibre 原生缩放控件，视觉适配浅色玻璃面板 */
     .maplibregl-ctrl-group {
       overflow: hidden; border: 1px solid var(--panel-border) !important; border-radius: 10px !important;
@@ -335,10 +341,12 @@
       <input id="searchInput" type="text" placeholder="搜索线路或车站…" autocomplete="off" spellcheck="false">
       <ul id="searchDrop" hidden></ul>
     </div>
-    <!-- 2026-11-22 改版：分期四档循环（无＝全部正常；非「无」档＝选中期次的线路正常显示、
-         其他线路半透明并隐去站名）＋全局站名开关（隐藏时一切站名不显示，优先级最高）。不持久化。 -->
-    <button id="btnPhase" type="button"
-      title="分期四档循环：无 → 既有 → 已批复 → 远期 → 无。「无」＝全部正常显示；非「无」档＝选中期次的线路正常显示，其他线路半透明并隐去站名（站圈符号保留）。">分期：无</button>
+    <!-- 不持久化；全选总览，勾选期次高亮，未选淡化。 -->
+    <div id="phase-controls" aria-label="分期筛选">
+      <label><input type="checkbox" name="phase" value="existing" checked>既有</label>
+      <label><input type="checkbox" name="phase" value="approved" checked>近期</label>
+      <label><input type="checkbox" name="phase" value="future" checked>远期</label>
+    </div>
     <button id="btnNames" type="button"
       title="全局站名开关：显示 ⇄ 隐藏。隐藏时一切站名不显示（优先级最高），站圈符号保留。">站名：显示</button>
     <!-- 测试阶段功能（正式上线可能移除）：底图四态循环（2026-11-23 三态扩四态，CARTO 插在高德后）。

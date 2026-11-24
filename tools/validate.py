@@ -295,6 +295,8 @@ def main():
                 all_stop_ids[sid] = lid
                 stop_kinds[sid] = st.get("kind")
             kind = st.get("kind")
+            if "status" in st and st.get("status") not in SEG_STATUS:
+                err(fname, f"stop {sid}: bad status {st.get('status')!r} (want one of {sorted(SEG_STATUS)})")
             if kind is not None and kind not in STOP_KINDS:
                 err(fname, f"stop {sid}: bad kind {kind!r} (want one of {sorted(STOP_KINDS)})")
             # 站名必填仅对普通站（kind 缺省）；block / arrow 名可空
