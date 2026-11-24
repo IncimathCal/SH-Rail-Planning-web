@@ -116,6 +116,19 @@
 // VEIL_OPACITY/VEIL_OPACITY_FOCUS 改为按态查表（veilOpacityFor 取当态档位），syncBasemapVeil
 // 与建层初始 paint 同表取值，聚焦进出（applyDimState）与底图切换（applyBasemapToMap）路径
 // 自动换档；聚焦态恒比常态薄一档的旧语义不变。
+// 2026-11-25 分期态他省线纠正（用户裁定）：他省线在任何情况下不得被期次高亮（不进
+// 期次高亮集合、不被白罩压暗），也绝不因进入分期态而从图上消失——分期态照常显示，
+// 口径＝聚焦态既有「恒调光」。实现：①渲染特征带 province 0/1 数字位（线/站圈/药丸，
+// filter 一律显式 ==）；②分期态基础线两层 filter 追加 province=0（applyLineBaseFilters，
+// 随 rebuildConnLayers 全删全建还原），他省线身由罩上专用层 lines-displayonly 接管
+//（paint 与基础线层同款含 dim case——分期态他省线 dim 恒 1 → 0.5，与聚焦态同口径）；
+// ③罩上符号复制层收「期次匹配 ∨ 他省」联合 filter、paint 分期态挂 dim case（本地选
+// 中站 dim=0 → 1、他省站 dim=1 → 0.5），聚焦态维持恒 1「聚焦豁免一切」不变；④blend/
+// arrow 动态层对他省线不按 segStatus 拆段——整线罩上恒调光；⑤phaseUnitMatches 他省
+// 线的站不贡献期次匹配（站圈不亮）；⑥标签：他省纯单元不受分期过滤与调光隐藏
+//（visibleLabels 新增 displayOnlyIds 放行，只走 zoom 门槛）；⑦聚焦他省线仍走 focus-copy
+// 罩上恒原色重画（既有「聚焦豁免」不回退）。原 phaseHiddenLine「分期态整线不出图」
+// 实现废弃（2026-11-23 会错意版本）。
 // 与编辑器完全独立：不加载 editor.js 的任何代码。中文标签走 HTML 叠加（架构方案 §6 备案路线）。
 
 (function (G) {
@@ -285,10 +298,27 @@
     const grp = S.lineGroups.ofLine.get(S.focus);
     return new Set(grp ? grp.members : [S.focus]);
   }
-  function phaseHiddenLine(line) { return S.phaseActive && line && line.layer === '他省'; }
-  function phaseHiddenMembers(ids) {
+  // 2026-11-25 用户纠正裁定：他省线在分期态**照常显示**——不进期次高亮集合（不亮）、
+  // 不被白罩压暗（不暗），只保持与聚焦态同口径的「恒调光」（分期态 dim 位恒 1 →
+  // line-opacity 0.5）。原「分期态他省完全不出图」实现（phaseHiddenLine 直接跳特征）
+  // 废弃。判定集中在这三个 helper，与分期开关无关：
+  function lineOtherProvince(line) { return V.lineLayerRank(line) === 'displayOnly'; }
+  // 单元（pin/药丸/标签）的成员线全部为他省线 → 该单元按他省口径处理（罩上恒调光）；
+  // 混合单元（本地＋他省成员）按本地规则走——组符号是本地主导。
+  function otherProvinceOnlyIds(ids) {
     const valid = (ids || []).map((id) => S.linesMap.get(String(id))).filter(Boolean);
-    return valid.length > 0 && valid.every(phaseHiddenLine);
+    return valid.length > 0 && valid.every(lineOtherProvince);
+  }
+  function pinOtherProvinceOnly(pin) {
+    const ids = (pin && pin.kind === 'group' && Array.isArray(pin.lineIds) && pin.lineIds.length)
+      ? pin.lineIds : (pin && pin.lineId ? [pin.lineId] : []);
+    return otherProvinceOnlyIds(ids);
+  }
+  // 分期态他省线 id 集（标签放行与渲染判定用；非分期态无需——返回空数组）
+  function displayOnlyLineIds() {
+    const ids = [];
+    for (const line of S.linesMap.values()) if (lineOtherProvince(line)) ids.push(line.lineId);
+    return ids;
   }
   function renderLinesFC() {
     S.dispBbox = new Map();
@@ -298,7 +328,7 @@
     for (const line of S.linesMap.values()) {
       let bb = null;
       const dim = S.dimmed.has(line.lineId) ? 1 : 0;
-      if (phaseHiddenLine(line)) { S.dispBbox.set(line.lineId, null); continue; }
+      const province = lineOtherProvince(line) ? 1 : 0;   // 0/1 数字位（filter 显式 ==，勿用 '!'）
       const skip = S.fadeSet.has(line.lineId) || S.blendSet.has(line.lineId)
         || S.arrowSet.has(line.lineId)
         || (veilSkip != null && veilSkip.has(line.lineId));
@@ -316,7 +346,7 @@
           type: 'Feature',
           geometry: { type: 'LineString', coordinates: coords },
           properties: { lineId: line.lineId, name: line.name, color: line.color, segStatus: seg.segStatus, segIndex: seg.segIndex,
-            dim, dash: V.lineDashed(line) },
+            dim, dash: V.lineDashed(line), province },
         });
       }
       S.dispBbox.set(line.lineId, bb);
@@ -356,14 +386,15 @@
     const stops = phaseStopsForUnit(unit);
     return stops.some((stop) => {
       const line = S.linesMap.get(stop.lineId);
-      if (phaseHiddenLine(line)) return false;
+      if (lineOtherProvince(line)) return false;   // 他省线的站不进期次高亮集合（2026-11-25 裁定）
       const status = V.stopPhaseOf(line, stop, S.stops);
       return status != null && S.phases.has(status);
     });
   }
   function pinDimmed(pin) {
-    // 分期仅靠遮罩区分选中/未选段；基底站圈与药丸保持正常不透明度。
-    if (S.phaseActive) return 0;
+    // 分期仅靠遮罩区分选中/未选段；基底站圈与药丸保持正常不透明度——唯他省单元例外：
+    // 恒调光口径与聚焦态一致（2026-11-25 纠正裁定：分期态他省照常显示、dim 位恒 1）。
+    if (S.phaseActive) return pinOtherProvinceOnly(pin) ? 1 : 0;
     if (S.focus == null && S.phase !== 'none' && pin.stopPhaseMembers) {
       return V.stopUnitMatchesPhase(pin.stopPhaseMembers, S.phase, S.dimmed) ? 0 : 1;
     }
@@ -391,7 +422,6 @@
     const dc = S.dispCoord;
     const features = [];
     for (const pin of S.view.pins) {
-      if (phaseHiddenMembers(pin.kind === 'group' ? pin.lineIds : [pin.lineId])) continue;
       let stroke, dark = 0;
       if (pin.kind === 'group' && pin.groupType === 'junction') { stroke = junctionStroke(pin.lineIds); }
       else if (pin.kind === 'group' || pin.groupType === 'out-of-station') { stroke = '#000000'; dark = 1; }
@@ -404,7 +434,7 @@
       features.push({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [p[0], p[1]] },
-        properties: { key: pin.key, name: pin.name, lineId: pin.lineId || '', big: pin.big ? 1 : 0, dark, stroke, dim: pinDimmed(pin), phaseMatch: S.phaseActive && phaseUnitMatches(pin) ? 1 : 0, members: pinMembers(pin) },
+        properties: { key: pin.key, name: pin.name, lineId: pin.lineId || '', big: pin.big ? 1 : 0, dark, stroke, dim: pinDimmed(pin), phaseMatch: S.phaseActive && phaseUnitMatches(pin) ? 1 : 0, province: pinOtherProvinceOnly(pin) ? 1 : 0, members: pinMembers(pin) },
       });
     }
     return { type: 'FeatureCollection', features };
@@ -416,7 +446,6 @@
     const dc = S.dispCoord;
     const features = [];
     for (const pill of S.view.pills || []) {
-      if (phaseHiddenMembers(pill.lineIds)) continue;
       const coords = (pill.chain || [])
         .filter((c) => c && Number.isFinite(c[0]) && Number.isFinite(c[1]))
         .map((c) => dc(c[0], c[1]));
@@ -432,10 +461,12 @@
           // 药丸成员线集（2026-11-22 真机反馈轮）：聚焦参与判定用（罩下 filter 追加/罩上
           // 复制层，见 memberMatchExpr）——与 dim 位同源的成员信息，任一成员在聚焦组即豁免
           members: (pill.lineIds || []).map(String),
-          // 药丸调光规则：全成员线被调光才半透明（任一成员未调光则正常——2026-11-22 用户裁定）
+          // 药丸调光规则：全成员线被调光才半透明（任一成员未调光则正常——2026-11-22 用户裁定；
+          // 分期态他省纯成员药丸例外恒 1，2026-11-25 纠正裁定）
           dim: S.phaseActive && pill.pin ? (pinDimmed(pill.pin) ? 1 : 0)
             : ((pill.lineIds || []).length && pill.lineIds.every((id) => S.dimmed.has(id)) ? 1 : 0),
           phaseMatch: S.phaseActive && pill.pin && phaseUnitMatches(pill.pin) ? 1 : 0,
+          province: otherProvinceOnlyIds(pill.lineIds) ? 1 : 0,
         },
       });
     }
@@ -861,6 +892,8 @@
     S.dimmed = V.computeDimmedSet(S.linesMap,
       { phase: S.phase, focus: S.focus, lineGroups: S.lineGroups });
     if (S.phaseActive) {
+      // 分期态他省线恒入调光集（2026-11-25 纠正裁定：照常显示、罩上恒调光 0.5——与聚焦态
+      // 他省线同口径）；本地线不进 dim（未选段由白罩压暗区分，不重复调光）
       for (const line of S.linesMap.values()) if (V.lineLayerRank(line) === 'displayOnly') S.dimmed.add(line.lineId);
     }
     updateFadeSet();   // fadeSet 须在 renderLinesFC 之前就绪（基础层跳 feature 依赖它）
@@ -1036,6 +1069,38 @@
     def.paint['line-opacity'] = 1;
     return def;
   }
+  // 罩上他省线层（2026-11-25 纠正裁定）：分期态他省线画在白罩之上——不被白罩压暗、也不进
+  // 期次高亮（focus-copy 只收本地选中段），保持「恒调光」＝dim case（分期态他省线 dim 位
+  // 恒 1 → 0.5，与聚焦态他省线同口径）。source 复用 'lines'（基础层特征已在，靠 filter 分流）；
+  // filter 只按 province 位收（不带 dash 条件——meta.layer 单值下他省≠预控通道，数据上恒
+  // 实线；脏数据若有他省虚线则在此层退化为实线可见，不静默丢失）。仅分期态创建。
+  function displayOnlyLineLayerDef() {
+    return {
+      id: 'lines-displayonly', type: 'line', source: 'lines',
+      filter: ['==', ['get', 'province'], 1],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': ['get', 'color'],
+        'line-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
+        'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX), V.LINE_WIDTH_PX),
+      },
+    };
+  }
+  // 基础线两层 filter 切换（rebuildConnLayers 全删全建时随行）：分期态排除他省线（其特征
+  // 由罩上 lines-displayonly 层接管，防双层叠画）；其余态还原原 filter（不残留 province
+  // 条件）。0/1 数字位一律显式 ==（勿用 '!'——弃层坑见 STOP_LAYER_DEFS 注）。
+  function applyLineBaseFilters(phaseActive) {
+    const map = S.map;
+    const linesDef = lineLayerDef();
+    const dashDef = corridorLineLayerDef('lines-dash', 'lines');
+    if (!map.getLayer('lines')) return;
+    map.setFilter('lines', phaseActive
+      ? ['all', linesDef.filter, ['==', ['get', 'province'], 0]] : linesDef.filter);
+    if (map.getLayer('lines-dash')) {
+      map.setFilter('lines-dash', phaseActive
+        ? ['all', dashDef.filter, ['==', ['get', 'province'], 0]] : dashDef.filter);
+    }
+  }
   // 聚焦重画特征：聚焦组成员的渲染特征（renderLinesFC 同款构造）；blend/fade/arrow
   // 成员跳过（渐变层接管——防御：联络线/出省线被录进线组的罕见形态，避免双层重复画，
   // 各渐变层自身已在白罩之上）。不带 dim 位（层定义恒原色，见 focusCopyLayerDef 注）；
@@ -1048,7 +1113,10 @@
     const features = [];
     for (const lid of members) {
       const line = S.linesMap.get(lid);
-      if (!line || phaseHiddenLine(line)) continue;
+      // 分期态他省线不进本层（不进期次高亮集合——2026-11-25 裁定），走罩上恒调光专用层
+      // （rebuildConnLayers 的 lines-displayonly）；聚焦态不受此限——聚焦他省线时仍由本层
+      // 罩上恒原色重画（「聚焦豁免一切」既有语义，基础层已按 veilSkip 剔除、别处不画）。
+      if (!line || (S.phaseActive && lineOtherProvince(line))) continue;
       // 特殊动态层在所有状态下接管整条几何；分期时也不能被普通 copy 再叠一遍。
       if (S.blendSet.has(lid) || S.fadeSet.has(lid) || S.arrowSet.has(lid)) continue;
       for (const seg of line.segments) {
@@ -1107,9 +1175,12 @@
       map.setFilter(id, memberExpr ? ['!', memberExpr] : null);
     }
   }
-  // 罩上站圈复制层定义：与 stopLayerDef 同 source 同 paint，唯 circle-opacity/
-  // circle-stroke-opacity 恒 1（不挂 dim case——聚焦成员的站圈罩上完整显示）
+  // 罩上站圈复制层定义：与 stopLayerDef 同 source 同 paint，唯 opacity 聚焦态恒 1
+  //（不挂 dim case——聚焦成员的站圈罩上完整显示，「聚焦豁免一切」）；分期态挂 dim case
+  //（本地期次匹配站 dim=0 → 1 完整显示；他省单元站 dim=1 → 0.5 恒调光，2026-11-25 裁定）
   function stopFocusLayerDef(d, memberExpr) {
+    const dimCase = ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1];
+    const op = S.phaseActive ? dimCase : 1;
     return {
       id: d.id + '-focus', type: 'circle', source: 'stops',
       filter: ['all', d.filter, memberExpr],
@@ -1118,12 +1189,14 @@
         'circle-radius': V.zoomInterp(V.scaledSize(d.radius), d.radius),
         'circle-stroke-color': ['get', 'stroke'],
         'circle-stroke-width': V.zoomInterp(V.scaledSize(d.strokeW), d.strokeW),
-        'circle-opacity': 1,
-        'circle-stroke-opacity': 1,
+        'circle-opacity': op,
+        'circle-stroke-opacity': op,
       },
     };
   }
-  // 罩上药丸复制层定义：与 PILL_LAYER_DEFS 同 source 同尺寸，唯 line-opacity 恒 1；
+  // 罩上药丸复制层定义：与 PILL_LAYER_DEFS 同 source 同尺寸，唯 line-opacity 聚焦态恒 1
+  //（「聚焦豁免一切」）、分期态挂 dim case（本地选中药丸 dim=0 → 1、他省药丸 dim=1 → 0.5
+  // 恒调光，2026-11-25 裁定）；
   // ⚠ line-cap/line-join 是 layout 属性（放 paint 会拒载整个 style 全黑——本项目踩过的
   // 坑）；layout/paint 逐键新造对象，不复用常量层定义里的引用（防 addLayer 内部处理
   // 污染初始 style 定义）
@@ -1133,7 +1206,8 @@
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
         'line-color': base.paint['line-color'],
-        'line-opacity': 1,
+        'line-opacity': S.phaseActive
+          ? ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1] : 1,
         'line-width': base.paint['line-width'],
       },
     };
@@ -1174,10 +1248,16 @@
     // 聚焦参与判定表达式（聚焦时才非 null）：罩下五层追加 ['!', expr]、罩上复制层用
     // expr 本体（构造与合法性注释见 memberMatchExpr）
     const memberExpr = S.focus != null ? memberMatchExpr([...veilFocusSkipSet()]) : null;
+    // 分期态罩上符号收「期次匹配站 ∨ 他省单元」（他省站上罩不被白罩压暗、phaseMatch 恒 0
+    // 不亮——2026-11-25 纠正裁定）；罩下五层对称排除两者，防双层叠画
     const phaseExpr = S.phaseActive ? ['==', ['get', 'phaseMatch'], 1] : null;
-    const copyExpr = memberExpr || phaseExpr;
+    const provinceExpr = S.phaseActive ? ['==', ['get', 'province'], 1] : null;
+    const copyExpr = memberExpr
+      || (phaseExpr && provinceExpr ? ['any', phaseExpr, provinceExpr] : (phaseExpr || provinceExpr));
     // 罩下基础站圈/药丸五层 filter 同帧切换（焦点成员或分期匹配站移至罩上复制层）
     applyFocusFilters(copyExpr);
+    // 基础线两层同帧排除他省线（分期态；特征由罩上 lines-displayonly 接管）
+    applyLineBaseFilters(S.phaseActive);
     // 分期模式先铺统一白罩；随后选中段的特殊渐变层插罩上，未选段插罩下。
     const phaseVeilAdded = S.phaseActive;
     if (phaseVeilAdded) addTop(focusVeilLayerDef());
@@ -1187,10 +1267,20 @@
     for (const it of S.blendPlan || []) {
       if (fadeIds.has(it.lineId)) continue;
       const line = S.linesMap.get(it.lineId);
-      if (!line || phaseHiddenLine(line)) continue;
+      if (!line) continue;
       const baseDef = connBlendLayerDef('conn-blend-' + line.lineId, line.lineId, it.headColor, it.tailColor);
       if (S.phaseActive) {
-        addPhaseDynamicSegments(line, false, baseDef, 'conn-blend-seg-', addLow, addTop, feats);
+        if (lineOtherProvince(line)) {
+          // 他省联络线不按 segStatus 拆段（不参与期次）：整线罩上、恒调光（dim case 层定义自带）
+          const coords = connCoords(line, false);
+          if (coords) {
+            feats.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords },
+              properties: { lineId: line.lineId, dim: S.dimmed.has(line.lineId) ? 1 : 0 } });
+            addTop(baseDef);
+          }
+        } else {
+          addPhaseDynamicSegments(line, false, baseDef, 'conn-blend-seg-', addLow, addTop, feats);
+        }
       } else {
         const coords = connCoords(line, false);
         if (!coords) continue;
@@ -1209,12 +1299,15 @@
       if (copySrc) copySrc.setData(renderFocusCopyFC());
       addTop(focusCopyLayerDef());
       addTop(focusCopyDashLayerDef());   // 预控通道成员罩上保持虚线（2026-11-23）
+      // 分期态他省线罩上恒调光层（2026-11-25）：不被白罩压暗、不进期次高亮——位置在
+      // focus-copy（本地选中段）之后、罩上符号复制层之前（线在下、符号在上）
+      if (S.phaseActive) addTop(displayOnlyLineLayerDef());
     }
     // ③ fade 形态联络线层（聚焦绑定：聚焦线色→透明；罩上＝渐变高亮不被罩压白；非聚焦无此层）
     const focusColor = (S.linesMap.get(S.focus) || {}).color;
     for (const it of S.fadeConnPlan || []) {
       const line = S.linesMap.get(it.lineId);
-      if (!line || phaseHiddenLine(line)) continue;
+      if (!line) continue;
       const coords = connCoords(line, it.attachEnd === 1);
       if (!coords) continue;
       feats.push({
@@ -1236,11 +1329,21 @@
         : []);
     for (const it of S.arrowPlan || []) {
       const line = S.linesMap.get(it.lineId);
-      if (!line || phaseHiddenLine(line)) continue;
+      if (!line) continue;
       const def = arrowFadeLayerDef('arrow-fade-' + line.lineId, line.lineId, line.color, it.headCut, it.tailCut);
       if (!def) continue;
       if (S.phaseActive) {
-        addPhaseDynamicSegments(line, false, def, 'arrow-fade-seg-', addLow, addTop, feats);
+        if (lineOtherProvince(line)) {
+          // 他省出省线不按 segStatus 拆段（不参与期次）：整线罩上、恒调光（dim case 层定义自带）
+          const coords = connCoords(line, false);
+          if (coords) {
+            feats.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords },
+              properties: { lineId: line.lineId, dim: S.dimmed.has(line.lineId) ? 1 : 0 } });
+            addTop(def);
+          }
+        } else {
+          addPhaseDynamicSegments(line, false, def, 'arrow-fade-seg-', addLow, addTop, feats);
+        }
       } else {
         const coords = connCoords(line, false);
         if (!coords) continue;
@@ -1798,11 +1901,13 @@
       const grp = S.lineGroups.ofLine.get(S.focus);
       focusMembers = grp && Array.isArray(grp.members) && grp.members.length ? grp.members : [S.focus];
     }
-    const labels = S.phaseActive ? S.dispLabels.filter((label) =>
-      phaseUnitMatches({ kind: label.group ? 'group' : 'stop', key: label.key, groupId: label.groupId, groupType: label.groupType })) : S.dispLabels;
+    // 分期态标签＝期次匹配单元＋他省纯单元（2026-11-25 纠正裁定：他省站名照常显示——
+    // 只按 zoom 门槛，见 visibleLabels 的 displayOnlyIds 放行）；混合单元按本地成员期次判
+    const labels = S.phaseActive ? S.dispLabels.filter((label) => otherProvinceOnlyIds(label.lineIds)
+      || phaseUnitMatches({ kind: label.group ? 'group' : 'stop', key: label.key, groupId: label.groupId, groupType: label.groupType })) : S.dispLabels;
     const items = V.visibleLabels(labels, map.getZoom(),
       { hideAll: !S.namesOn, dimmedSet: S.dimmed, focus: S.focus, focusMembers, phase: S.phase,
-        hiddenLineIds: S.phaseActive ? [...S.linesMap.values()].filter(phaseHiddenLine).map((line) => line.lineId) : [] });
+        displayOnlyIds: S.phaseActive ? displayOnlyLineIds() : [] });
     const w = wrap.clientWidth, h = wrap.clientHeight, M = 60;   // 视口外裁剪边距
     // 站名文字随画布等比缩放（2026-11-22 用户指示「站名和站点也一样，以 z11 为界」）：
     // z≥11 恒 1、z<11 按 2^(z−11)——与线宽/站圈同一规则（V.labelScale），挂 transform 末尾

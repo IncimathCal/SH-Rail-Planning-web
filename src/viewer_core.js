@@ -1181,7 +1181,10 @@
   // state：{ hideAll: 全局站名开关（true＝一切站名不显示，优先级最高）,
   //          dimmedSet: Set<lineId> 被调光线集, focus: 聚焦 lineId|null,
   //          focusMembers: 聚焦组成员线 id 数组（可选——2026-11-22 主支线合并后支线站的
-  //                        站名也是聚焦线站名，须常显；缺省/空/全脏退 [focus]）}。
+  //                        站名也是聚焦线站名，须常显；缺省/空/全脏退 [focus]）,
+  //          displayOnlyIds: 他省线 id 集（可选，2026-11-25 纠正裁定——分期态他省线站名
+  //                        照常显示：全部成员线为他省的标签不受「被调光线隐藏」约束，
+  //                        只走 zoom 门槛；混合单元仍按本地成员规则）}。
   // 2026-11-22 真机反馈改版（用户「站名也没有隐去」）：聚焦时非聚焦线的站名一律隐藏
   //（恢复旧调光模式的待遇——白罩只罩图形，站名维度由本函数承接）；聚焦组成员的标签
   // 常显且无视分期调光与 zoom 门槛。非聚焦时维持既有两级：调光隐藏
@@ -1212,9 +1215,17 @@
     const focus = st.focus != null && st.focus !== '' ? String(st.focus) : null;
     const phase = st.phase && st.phase !== 'none' ? st.phase : null;
     const hiddenLineIds = st.hiddenLineIds instanceof Set ? st.hiddenLineIds : new Set(Array.isArray(st.hiddenLineIds) ? st.hiddenLineIds.map(String) : []);
+    const displayOnlySet = st.displayOnlyIds instanceof Set ? st.displayOnlyIds
+      : new Set(Array.isArray(st.displayOnlyIds) ? st.displayOnlyIds.map(String) : []);
     const labelNotHidden = (l) => {
       const ids = Array.isArray(l.lineIds) ? l.lineIds : [];
       return !phase || !ids.length || ids.some((id) => !hiddenLineIds.has(String(id)));
+    };
+    // 他省纯单元（全部成员线为他省）：不受调光隐藏约束（2026-11-25——分期态他省线站名
+    // 照常显示；无成员线信息的标签不算，防御位交给 labelShownUnderDim 的空 ids 分支）
+    const labelDisplayOnly = (l) => {
+      const ids = Array.isArray(l.lineIds) ? l.lineIds : [];
+      return ids.length > 0 && ids.every((id) => displayOnlySet.has(String(id)));
     };
     const stopMatches = (l) => {
       if (l.stopPhaseMembers) return stopUnitMatchesPhase(l.stopPhaseMembers, phase, dimSet);
@@ -1230,7 +1241,8 @@
       // 其余隐藏，分期隐藏维度在聚焦时整体让位），其余标签一律隐藏
       return arr.filter((l) => labelHasFocus(l, members) && labelNotHidden(l));
     }
-    return filterLabels(arr.filter((l) => labelNotHidden(l) && (stopMatches(l) === null ? labelShownUnderDim(l, dimSet) : stopMatches(l))), zoom);
+    return filterLabels(arr.filter((l) => labelNotHidden(l)
+      && (labelDisplayOnly(l) || (stopMatches(l) === null ? labelShownUnderDim(l, dimSet) : stopMatches(l)))), zoom);
   }
 
   // ---------- 调光纯逻辑（2026-11-22 改版：分期四档＋聚焦双模式，任一条件调光即调光） ----------

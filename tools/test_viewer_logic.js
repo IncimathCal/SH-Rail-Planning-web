@@ -264,7 +264,7 @@ const statusLabels = V.buildStopView(statusStops).labels;
 eq(V.visibleLabels(statusLabels, 11, { phase: 'existing' }).map((l) => l.key), ['sn'], '站点分期覆盖：future 站名在既有档隐藏，未标注站名沿用线路期次行为');
 eq(V.visibleLabels(statusLabels, 11, { phase: 'future', dimmedSet: new Set(['lOther']) }).map((l) => l.key), ['sf'], '站点分期覆盖：future 站名在远期档显示，非匹配线路按旧行为隐藏');
 eq(V.visibleLabels(statusLabels, 11, { phase: 'existing', focus: 'l14' }).map((l) => l.key), ['sf'], '聚焦站名常显优先于站点分期覆盖');
-eq(V.visibleLabels(statusLabels, 11, { phase: 'existing', hiddenLineIds: ['l14', 'lOther'] }).length, 0, '分期态他省线路站名可通过 hiddenLineIds 隐藏');
+eq(V.visibleLabels(statusLabels, 11, { phase: 'existing', hiddenLineIds: ['l14', 'lOther'] }).length, 0, 'hiddenLineIds 纯逻辑能力位保留（旧四档 API；2026-11-25 后分期态他省站名不走此隐藏，见 displayOnlyIds 用例）');
 eq(V.stopUnitMatchesPhase([{ lineId: 'lA', status: 'future' }, { lineId: 'lB' }], 'future', new Set(['lB'])), true, '混合覆盖组：任一覆盖匹配成员即可正常显示');
 eq(V.stopUnitMatchesPhase([{ lineId: 'lA' }, { lineId: 'lB' }], 'future', new Set(['lA'])), true, '未覆盖组成员按 lineId 回退 dimSet，任一未调光则正常');
 eq(V.stopUnitMatchesPhase([{ lineId: 'lA' }, { lineId: 'lB' }], 'future', new Set(['lA', 'lB'])), false, '未覆盖组成员全部调光则整组调光');
@@ -456,6 +456,30 @@ eq(V.visibleLabels(vlLabelsG, 9, { focus: 'm1', focusMembers: [] }).map((l) => l
   'focusMembers 空数组退 [focus]（脏输入防御）');
 eq(V.visibleLabels(vlLabelsG, 9, { focus: 'm1', focusMembers: [null, ''] }).map((l) => l.key).sort(), ['gm', 's1'],
   'focusMembers 全脏项过滤后空 → 退 [focus]');
+// displayOnlyIds（2026-11-25 用户纠正裁定：分期态他省线照常显示——站名只按 zoom 门槛，
+// 不受「被调光线隐藏」约束；他省线分期态恒入 dimmed 但那是线身恒调光口径，不再连坐站名）
+const vlLabelsTP = [
+  { key: 'p1', name: '他省站', group: false, lineIds: ['tp'] },
+  { key: 'p2', name: '他省组', group: true, lineIds: ['tp', 'tq'] },
+  { key: 'mix', name: '跨省换乘', group: true, lineIds: ['la', 'tp'] },   // 混合单元：本地成员按旧规则
+  { key: 's1', name: '本地站', group: false, lineIds: ['lb'] },
+];
+const dimTP = new Set(['tp', 'tq', 'lb']);   // 分期态：他省线恒调光 ＋ 本地未选段线
+eq(V.visibleLabels(vlLabelsTP, 13, { dimmedSet: dimTP, displayOnlyIds: ['tp', 'tq'] }).map((l) => l.key),
+  ['p1', 'p2', 'mix'],
+  'displayOnlyIds：他省纯单元（站/组）不受调光隐藏照常显示；混合单元任一本地成员未调光则显示；本地被调光线站名照旧隐藏');
+eq(V.visibleLabels(vlLabelsTP, 13, { dimmedSet: dimTP }).map((l) => l.key),
+  ['mix'],
+  '对照：不传 displayOnlyIds 时他省纯单元标签随全成员调光隐藏（旧行为）——新参数是唯一放行口');
+eq(V.visibleLabels(vlLabelsTP, 10, { dimmedSet: dimTP, displayOnlyIds: ['tp', 'tq'] }).map((l) => l.key),
+  ['p2', 'mix'],
+  'displayOnlyIds 放行不越 zoom 门槛：z10 普通站（含他省单站）仍隐藏、组标签（他省组/混合组）照门槛规则显示');
+eq(V.visibleLabels(vlLabelsTP, 13, { dimmedSet: dimTP, displayOnlyIds: [] }).map((l) => l.key),
+  ['mix'],
+  'displayOnlyIds 空集＝不放行（防御：非分期态胶水层传空数组）');
+eq(V.visibleLabels(vlLabels, 13, { dimmedSet: dimLB, displayOnlyIds: ['lb', 'lc'] }).map((l) => l.key),
+  ['s1', 's2', 'g1', 'g2', 'x1'],
+  'displayOnlyIds 恰为全成员调光线集：s2/g2 放行（全成员皆他省口径）、x1 无所属线信息不受影响');
 
 // ---------- connectorFadePlan（联络线渐变接入端判定，2026-11-22 用户需求 3） ----------
 console.log('connectorFadePlan:');
