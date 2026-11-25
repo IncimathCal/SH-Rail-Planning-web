@@ -531,6 +531,21 @@
     return out;
   }
 
+  /** 排序面板拖拽落位（纯逻辑，node 单测覆盖；2026-11-26 排序面板拖拽改版）。
+   *  把 list[from] 移到「第 to 行的前/后半」对应插入位（after＝true 落行后）。
+   *  返回新数组（不动入参）；越界返回 null。原地/等效无变化也返回等值新数组，
+   *  由调用方比对决定是否应用——dropReorder 本身不区分「有效」与「无变化」。 */
+  function dropReorder(list, from, to, after) {
+    const n = list.length;
+    if (!Array.isArray(list) || from < 0 || from >= n || to < 0 || to >= n) return null;
+    let insert = to + (after ? 1 : 0);
+    if (insert > from) insert -= 1;   // 先移除自身再插：插入点在移除点之后要前移一格
+    const out = list.slice();
+    const [id] = out.splice(from, 1);
+    out.splice(insert, 0, id);
+    return out;
+  }
+
   /** manifest.archived（归档线 id 表，防编号复用）的规范化（纯逻辑，node 单测覆盖）。
    *  prev＝上一份 manifest 的 archived（可缺失），lines＝当前全部线：当前归档的补入、
    *  **已取消归档的必须摘除**——留着即 validate 报「archived id is also an active line」，
@@ -1262,7 +1277,7 @@
     haversineM, groupSplitMeters, isSplitGroup,
     stopGroupKey, groupUnitSig,
     cascadeStationGroups, pruneStationGroups, normalizeStationGroups, pendingGroupIssues,
-    normalizeLineOrder, archivedIdList, LAYER_RESERVED, searchTermsOf, matchesTerms, groupSearchText, pageSlice,
+    normalizeLineOrder, dropReorder, archivedIdList, LAYER_RESERVED, searchTermsOf, matchesTerms, groupSearchText, pageSlice,
     isReservedLine, segStatusesOf, stopStatusOf, stopStatusIssues, setStopStatus, lineDrawKey, sameLineDraw,
     extractLineInfoSection, replaceLineInfoSection, lineInfoSectionSkeleton, lineInfoTemplateHeader,
     lineInfoTargets,
@@ -4539,8 +4554,11 @@
   });
 
   // ---------- 线路显示顺序面板（查看器左栏序；2026-11-22 需求 5） ----------
-  // 顶栏「排序」打开对话框：平铺全部线路（类别＋线名，排列＝当前自定义顺序），
-  // 每行置顶/上移/下移/置底；「确定」一次快照写入 S.lineOrder（可撤销），
+  // 顶栏「排序」打开对话框：平铺全部线路（类别＋线名，排列＝当前自定义顺序）。
+  // 2026-11-26 改版：整行可直接拖拽换位（HTML5 drag & drop，落位计算＝纯逻辑 dropReorder；
+  // 指针在目标行上/下半决定插到其前/后，指示线提示落点；拖到列表上下边缘 rAF 自动滚动；
+  // Esc 取消＝原生 DnD 行为）。原置顶/上移/下移/置底按钮保留作单格微调。
+  // 「确定」一次快照写入 S.lineOrder（可撤销），
   // 随「保存工作区」进 manifest.lineOrder → flatten 产出 net/index.json 供查看器消费。
   // 编辑器左栏主列表保持现状（分类分组）不动。
   const orderMenu = $('orderMenu');
@@ -4576,7 +4594,8 @@
       if (!l) return '';
       const layer = (l.meta && typeof l.meta.layer === 'string' && l.meta.layer) || '未分类';
       return `
-      <div class="ord-row" data-i="${i}">
+      <div class="ord-row" data-i="${i}" draggable="true">
+        <span class="drag" title="拖动整行换位（也可直接抓行内任意处）">⠿</span>
         <span class="idx">${i + 1}</span>
         <span class="chip" style="background:${esc(l.color)}"></span>
         <span class="nm" title="${esc(l.id)} ${esc(l.name)}">${esc(l.name || '（未命名）')}</span>
@@ -4601,6 +4620,73 @@
     orderDraft.splice(j, 0, id);
     renderOrderPanel();   // 只重排面板行，不动主界面
   });
+
+  // ----- 拖拽换位（2026-11-26；HTML5 DnD 委托在 #orderList 容器上） -----
+  // 状态：dragFrom＝源行索引；dragTo＝当前落点 {i, after}；ordDragY＝最近 dragover 的
+  // clientY（供 rAF 边缘自动滚动）。drop 里重渲染 innerHTML 会把源行 detach——
+  // dragend 从 detached 节点不再冒泡到容器，因此清理在 drop 与 dragend 双调用（幂等）。
+  let dragFrom = null, dragTo = null, ordDragY = null, ordScrollRaf = 0, ordHintRow = null;
+  function ordScrollLoop() {   // 拖拽期间靠近列表上下边缘持续滚动（指针静止也滚）
+    const box = $('orderList');
+    const r = box.getBoundingClientRect();
+    const EDGE = 32, STEP = 14;
+    if (ordDragY != null) {
+      if (ordDragY < r.top + EDGE) box.scrollTop -= STEP;
+      else if (ordDragY > r.bottom - EDGE) box.scrollTop += STEP;
+    }
+    ordScrollRaf = requestAnimationFrame(ordScrollLoop);
+  }
+  function ordDragCleanup() {
+    if (ordScrollRaf) { cancelAnimationFrame(ordScrollRaf); ordScrollRaf = 0; }
+    ordDragY = null; dragFrom = null; dragTo = null;
+    if (ordHintRow) { ordHintRow.classList.remove('drop-before', 'drop-after'); ordHintRow = null; }
+    const src = $('orderList').querySelector('.ord-row.dragging');
+    if (src) src.classList.remove('dragging');
+  }
+  $('orderList').addEventListener('dragstart', (e) => {
+    const row = e.target.closest && e.target.closest('.ord-row');
+    if (!row || !orderMenu.open) return;
+    dragFrom = +row.dataset.i;
+    dragTo = null;
+    row.classList.add('dragging');
+    // setData 仅令浏览器认账可拖（Chrome 不设也能拖，Firefox 必须设）；
+    // dragover 期间读不到 getData，索引一律走内存变量 dragFrom
+    e.dataTransfer.setData('text/plain', String(dragFrom));
+    e.dataTransfer.effectAllowed = 'move';
+    if (!ordScrollRaf) ordScrollRaf = requestAnimationFrame(ordScrollLoop);
+  });
+  $('orderList').addEventListener('dragover', (e) => {
+    if (dragFrom == null) return;   // 非本列表发起的拖动（如拖文件进页）不拦截
+    e.preventDefault();             // 必须，否则不容许 drop
+    e.dataTransfer.dropEffect = 'move';
+    ordDragY = e.clientY;
+    const row = e.target.closest('.ord-row');
+    if (!row || row.dataset.i === '') return;
+    const i = +row.dataset.i;
+    if (Number.isNaN(i) || i === dragFrom) {   // 悬在源行自身上不提示
+      if (ordHintRow) { ordHintRow.classList.remove('drop-before', 'drop-after'); ordHintRow = null; }
+      dragTo = null;
+      return;
+    }
+    const r = row.getBoundingClientRect();
+    const after = e.clientY > r.top + r.height / 2;
+    if (ordHintRow && ordHintRow !== row) ordHintRow.classList.remove('drop-before', 'drop-after');
+    row.classList.toggle('drop-before', !after);
+    row.classList.toggle('drop-after', after);
+    ordHintRow = row;
+    dragTo = { i, after };
+  });
+  $('orderList').addEventListener('drop', (e) => {
+    if (dragFrom == null) return;
+    e.preventDefault();
+    if (dragTo) {
+      const next = dropReorder(orderDraft, dragFrom, dragTo.i, dragTo.after);
+      if (next) orderDraft = next;
+    }
+    ordDragCleanup();       // 先清理再重渲染（dragend 到不了容器，见上注）
+    renderOrderPanel();     // 全量重建即清残留指示线与拖拽态
+  });
+  $('orderList').addEventListener('dragend', () => ordDragCleanup());   // Esc/拖出取消路径
 
   // ---------- 工作区（载入/新建/保存） ----------
   // 工作区文件夹与 data/ 同构：lines/*.json＋groups.json＋manifest.json，复制进 data/ 即为提交。

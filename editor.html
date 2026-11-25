@@ -102,12 +102,17 @@
   .ll-group + .ll-group { margin-top: 6px; }   /* 分组包层（分页页脚挂组内）后的组间距，与原组头间距等效 */
 
   /* 线路显示顺序面板（顶栏「排序」对话框；行内 mini 按钮沿用全局样式） */
-  .ord-row { display: flex; align-items: center; gap: 5px; padding: 2px 4px; border-radius: 4px; }
+  .ord-row { display: flex; align-items: center; gap: 5px; padding: 2px 4px; border-radius: 4px;
+    cursor: grab; }   /* 整行可拖（2026-11-26 拖拽换位；按钮仍指针） */
   .ord-row:hover { background: #2a2e35; }
   .ord-row .chip { width: 12px; height: 12px; border-radius: 3px; flex: none; border: 1px solid #000; }
   .ord-row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ord-row .lyr { color: var(--dim); font-size: 11px; flex: none; }
   .ord-row .idx { color: var(--dim); font-size: 11px; width: 26px; text-align: right; flex: none; }
+  .ord-row .drag { color: var(--dim); flex: none; cursor: grab; user-select: none; }   /* 拖拽把手（仅视觉提示） */
+  .ord-row.dragging { opacity: .35; }                       /* 拖动中的源行 */
+  .ord-row.drop-before { box-shadow: inset 0 2px 0 var(--acc); }   /* 落点指示线（插到该行前） */
+  .ord-row.drop-after { box-shadow: inset 0 -2px 0 var(--acc); }   /* 落点指示线（插到该行后） */
   .badge { font-size: 10px; padding: 0 4px; border-radius: 3px; background: #444;
     color: #ddd; vertical-align: 1px; }
   .badge.arch { background: #5f2a2a; color: #ffb0b0; }
@@ -227,7 +232,7 @@
   <div class="tb-group">
     <button id="btnUndo" title="Ctrl+Z">撤销</button>
     <button id="btnOrder"
-      title="线路显示顺序（查看器左栏自上而下的排列）：上移/下移/置顶/置底自定义，确定后随「保存工作区」写入 manifest 的 lineOrder，经 flatten 产出 net/index.json；编辑器左栏主列表不受影响">排序</button>
+      title="线路显示顺序（查看器左栏自上而下的排列）：拖拽整行换位或上移/下移/置顶/置底微调，确定后随「保存工作区」写入 manifest 的 lineOrder，经 flatten 产出 net/index.json；编辑器左栏主列表不受影响">排序</button>
     <button id="btnBasemap" title="底图三态循环：关→OSM→高德→关（需 data/calibration*.json 与网络；高德为 GCJ02 逐瓦片偏移对齐；仅本地对位参考）">底图：关</button>
   </div>
   <div class="tb-group">
@@ -377,7 +382,9 @@
 <dialog id="orderMenu">
   <b style="display:block;margin-bottom:6px">线路显示顺序（查看器左栏）</b>
   <p style="color:var(--dim);margin:0 0 8px;font-size:12px;max-width:380px">
-    自上而下＝查看器左栏的显示顺序（顶在前）。调整后「确定」写入编辑器数据（Ctrl+Z 可撤销），
+    自上而下＝查看器左栏的显示顺序（顶在前）。按住任意行直接拖到目标位置（落在目标行的上半＝插到其前、
+    下半＝插到其后；拖到列表上下边缘自动滚动；Esc 取消拖动），或用行内按钮微调。
+    调整后「确定」写入编辑器数据（Ctrl+Z 可撤销），
     随「保存工作区」存入 manifest 的 lineOrder，经 flatten 产出 net/index.json；
     编辑器左栏主列表仍按分类分组，不受影响。</p>
   <div id="orderList" style="max-height:60vh;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px;min-width:420px"></div>

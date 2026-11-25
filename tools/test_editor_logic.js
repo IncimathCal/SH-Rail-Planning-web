@@ -2,7 +2,8 @@
 // editor.js 纯逻辑层单测：分段实体（fmt/line@2：加删站索引簿记、切分/并段/区间/约束检测、@1→@2 迁移）、
 // stopSeq 水位、status 修正、lineIssues、批量命名、站圆预置批量落站（planStopImport/applyStopImport/suggestForStop）、
 // 出省箭头（kind:'arrow' 落位/编组/命名/校验）、多线换乘药丸串法（planGroupPillChain 确定性）、
-// 线路显示顺序（normalizeLineOrder：缺省回退/序列化补全/新建追加/失效清理/删除移除）、
+// 线路显示顺序（normalizeLineOrder：缺省回退/序列化补全/新建追加/失效清理/删除移除；
+// dropReorder：排序面板拖拽落位——前后半插入/按钮语义对拍/原地/越界，2026-11-26）、
 // 站类型循环切换（nextStopKind：三种位置 × 各起点）、站数<2 缺 status 载入兜底（2026-11-22）、
 // 联络线有效目标判定（connValidTargets：2026-11-22 取消颜色属性改由所联络两线决定）、
 // 嵌套换乘组（2026-11-23：组树工具含成环/未知子组防御、绘制单元规划、药丸线数口径、含整组的编组判定、
@@ -589,6 +590,36 @@ eq(L.normalizeLineOrder(['l0001', 'l0002', 'l0003'], ['l0001', 'l0003']), ['l000
 // 去重保序＋非字符串杂物跳过（对手改 manifest 的防御）
 eq(L.normalizeLineOrder(['l0001', 'l0001', 7, null, 'l0002'], ['l0001', 'l0002']), ['l0001', 'l0002'], '重复去重、杂物跳过');
 eq(L.normalizeLineOrder(['l0002', 'l0001', 'l0002'], ['l0001', 'l0002']), ['l0002', 'l0001'], '重复 id 只保留首次出现');
+
+// ---------- 排序面板拖拽落位 dropReorder（2026-11-26 排序面板拖拽改版） ----------
+console.log('dropReorder:');
+// 基本位移：从 from 移到「第 to 行前/后半」的插入位（after＝true 落行后）
+eq(L.dropReorder(['a', 'b', 'c', 'd'], 2, 0, false), ['c', 'a', 'b', 'd'], '中段拖到首行前＝置顶');
+eq(L.dropReorder(['a', 'b', 'c', 'd'], 0, 3, true), ['b', 'c', 'd', 'a'], '首行拖到末行后＝置底');
+eq(L.dropReorder(['a', 'b', 'c', 'd'], 0, 2, false), ['b', 'a', 'c', 'd'], '首行拖到行2前（insert>from 补偿 -1）');
+eq(L.dropReorder(['a', 'b', 'c', 'd'], 3, 1, true), ['a', 'b', 'd', 'c'], '末行拖到行1后');
+eq(L.dropReorder(['a', 'b', 'c'], 1, 2, true), ['a', 'c', 'b'], '相邻后移：行1拖到行2后＝交换');
+// 与按钮语义对拍（同一格微调用拖拽等价表达）：
+eq(L.dropReorder(['a', 'b', 'c', 'd'], 2, 1, false), ['a', 'c', 'b', 'd'], '上移一格＝拖到前一行上半（交换）');
+eq(L.dropReorder(['a', 'b', 'c', 'd'], 1, 2, true), ['a', 'c', 'b', 'd'], '下移一格＝拖到后一行下半（交换）');
+eq(L.dropReorder(['a', 'b', 'c', 'd'], 1, 3, true), ['a', 'c', 'd', 'b'], '置底语义＝拖到末行下半');
+// 原地与等效无变化：调用方按结果比对决定不应用，函数本身恒返回等值新数组
+eq(L.dropReorder(['a', 'b', 'c'], 1, 1, false), ['a', 'b', 'c'], '悬在源行上半＝原地');
+eq(L.dropReorder(['a', 'b', 'c'], 1, 1, true), ['a', 'b', 'c'], '悬在源行下半＝原地');
+eq(L.dropReorder(['a', 'b', 'c'], 2, 1, true), ['a', 'b', 'c'], '行2悬于行1下半＝插到行1后＝原地');
+eq(L.dropReorder(['a', 'b', 'c'], 1, 2, false), ['a', 'b', 'c'], '行1悬于行2上半＝插到行2前＝原地');
+eq(L.dropReorder(['a', 'b', 'c'], 1, 0, true), ['a', 'b', 'c'], '行1悬于行0下半＝原地');
+// 边界与防御
+eq(L.dropReorder(['a'], 0, 0, false), ['a'], '单元素原地');
+eq(L.dropReorder(['a', 'b'], -1, 0, false), null, 'from 越界返回 null');
+eq(L.dropReorder(['a', 'b'], 0, 5, false), null, 'to 越界返回 null');
+eq(L.dropReorder(['a', 'b'], 2, 0, true), null, 'from 超尾返回 null');
+eq(L.dropReorder([], 0, 0, false), null, '空列表返回 null');
+{ // 不动入参（返回新数组）
+  const src = ['a', 'b', 'c'];
+  L.dropReorder(src, 0, 2, false);
+  eq(src, ['a', 'b', 'c'], '入参数组不被修改');
+}
 
 // ---------- 归档线 id 表 archivedIdList（manifest.archived；2026-11-22 抓包：取消归档后仍留在表里） ----------
 console.log('archivedIdList:');
