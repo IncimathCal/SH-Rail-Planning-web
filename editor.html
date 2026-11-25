@@ -382,7 +382,9 @@
 <dialog id="orderMenu">
   <b style="display:block;margin-bottom:6px">线路显示顺序（查看器左栏）</b>
   <p style="color:var(--dim);margin:0 0 8px;font-size:12px;max-width:380px">
-    自上而下＝查看器左栏的显示顺序（顶在前）。按住任意行直接拖到目标位置（落在目标行的上半＝插到其前、
+    自上而下＝查看器左栏的显示顺序（顶在前）。条目＝自然线路：有线组（主线＋支线）的整组一条、
+    未入组的独立线各一条；联络线、他省线、组内支线、归档线不参与排序（保留在数据末尾，不影响显示）。
+    按住任意行直接拖到目标位置（落在目标行的上半＝插到其前、
     下半＝插到其后；拖到列表上下边缘自动滚动；Esc 取消拖动），或用行内按钮微调。
     调整后「确定」写入编辑器数据（Ctrl+Z 可撤销），
     随「保存工作区」存入 manifest 的 lineOrder，经 flatten 产出 net/index.json；

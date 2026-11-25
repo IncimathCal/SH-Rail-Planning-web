@@ -546,6 +546,129 @@
     return out;
   }
 
+  /** 排序面板「自然线路」条目构建（2026-11-26 自然线路视角改版；纯逻辑，node 单测覆盖）。
+   *  面板条目与查看器左栏列表同口径（buildLineGroups＋layerGroups）：有效线组（须有
+   *  role==='main' 成员）整组一条、未入有效组的独立线各一条；**不出面板**的线——
+   *  联络线（role==='connector' 或 meta.layer='联络线'）、他省线（meta.layer='他省'，
+   *  用户保证不与本地线同组）、归档线（flatten 剔除、查看器列表无）——组内支线不单独
+   *  出行（只随组）。归属判定＝双向并集（组 members 声明＋线 groupId 指向；**groupId
+   *  指向优先、members 声明按组序先到先得**，一条线至多归一组——与 logicalLineCount
+   *  同口径；孤儿 groupId 不归并，同查看器防御）。组成员先剔归档线（同 flatten 口径）；
+   *  main＝剩余成员中 role==='main' 的第一个（members 声明序优先、groupId 方向按传入序，
+   *  同查看器 buildLineGroups）；无 main 的组不合并（成员各按独立线出行）；组的 main
+   *  自身属上述不出面板类（如纯他省组）→ 整组不出面板（防御，现实数据不至此）。
+   *  联络线若被录进组仍保留在组成员里（查看器 buildLineGroups 同收——不出行但随组走
+   *  lineOrder，防御同口径）。
+   *  lines＝线对象数组（编辑器侧 [...S.lines.values()]）；lineGroups＝groups.json 的
+   *  lineGroups（可缺省）。返回条目：组在前（lineGroups 声明序）、独立线按 id 升序在后
+   *  ——该构建序仅作兜底显示序，实际面板序由 naturalOrderSort 按 lineOrder 排定：
+   *    [{kind:'group', id:组id, name, color, mainId, memberIds:[线id...]},
+   *     {kind:'line', id:线id, name, color, layer, stops, groupId}]
+   *  memberIds＝组成员按 members 声明序＋groupId 方向传入序。非数组入参 → 空表。 */
+  function naturalOrderEntries(lines, lineGroups) {
+    const ls = (Array.isArray(lines) ? lines : [])
+      .filter((l) => l && typeof l.id === 'string' && l.id);
+    const lgs = (Array.isArray(lineGroups) ? lineGroups : [])
+      .filter((g) => g && typeof g.id === 'string' && g.id);
+    const byId = new Map(ls.map((l) => [l.id, l]));
+    const known = new Set(lgs.map((g) => g.id));
+    const hiddenOf = (l) => l.role === 'connector'
+      || (l.meta && l.meta.layer === '联络线') || (l.meta && l.meta.layer === '他省')
+      || !!(l.meta && l.meta.archived);
+    // 最终归属 lid→gid：members 声明先登记（组序先到先得），有效 groupId 指向覆盖
+    const belong = new Map();
+    for (const g of lgs) {
+      for (const m of Array.isArray(g.members) ? g.members : []) {
+        if (typeof m === 'string' && byId.has(m) && !belong.has(m)) belong.set(m, g.id);
+      }
+    }
+    for (const l of ls) {
+      if (typeof l.groupId === 'string' && known.has(l.groupId)) belong.set(l.id, l.groupId);
+    }
+    const out = [];
+    const inGroup = new Set();   // 已被有效组吃掉的线 id（不再独立出行）
+    for (const g of lgs) {
+      // 组成员序＝members 声明序在前、groupId 方向按传入序在后（同 buildLineGroups），
+      // 声明方向只收最终归属确为本组者（防一条线被两个组声明时重复出行）
+      const seen = new Set(), seq = [];
+      for (const m of Array.isArray(g.members) ? g.members : []) {
+        if (typeof m === 'string' && byId.has(m) && belong.get(m) === g.id && !seen.has(m)) {
+          seen.add(m); seq.push(m);
+        }
+      }
+      for (const l of ls) {
+        if (belong.get(l.id) === g.id && !seen.has(l.id)) { seen.add(l.id); seq.push(l.id); }
+      }
+      const live = seq.filter((id) => !(byId.get(id).meta && byId.get(id).meta.archived));   // 归档成员剔除（同 flatten）
+      if (!live.length) continue;
+      const mainId = live.find((id) => byId.get(id).role === 'main') || null;
+      if (!mainId) continue;                    // 无 main 不归并：成员走独立线（同查看器防御）
+      if (hiddenOf(byId.get(mainId))) continue; // 组主线自身不出面板（纯他省组等防御）→ 整组不出
+      for (const id of live) inGroup.add(id);
+      const main = byId.get(mainId);
+      out.push({ kind: 'group', id: g.id,
+        name: (typeof g.name === 'string' && g.name) || main.name || g.id,
+        color: (typeof g.color === 'string' && g.color) || main.color || '#888888',
+        mainId, memberIds: live });
+    }
+    const singles = [];
+    for (const l of ls) {
+      if (inGroup.has(l.id) || hiddenOf(l)) continue;
+      singles.push({ kind: 'line', id: l.id, name: l.name || '', color: l.color || '#888888',
+        layer: (l.meta && typeof l.meta.layer === 'string' && l.meta.layer) || '',
+        stops: Array.isArray(l.stops) ? l.stops.length : 0,
+        groupId: (typeof l.groupId === 'string' && l.groupId) || null });
+    }
+    singles.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));   // id 定长 lNNNN，字典序＝升序
+    return out.concat(singles);
+  }
+
+  /** 自然线路条目按 lineOrder 排序（排序面板显示序；纯逻辑，node 单测覆盖）。
+   *  与查看器 layerGroups 的 byOrder 同口径：条目锚 id（组＝mainId——查看器列表里组行
+   *  即主线行、位置按主线 rank；线＝线 id）在 lineOrder 中的首现位置为 rank，小者在前；
+   *  未列入者排末尾，并列按锚 id 升序（同查看器 tie-break）。order 非数组＝全部按锚 id
+   *  升序（缺省兜底）。返回新数组，不动入参。 */
+  function naturalOrderSort(entries, order) {
+    const es = (Array.isArray(entries) ? entries : [])
+      .filter((e) => e && typeof e.id === 'string' && e.id);
+    const anchor = (e) => (e.kind === 'group' && typeof e.mainId === 'string' && e.mainId) || e.id;
+    const rank = new Map();
+    if (Array.isArray(order)) {
+      order.forEach((x, i) => { const k = String(x); if (!rank.has(k)) rank.set(k, i); });
+    }
+    return es.slice().sort((a, b) => {
+      const ra = rank.has(anchor(a)) ? rank.get(anchor(a)) : Infinity;
+      const rb = rank.has(anchor(b)) ? rank.get(anchor(b)) : Infinity;
+      if (ra !== rb) return ra - rb;
+      return anchor(a) < anchor(b) ? -1 : anchor(a) > anchor(b) ? 1 : 0;
+    });
+  }
+
+  /** 自然线路条目序列 → lineOrder 线 id 数组（排序面板「确定」落位；纯逻辑，node 单测
+   *  覆盖；2026-11-26 自然线路视角改版）。每条目展开为成员线 id **连续块**：组＝该组全部
+   *  成员线 id（组内相对序＝prevOrder 落位时的现状序，保持不变——用户只挪组块，不重排
+   *  组内）、独立线＝单个 id。不在任何条目覆盖之列的线（联络线/他省线/归档线等技术线路）
+   *  保留在数组**末尾**、保持 prevOrder 原相对序——它们不出查看器列表（或 rank 无效），
+   *  位置无视觉影响。prevOrder 先经 normalizeLineOrder 取全量现状（清失效 id、补缺线），
+   *  返回数组恒完整覆盖 allLineIds（仍是线 id 数组，落盘格式/schema 零变化）。 */
+  function lineOrderFromNatural(entryOrder, prevOrder, allLineIds) {
+    const norm = normalizeLineOrder(prevOrder, allLineIds);
+    const pos = new Map(norm.map((id, i) => [id, i]));
+    const shown = new Set();
+    const out = [];
+    for (const e of Array.isArray(entryOrder) ? entryOrder : []) {
+      if (!e || typeof e.id !== 'string' || !e.id) continue;
+      const ids = (e.kind === 'group'
+        ? (Array.isArray(e.memberIds) ? e.memberIds : [])
+        : [e.id]).filter((x) => pos.has(x));
+      for (const id of ids.slice().sort((a, b) => pos.get(a) - pos.get(b))) {   // 组内相对序＝现状序
+        if (!shown.has(id)) { shown.add(id); out.push(id); }
+      }
+    }
+    for (const id of norm) if (!shown.has(id)) out.push(id);   // 技术线路：末尾、原相对序
+    return out;
+  }
+
   /** manifest.archived（归档线 id 表，防编号复用）的规范化（纯逻辑，node 单测覆盖）。
    *  prev＝上一份 manifest 的 archived（可缺失），lines＝当前全部线：当前归档的补入、
    *  **已取消归档的必须摘除**——留着即 validate 报「archived id is also an active line」，
@@ -1277,7 +1400,8 @@
     haversineM, groupSplitMeters, isSplitGroup,
     stopGroupKey, groupUnitSig,
     cascadeStationGroups, pruneStationGroups, normalizeStationGroups, pendingGroupIssues,
-    normalizeLineOrder, dropReorder, archivedIdList, LAYER_RESERVED, searchTermsOf, matchesTerms, groupSearchText, pageSlice,
+    normalizeLineOrder, dropReorder, naturalOrderEntries, naturalOrderSort, lineOrderFromNatural,
+    archivedIdList, LAYER_RESERVED, searchTermsOf, matchesTerms, groupSearchText, pageSlice,
     isReservedLine, segStatusesOf, stopStatusOf, stopStatusIssues, setStopStatus, lineDrawKey, sameLineDraw,
     extractLineInfoSection, replaceLineInfoSection, lineInfoSectionSkeleton, lineInfoTemplateHeader,
     lineInfoTargets,
@@ -4554,34 +4678,53 @@
   });
 
   // ---------- 线路显示顺序面板（查看器左栏序；2026-11-22 需求 5） ----------
-  // 顶栏「排序」打开对话框：平铺全部线路（类别＋线名，排列＝当前自定义顺序）。
-  // 2026-11-26 改版：整行可直接拖拽换位（HTML5 drag & drop，落位计算＝纯逻辑 dropReorder；
-  // 指针在目标行上/下半决定插到其前/后，指示线提示落点；拖到列表上下边缘 rAF 自动滚动；
-  // Esc 取消＝原生 DnD 行为）。原置顶/上移/下移/置底按钮保留作单格微调。
+  // 2026-11-26 自然线路视角改版：面板条目＝自然线路（与查看器列表同口径）——有效线组
+  // （须有 main）整组一条、未入有效组的独立线各一条；联络线、他省线、归档线与组内支线
+  // 不出面板（用户原话「排序自然线路，而不是乱七八糟的所有技术线路拖来拖去」）。拖拽与
+  // 四按钮都作用于条目；「确定」落位时每条自然线路展开为成员线 id 连续块（组＝全部成员、
+  // 组内相对序保持现状；条目构建/排序/展开＝纯逻辑 naturalOrderEntries/naturalOrderSort/
+  // lineOrderFromNatural），不在面板的技术线路保留在 lineOrder 末尾（原相对序——它们不进
+  // 查看器列表，位置无视觉影响）。注：旧 lineOrder 里组员分散时，「打开面板不动直接确定」
+  // 也会把组员连续化（查看器视觉等价、列表序不变，仅支线/技术线在数组内的位置收紧）。
+  // 拖拽交互（同日早前改版，全部保留）：整行 HTML5 drag & drop（落点计算＝纯逻辑
+  // dropReorder；指针在目标行上/下半决定插到其前/后，指示线提示落点；拖到列表上下边缘
+  // rAF 自动滚动；Esc 取消＝原生 DnD 行为）。置顶/上移/下移/置底按钮保留作单格微调。
   // 「确定」一次快照写入 S.lineOrder（可撤销），
   // 随「保存工作区」进 manifest.lineOrder → flatten 产出 net/index.json 供查看器消费。
   // 编辑器左栏主列表保持现状（分类分组）不动。
   const orderMenu = $('orderMenu');
-  let orderDraft = [];   // 面板工作副本（确定才写回）
+  let orderDraft = [];   // 面板工作副本（自然线路条目序；确定才展开写回）
   /** 当前生效的线路顺序：S.lineOrder 原始值经 normalize 现算（清失效 id、补缺线到末尾） */
   function effectiveLineOrder() {
     return normalizeLineOrder(S.lineOrder, [...S.lines.keys()]);
   }
+  /** 面板条目（自然线路；构建序见 naturalOrderEntries 注释） */
+  function orderEntries() {
+    return naturalOrderEntries([...S.lines.values()], (S.groups && S.groups.lineGroups) || []);
+  }
   $('btnOrder').addEventListener('click', () => {
-    if (!S.lines.size) { setStatus('暂无线路，无显示顺序可调。', true); return; }
-    orderDraft = effectiveLineOrder();
+    const entries = orderEntries();
+    if (!entries.length) {
+      setStatus(S.lines.size
+        ? '没有可排序的自然线路（联络线、他省线、组内支线、归档线均不参与排序）。'
+        : '暂无线路，无显示顺序可调。', true);
+      return;
+    }
+    orderDraft = naturalOrderSort(entries, effectiveLineOrder());
     renderOrderPanel();
     orderMenu.showModal();
   });
   $('orderCancel').onclick = () => orderMenu.close();
   $('orderOk').onclick = () => {
     orderMenu.close();
-    if (JSON.stringify(orderDraft) === JSON.stringify(effectiveLineOrder())) {
+    const cur = effectiveLineOrder();
+    const next = lineOrderFromNatural(orderDraft, cur, [...S.lines.keys()]);
+    if (JSON.stringify(next) === JSON.stringify(cur)) {
       setStatus('线路显示顺序未变化。');
       return;
     }
     snapshot();   // 排序可撤销（一次回退整批）
-    S.lineOrder = orderDraft.slice();   // draft 由 normalize 而来，恒为全量显式顺序
+    S.lineOrder = next;   // lineOrderFromNatural 恒为全量显式顺序（normalize 而来）
     renderAll();
     setStatus('已更新线路显示顺序（「保存工作区」时随 manifest 的 lineOrder 写出，'
       + '经 flatten 产出 net/index.json 供查看器左栏排序）。');
@@ -4589,18 +4732,34 @@
   function renderOrderPanel() {
     const box = $('orderList');
     const n = orderDraft.length;
-    box.innerHTML = orderDraft.map((lid, i) => {
-      const l = S.lines.get(lid);
-      if (!l) return '';
-      const layer = (l.meta && typeof l.meta.layer === 'string' && l.meta.layer) || '未分类';
+    box.innerHTML = orderDraft.map((e, i) => {
+      if (e.kind === 'group') {
+        const members = e.memberIds.map((m) => {
+          const l = S.lines.get(m);
+          return l ? `${l.id}${l.name ? ' ' + l.name : ''}` : m;
+        }).join('、');
+        return `
+        <div class="ord-row grp" data-i="${i}" data-kind="group" draggable="true">
+          <span class="drag" title="拖动整行换位（也可直接抓行内任意处）">⠿</span>
+          <span class="idx">${i + 1}</span>
+          <span class="chip" style="background:${esc(e.color)}"></span>
+          <span class="nm" title="${esc(e.id)} ${esc(e.name)} · 成员：${esc(members)}">${esc(e.name || '（未命名组）')}</span>
+          <span class="lyr">线组 · ${e.memberIds.length}线</span>
+          <span class="lyr">${e.id}</span>
+          <button class="mini" data-ordop="top" ${i === 0 ? 'disabled' : ''} title="移到最前">置顶</button>
+          <button class="mini" data-ordop="up" ${i === 0 ? 'disabled' : ''} title="上移一格">↑</button>
+          <button class="mini" data-ordop="down" ${i === n - 1 ? 'disabled' : ''} title="下移一格">↓</button>
+          <button class="mini" data-ordop="bottom" ${i === n - 1 ? 'disabled' : ''} title="移到最后">置底</button>
+        </div>`;
+      }
       return `
-      <div class="ord-row" data-i="${i}" draggable="true">
+      <div class="ord-row" data-i="${i}" data-kind="line" draggable="true">
         <span class="drag" title="拖动整行换位（也可直接抓行内任意处）">⠿</span>
         <span class="idx">${i + 1}</span>
-        <span class="chip" style="background:${esc(l.color)}"></span>
-        <span class="nm" title="${esc(l.id)} ${esc(l.name)}">${esc(l.name || '（未命名）')}</span>
-        <span class="lyr">${esc(layer)}</span>
-        <span class="lyr">${l.id} · ${l.stops.length}站${l.meta && l.meta.archived ? ' · 归档' : ''}</span>
+        <span class="chip" style="background:${esc(e.color)}"></span>
+        <span class="nm" title="${esc(e.id)} ${esc(e.name)}">${esc(e.name || '（未命名）')}</span>
+        <span class="lyr">${esc(e.layer || '未分类')}</span>
+        <span class="lyr">${e.id} · ${e.stops}站</span>
         <button class="mini" data-ordop="top" ${i === 0 ? 'disabled' : ''} title="移到最前">置顶</button>
         <button class="mini" data-ordop="up" ${i === 0 ? 'disabled' : ''} title="上移一格">↑</button>
         <button class="mini" data-ordop="down" ${i === n - 1 ? 'disabled' : ''} title="下移一格">↓</button>

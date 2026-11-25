@@ -3,7 +3,10 @@
 // stopSeq 水位、status 修正、lineIssues、批量命名、站圆预置批量落站（planStopImport/applyStopImport/suggestForStop）、
 // 出省箭头（kind:'arrow' 落位/编组/命名/校验）、多线换乘药丸串法（planGroupPillChain 确定性）、
 // 线路显示顺序（normalizeLineOrder：缺省回退/序列化补全/新建追加/失效清理/删除移除；
-// dropReorder：排序面板拖拽落位——前后半插入/按钮语义对拍/原地/越界，2026-11-26）、
+// dropReorder：排序面板拖拽落位——前后半插入/按钮语义对拍/原地/越界，2026-11-26；
+// naturalOrderEntries/naturalOrderSort/lineOrderFromNatural：排序面板自然线路视角——
+// 条目构建（组归并双向并集/排除清单/无 main 组防御）、按 lineOrder 排序（锚=主线 id）、
+// 落位展开（组块连续＋组内相对序不变＋技术线路末尾原相对序），2026-11-26）、
 // 站类型循环切换（nextStopKind：三种位置 × 各起点）、站数<2 缺 status 载入兜底（2026-11-22）、
 // 联络线有效目标判定（connValidTargets：2026-11-22 取消颜色属性改由所联络两线决定）、
 // 嵌套换乘组（2026-11-23：组树工具含成环/未知子组防御、绘制单元规划、药丸线数口径、含整组的编组判定、
@@ -619,6 +622,102 @@ eq(L.dropReorder([], 0, 0, false), null, '空列表返回 null');
   const src = ['a', 'b', 'c'];
   L.dropReorder(src, 0, 2, false);
   eq(src, ['a', 'b', 'c'], '入参数组不被修改');
+}
+
+// ---------- 排序面板自然线路视角（2026-11-26：naturalOrderEntries / naturalOrderSort / lineOrderFromNatural） ----------
+console.log('naturalOrder:');
+const mkOrdL = (id, o) => Object.assign(
+  { id, name: '线' + id, color: '#0A0B0C', role: 'standalone', groupId: null,
+    stops: [{}, {}, {}], meta: { layer: null } }, o || {},
+  { meta: Object.assign({ layer: null }, (o && o.meta) || {}) });
+const ORD_LINES = [
+  mkOrdL('l01', { role: 'main', groupId: 'g1' }),
+  mkOrdL('l02', { role: 'branch' }),                 // 被 g1 members 声明（无 groupId——测声明方向）
+  mkOrdL('l05', { role: 'main', groupId: 'g2' }),
+  mkOrdL('l06', { role: 'branch', groupId: 'g2' }),
+  mkOrdL('l14', { role: 'branch', groupId: 'g2' }),  // 同时被 g1 声明——groupId 指向优先
+  mkOrdL('l11'), mkOrdL('l12'),                      // 被 g3（无 main）声明
+  mkOrdL('l04', { meta: { layer: '市区线' } }),
+  mkOrdL('l07', { meta: { layer: '预控通道' } }),    // 预控通道独立线保留（查看器三栏含它）
+  mkOrdL('l08', { role: 'connector' }),              // 联络线：不出面板
+  mkOrdL('l09', { meta: { layer: '他省' } }),        // 他省线：不出面板
+  mkOrdL('l10', { meta: { archived: true } }),       // 归档线：不出面板
+  mkOrdL('l13', { groupId: 'gX' }),                  // 孤儿 groupId：不归并、独立出行
+];
+const ORD_LGS = [
+  { id: 'g1', name: '组一', color: '#C10000', members: ['l01', 'l02', 'l14'] },
+  { id: 'g2', name: '', members: [] },                // 无名组：组名退主线名（不造名）
+  { id: 'g3', name: '无主组', members: ['l11', 'l12'] },   // 无 main → 不归并
+];
+{
+  const es = L.naturalOrderEntries(ORD_LINES, ORD_LGS);
+  eq(es.map((e) => e.kind + ':' + e.id),
+    ['group:g1', 'group:g2', 'line:l04', 'line:l07', 'line:l11', 'line:l12', 'line:l13'],
+    '条目＝两有效组＋五独立线（联络线/他省/归档/组内支线均不出）');
+  eq(es[0].mainId, 'l01', 'g1 主线＝声明成员中 role=main 的第一个');
+  eq(es[0].memberIds, ['l01', 'l02'], 'g1 成员＝声明序（l14 的 groupId 指向 g2 优先，不进 g1）');
+  eq(es[0].name, '组一', '组名以组记录为准');
+  eq(es[1].mainId, 'l05', 'g2 主线＝l05');
+  eq(es[1].memberIds, ['l05', 'l06', 'l14'], 'g2 成员＝groupId 方向按传入序（members 空表）');
+  eq(es[1].name, '线l05', '无名组组名退主线名（不造名）');
+  // 组主线被归档 → 组不成立，未归档成员独立出行
+  const esA = L.naturalOrderEntries(
+    ORD_LINES.concat([mkOrdL('l20', { role: 'main', meta: { archived: true } }), mkOrdL('l21', { role: 'branch' })]),
+    ORD_LGS.concat([{ id: 'g4', name: '主归档组', members: ['l20', 'l21'] }]));
+  eq(esA.map((e) => e.id), ['g1', 'g2', 'l04', 'l07', 'l11', 'l12', 'l13', 'l21'],
+    '组主线被归档→组不成立（l21 独立出行、归档线 l20 不出）');
+  // 联络线成员随组（不出独立行、留在组内——同查看器 buildLineGroups 防御口径）
+  const esB = L.naturalOrderEntries(
+    [mkOrdL('l30', { role: 'main' }), mkOrdL('l31', { role: 'connector' })],
+    [{ id: 'g5', name: '带联络线的组', members: ['l30', 'l31'] }]);
+  eq(esB.map((e) => e.id), ['g5'], '联络线成员不出独立行');
+  eq(esB[0].memberIds, ['l30', 'l31'], '联络线成员保留在组内');
+  // 纯他省组：整组不出面板（排序无意义）
+  eq(L.naturalOrderEntries(
+    [mkOrdL('l40', { role: 'main', meta: { layer: '他省' } }), mkOrdL('l41', { role: 'branch', meta: { layer: '他省' } })],
+    [{ id: 'g6', name: '他省组', members: ['l40', 'l41'] }]), [], '他省组整组不出面板');
+  // 防御
+  eq(L.naturalOrderEntries(ORD_LINES, [{ id: 'gE', name: '空组', members: [] }])
+    .some((e) => e.id === 'gE'), false, '空组不出条目');
+  eq(L.naturalOrderEntries(undefined, null), [], '非数组入参 → 空表');
+  eq(L.naturalOrderEntries(ORD_LINES, undefined)
+    .every((e) => e.kind === 'line'), true, '无组表＝全部独立线（孤儿 groupId 不归并）');
+
+  // 排序：锚＝组主线 id（查看器列表组行即主线行），未列入者末尾按锚 id 升序
+  const ORD = ['l05', 'l04', 'l01', 'l13'];
+  const sorted = L.naturalOrderSort(es, ORD);
+  eq(sorted.map((e) => e.id), ['g2', 'l04', 'g1', 'l13', 'l07', 'l11', 'l12'],
+    '面板序＝锚 rank（组锚=主线 id），未列入者末尾按锚 id 升序');
+  eq(L.naturalOrderSort(es, null).map((e) => e.id), ['g1', 'l04', 'g2', 'l07', 'l11', 'l12', 'l13'],
+    '无序＝全按锚 id 升序（g2 锚=主线 l05，排在 l04 之后——同查看器 tie-break）');
+
+  // 落位展开：组块连续、组内相对序不变、技术线路末尾原相对序
+  const ALL = ORD_LINES.map((l) => l.id);
+  const cur = L.normalizeLineOrder(ORD, ALL);
+  eq(cur, ['l05', 'l04', 'l01', 'l13', 'l02', 'l06', 'l07', 'l08', 'l09', 'l10', 'l11', 'l12', 'l14'],
+    '前置：现状全量序（未列线按 id 升序补末）');
+  const dragged = L.dropReorder(sorted, 2, 0, false);   // 用户把 g1（面板第 3 行）拖到最前
+  eq(dragged.map((e) => e.id), ['g1', 'g2', 'l04', 'l13', 'l07', 'l11', 'l12'],
+    '拖拽作用于条目数组（dropReorder 复用）');
+  const next = L.lineOrderFromNatural(dragged, cur, ALL);
+  eq(next, ['l01', 'l02', 'l05', 'l06', 'l14', 'l04', 'l13', 'l07', 'l11', 'l12', 'l08', 'l09', 'l10'],
+    '落位＝组块连续（组内相对序＝现状序）、独立线单 id、技术线路末尾原相对序');
+  eq(next.slice(0, 2), ['l01', 'l02'], 'g1 组块两成员连续且组内序不变');
+  eq(next.slice(2, 5), ['l05', 'l06', 'l14'], 'g2 组块三成员连续（现状相对序 l05<l06<l14）');
+  ok(next.indexOf('l08') > next.indexOf('l12') && next.indexOf('l09') > next.indexOf('l08')
+    && next.indexOf('l10') > next.indexOf('l09'), '联络线/他省/归档统一在末尾、保持原相对序');
+  eq(new Set(next).size, ALL.length, '落位数组完整覆盖全部线 id（无丢线无重复）');
+  eq(L.lineOrderFromNatural(dragged, next, ALL), next, '对已连续化的 lineOrder 再落位＝幂等');
+  // 打开面板不动直接确定：旧数据组员分散时被连续化（查看器列表序不变——支线不出行）
+  eq(L.lineOrderFromNatural(sorted, cur, ALL),
+    ['l05', 'l06', 'l14', 'l04', 'l01', 'l02', 'l13', 'l07', 'l11', 'l12', 'l08', 'l09', 'l10'],
+    '面板不动直接确定：组员连续化（视觉等价）');
+  // 防御
+  eq(L.lineOrderFromNatural(null, cur, ALL), cur, '条目非数组 → 原序（技术线全保留）');
+  eq(L.lineOrderFromNatural([{ kind: 'group', id: 'gZ', memberIds: ['l99'] }], cur, ALL), cur,
+    '未知成员 id 过滤 → 原序');
+  eq(L.lineOrderFromNatural([{ kind: 'line', id: 'l04' }, { kind: 'line', id: 'l07' }], cur, ALL).slice(0, 2),
+    ['l04', 'l07'], '独立线条目＝单 id 块');
 }
 
 // ---------- 归档线 id 表 archivedIdList（manifest.archived；2026-11-22 抓包：取消归档后仍留在表里） ----------
