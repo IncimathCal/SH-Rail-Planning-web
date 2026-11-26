@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目状态（2026-11-23）
 
+**⚠ 进行中·新 UI 实装被暂停（2026-11-26 用户外出关机）**：demo 已定稿（`零散/新UI-demo/`，规格＝demo 本身＋以下定稿补充：B 站链接 https://space.bilibili.com/1028685261/、公众号卡无链接纯展示、注意事项两段深红、二维码＝零散/资源 3@3x.png(公众号)与资源 4@3x.png(bilibili)、单击线路浮卡提示「色点＋自然线名」含他省线/联络线静默/2.5-3s 淡出/防双击聚焦冲突）。实装 worker 半成品在 worktree `agent-a50515dcde7d04ae6`（分支同名）：已改 index.html/src/viewer.js/src/viewer_core.js/tools/publish.py/tools/test_viewer_logic.js＋未跟踪 assets/logo.svg、qrcode-gzh.png、qrcode-bilibili.png；**该 worktree 基线停在 ec8c273，续做/合入前必须核对文件基底＝主树 668b4af（分期批次 40787c4 与他省纠正 bdb6a61 的 viewer 侧内容不得丢）**；剩余＝全套验证（四 node 单测/真数据整页冒烟含线路提示项/publish 冒烟/grep 残留）＋交付报告，然后主窗口验收合入。回来继续时先重启 `python -X utf8 tools/serve.py` 与 `sync_workspace --watch`。旧 UI 备份＝git tag `pre-newui-20261126`。
+
 上海轨道交通远期规划图网页：编辑器（editor.html，仅本地、永不部署）＋查看器（index.html，GitHub Pages 从 /docs 发布）。**本文件夹已 git 化（分支 main，无远端）**，用户将发布为 **SH-Rail-Planning-web**。
 
 - 阶段 0 标定 / 1 规范骨架：完成（标定已定案＝手动 TPS，见下）。
