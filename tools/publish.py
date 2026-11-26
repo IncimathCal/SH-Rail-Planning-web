@@ -12,7 +12,9 @@
      （lines.geojson / stops.geojson / index.json＝线路显示顺序索引，随 net/ 整体产出；
      lineinfo.md＝用户手填线路介绍，数据目录里有则原样透传进 net/）；
   3. 白名单拷贝：index.html、src/viewer*.js、assets/vendor/（vendored MapLibre）、
-     assets/fonts/（UI 字体子集，index.html @font-face 引用；2026-11-23 增）。
+     assets/fonts/（UI 字体子集，index.html @font-face 引用；2026-11-23 增）、
+     assets/logo.svg＋assets/qrcode-{gzh,bilibili}.png（新 UI 素材：favicon/初始页/右上
+     logo 与两张二维码卡；2026-11-26 增）。
 
 白名单恒定——editor.html、编辑器代码、过程文档、源资产、import/ 永不进入部署目录
 （编辑器仅供本地使用，永不部署）。docs/ 为生成物，勿手改。
@@ -96,6 +98,11 @@ def main():
     cp("assets/vendor")
     cp("basemap")   # 省级界线底图静态件（查看器运行时按相对路径只读此仓库内文件）
     cp("assets/fonts")   # UI 字体子集（2026-11-23 浅色改版随 @font-face 进发布）
+    # 新 UI 素材（2026-11-26）：logo.svg＝favicon＋初始页 logo＋右上角 logo 三处引用；
+    # 两张二维码卡（公众号纯图片、B 站链接新窗口打开）
+    cp("assets/logo.svg")
+    cp("assets/qrcode-gzh.png")
+    cp("assets/qrcode-bilibili.png")
 
     # 4. 汇总与自检
     total = 0
