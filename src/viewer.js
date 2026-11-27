@@ -29,6 +29,19 @@
 // 高亮渐变：focus-veil 白罩常驻化（fill-opacity 0↔0.7 走 paint transition 渐入渐出）、
 // basemap-veil 档位切换同挂 transition、站名标签 visibility 硬切改 opacity transition；
 // 联络线 blend/fade 动态层与分期他省 dim 位的过渡未做（层全删全建/特征无稳定 id）。
+// 2026-11-27 动效改版（用户「所有动效都是硬切，希望改成滑动、平滑缩放到对应位置」）：
+// ①面板四视图切换由 display 硬切改滑动过渡——视图绝对堆叠于 #panelViews 滑轨
+//（CSS data-pos 三态，见 index.html），层级推挤方向（rank：splash<main<station<line）：
+// 前进＝新视图自右滑入、旧视图退左淡出；返回反向。逐级返回链（列表→车站页→线路页）
+// 方向自然正确；线路页状态下点站切车站高亮＝降级走返回向（侧向切换，视觉为「回到
+// 车站层」）。搜索态展开/收起＝#viewMain.searching 驱动 #mainSwap 内交叉滑动（列表退左、
+// 结果自右淡入）。视图常驻 DOM——滚动位置/搜索词/焦点零丢失。
+// ②相机一律平滑：聚焦跳转 fitFocusLine 由 fitBounds 改 flyTo（cameraForBounds 按
+// cameraPadding 解目标位——padding 只作解算输入、flyTo 不传 padding 选项，守「flyTo 的
+// padding 写持久 transform 污染后续 fitBounds」既有裁定；duration 900）；车站交互
+// enterStationByPin 与纯联络线站退路的 flyTo 补 essential:false。全部动画调用
+// essential:false（用户系统「减少动态」偏好时退化为即时定位）。唯二例外：首次加载
+// fitAll 保持即时（首屏不闪，duration 0）；退出聚焦/车站页返回/面板返回不动相机（既有裁定）。
 // 实装路径对齐：数据 fetch＝net → build/net 依次回退（正式版原样）；省界底图＝仓库静态件
 // basemap/provinces-wgs84.json（相对路径）。
 // ——以下为原查看器头注（保留供对照）——
@@ -229,7 +242,7 @@
     lineInfo: {},                 // 线组id或线id → { fields, bodyHtml, links }（lineinfo.md 解析结果；boot 填充，缺失＝空表＝一切线路无信息节）
     // ---------- 新 UI demo 状态（会话内不持久化，刷新回初始界面；与底图/分期同策） ----------
     ui: {
-      view: 'splash',             // 'splash' 初始界面 | 'main' 主界面（列表） | 'line' 线路页
+      view: 'splash',             // 'splash' 初始界面 | 'main' 主界面（列表） | 'station' 车站页 | 'line' 线路页（滑动层级见 VIEW_RANK）
       tab: '市区线',               // 主界面当前选项卡（市区线/市域线/预控通道；他省与联络线不进列表）
       searching: false,           // 搜索态：结果占据整个面板主体（顶条与署名行保留）
       linePageId: null,           // 线路页当前线路（主线 id；setFocus 同源）
@@ -857,6 +870,8 @@
     const bb = totalBbox();
     // 2026-11-27 相机让位 padding 推广：初始全图 fit 同样扣左侧面板（面板在 splash 态也
     // 常驻显示），全图西端不再被面板压住
+    //（2026-11-27 动效例外：首次加载的初始定位保持即时 duration 0——首屏不闪；仅在
+    //  map 'load' 时调用一次，交互路径不走这里）
     if (bb) S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: cameraPadding(), duration: 0, maxZoom: 12 });
   }
 
@@ -1651,8 +1666,24 @@
   function fitFocusLine(id) {
     const bb = V.focusBboxOf(S.dispBbox, S.lineGroups, id, S.fadeConnPlan);
     if (!bb || !S.map) return;
-    S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]],
-      { padding: cameraPadding(), duration: 600, maxZoom: 13 });
+    // 2026-11-27 动效改版：fitBounds 改 flyTo——目标位由 cameraForBounds 按 cameraPadding/
+    // maxZoom 解出（vendored maplibre 的 fitBounds 内部同款「先解算再动画」模式），飞行缩放
+    // 曲线观感更平滑；duration 600→900 与车站定位 800 同档。⚠ padding 只作解算输入，
+    // flyTo 不传 padding 选项——它写持久 transform.padding 会污染后续 fitBounds 几何
+    //（见 cameraPadding 注，与搜索车站 flyTo 用一次性 offset 同一裁定的两种实现）。
+    // essential:false＝「减少动态」系统偏好下退化为即时定位；cameraForBounds 异常防御
+    // 回落旧 fitBounds 动画（同为平滑，行为不降级）。
+    let cam = null;
+    try {
+      cam = S.map.cameraForBounds([[bb[0], bb[1]], [bb[2], bb[3]]],
+        { padding: cameraPadding(), maxZoom: 13 });
+    } catch (e) { cam = null; }
+    if (cam && cam.center && Number.isFinite(cam.zoom)) {
+      S.map.flyTo({ center: cam.center, zoom: cam.zoom, duration: 900, maxZoom: 13, essential: false });
+    } else {
+      S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]],
+        { padding: cameraPadding(), duration: 600, maxZoom: 13 });
+    }
   }
   // 面板可见性运行时探测（demo：唯一左侧面板 #panel；抽屉收起＝.collapsed 移出屏）：
   // !hidden 且 rect 在屏内（width>0 且 right>0——collapsed 态 transform 移出后 right<0）。
@@ -1770,12 +1801,44 @@
   }
 
   // ---------- 视图切换（初始界面 / 主界面 / 线路页 / 车站页） ----------
+  // ---------- 视图切换（初始界面 / 主界面 / 线路页 / 车站页；2026-11-27 动效：滑动过渡） ----------
+  // 四视图绝对堆叠于 #panelViews（CSS data-pos 三态：center / off-left(-28% 淡) / off-right），
+  // 层级 rank 推挤方向：rank {splash:0 < main:1 < station:2 < line:3}——前进＝新视图自右滑入、
+  // 旧视图退左淡出；返回反向。覆盖链路：确认→main、列表/搜索→line、点站→station、车站页
+  // 线路行→line、逐级返回 line→station→main→splash 全部自动推导正确；「线路页状态下点站」
+  // （line→station，降级）走返回向——侧向切换视觉为「回到车站层」。视图常驻 DOM（不再
+  // display 硬切），滚动位置/搜索词/焦点在切换间零丢失；动画期间非活动视图
+  // pointer-events:none。时长/缓动＝index.html --slide-dur(420ms)/--slide-ease（与既有
+  // 420ms 玻璃过渡同档）；noanim＝进场起始位瞬时跳转（reflow 生效后即移除）。
+  const VIEW_RANK = { splash: 0, main: 1, station: 2, line: 3 };
+  const VIEW_IDS = { splash: 'viewSplash', main: 'viewMain', station: 'viewStation', line: 'viewLine' };
+  function viewEl(view) { return $(VIEW_IDS[view]); }
+  // 初始化（wireUI 头部调用）：解除 HTML 的无 JS 降级 [hidden]，改挂 data-pos 滑轨位
+  //（当前视图 center、其余 off-right；visibility 由 CSS 即时隐藏，同帧无闪烁）
+  function initViewPositions() {
+    for (const v of Object.keys(VIEW_IDS)) {
+      const el = viewEl(v);
+      el.hidden = false;
+      el.dataset.pos = v === S.ui.view ? 'center' : 'off-right';
+    }
+    // 搜索结果容器的降级 [hidden] 一并解除——此后显隐全由 #viewMain.searching 类驱动
+    const sr = $('searchResults');
+    if (sr) sr.hidden = false;
+  }
   function showView(view) {
+    const prev = S.ui.view;
     S.ui.view = view;
-    $('viewSplash').hidden = view !== 'splash';
-    $('viewMain').hidden = view !== 'main';
-    $('viewLine').hidden = view !== 'line';
-    $('viewStation').hidden = view !== 'station';
+    if (prev === view || !(view in VIEW_IDS) || !(prev in VIEW_IDS)) return;
+    const fwd = VIEW_RANK[view] > VIEW_RANK[prev];
+    const oldEl = viewEl(prev), newEl = viewEl(view);
+    // 新视图瞬时跳到进场起始位（noanim 跳过过渡，强制 reflow 后恢复过渡能力）
+    newEl.classList.add('noanim');
+    newEl.dataset.pos = fwd ? 'off-right' : 'off-left';
+    void newEl.offsetWidth;
+    newEl.classList.remove('noanim');
+    // 双视图同帧对滑（旧视图退场、新视图进场；visibility 由 CSS 按终态规则延迟切换）
+    oldEl.dataset.pos = fwd ? 'off-left' : 'off-right';
+    newEl.dataset.pos = 'center';
   }
 
   // ---------- 线路页（demo 新 UI：lineinfo 或「无信息」；最下方 KML 下载） ----------
@@ -1846,9 +1909,10 @@
     scheduleHover();      // cursor 重判（车站态/分期解除）
     // 相机：flyTo 站坐标 zoom13＋相机让位一次性 offset（不碰 flyTo 的 padding 选项——
     // 它写持久 transform.padding 会污染后续 fitBounds 几何，见 cameraPadding 注）＋波纹
+    //（2026-11-27 动效：补 essential:false——「减少动态」系统偏好下退化为即时定位）
     const pad = cameraPadding();
     S.map.flyTo({
-      center: S.dispCoord(st.lon, st.lat), zoom: 13, duration: 800,
+      center: S.dispCoord(st.lon, st.lat), zoom: 13, duration: 800, essential: false,
       offset: [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2],
     });
     playStopFx(st.lon, st.lat);
@@ -2042,11 +2106,13 @@
     const input = $('searchInput');
     const searching = !!(input && input.value.trim());
     S.ui.searching = searching;
-    const mb = $('mainBody');
-    if (mb) mb.hidden = searching;
+    // 2026-11-27 动效改版：搜索态展开/收起改 #viewMain.searching 类驱动交叉滑动过渡
+    //（#mainBody 退左淡出、#searchResults 自右淡入，CSS 见 index.html #mainSwap 段），
+    // 不再 hidden 硬切——搜索词与结果 DOM 在往返线路页/车站页之间照旧保留
+    const vm = $('viewMain');
+    if (vm) vm.classList.toggle('searching', searching);
     if (!host) return;
-    host.hidden = !searching;
-    if (!searching) return;
+    if (!searching) return;   // 收起时保留结果 DOM（再次输入即重建，与旧 hidden 行为一致）
     host.textContent = '';
     const hits = currentHits();
     if (!hits.length) {
@@ -2112,7 +2178,7 @@
       if (pin && enterStationByPin(pin)) return;
       const pad = cameraPadding();
       S.map.flyTo({
-        center: S.dispCoord(lb.lon, lb.lat), zoom: 13, duration: 800,
+        center: S.dispCoord(lb.lon, lb.lat), zoom: 13, duration: 800, essential: false,
         offset: [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2],
       });
       playStopFx(lb.lon, lb.lat);
@@ -2342,6 +2408,7 @@
 
   // ---------- 交互接线（demo 新 UI；二轮 1/2/7/13 改版） ----------
   function wireUI() {
+    initViewPositions();   // 2026-11-27 动效：解除降级 [hidden]、四视图上滑轨（data-pos）
     // 视图切换：确认→主界面；主界面返回→（搜索态先清搜索回列表，二轮①）→清聚焦分期后回初始
     // 界面（二轮⑬）；线路页返回→main 视图（搜索来源自动恢复搜索态——二轮②，词与结果保留）
     $('btnConfirm').addEventListener('click', () => showView('main'));
