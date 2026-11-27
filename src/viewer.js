@@ -39,19 +39,6 @@
 // 高亮渐变：focus-veil 白罩常驻化（fill-opacity 0↔0.7 走 paint transition 渐入渐出）、
 // basemap-veil 档位切换同挂 transition、站名标签 visibility 硬切改 opacity transition；
 // 联络线 blend/fade 动态层与分期他省 dim 位的过渡未做（层全删全建/特征无稳定 id）。
-// 2026-11-27 动效改版（用户「所有动效都是硬切，希望改成滑动、平滑缩放到对应位置」）：
-// ①面板四视图切换由 display 硬切改滑动过渡——视图绝对堆叠于 #panelViews 滑轨
-//（CSS data-pos 三态，见 index.html），层级推挤方向（rank：splash<main<station<line）：
-// 前进＝新视图自右滑入、旧视图退左淡出；返回反向。逐级返回链（列表→车站页→线路页）
-// 方向自然正确；线路页状态下点站切车站高亮＝降级走返回向（侧向切换，视觉为「回到
-// 车站层」）。搜索态展开/收起＝#viewMain.searching 驱动 #mainSwap 内交叉滑动（列表退左、
-// 结果自右淡入）。视图常驻 DOM——滚动位置/搜索词/焦点零丢失。
-// ②相机一律平滑：聚焦跳转 fitFocusLine 由 fitBounds 改 flyTo（cameraForBounds 按
-// cameraPadding 解目标位——padding 只作解算输入、flyTo 不传 padding 选项，守「flyTo 的
-// padding 写持久 transform 污染后续 fitBounds」既有裁定；duration 900）；车站交互
-// enterStationByPin 与纯联络线站退路的 flyTo 补 essential:false。全部动画调用
-// essential:false（用户系统「减少动态」偏好时退化为即时定位）。唯二例外：首次加载
-// fitAll 保持即时（首屏不闪，duration 0）；退出聚焦/车站页返回/面板返回不动相机（既有裁定）。
 // 实装路径对齐：数据 fetch＝net → build/net 依次回退（正式版原样）；省界底图＝仓库静态件
 // basemap/provinces-wgs84.json（相对路径）。
 // ——以下为原查看器头注（保留供对照）——
@@ -252,7 +239,7 @@
     lineInfo: {},                 // 线组id或线id → { fields, bodyHtml, links }（lineinfo.md 解析结果；boot 填充，缺失＝空表＝一切线路无信息节）
     // ---------- 新 UI demo 状态（会话内不持久化，刷新回初始界面；与底图/分期同策） ----------
     ui: {
-      view: 'splash',             // 'splash' 初始界面 | 'main' 主界面（列表） | 'station' 车站页 | 'line' 线路页（滑动层级见 VIEW_RANK）
+      view: 'splash',             // 'splash' 初始界面 | 'main' 主界面（列表） | 'line' 线路页
       tab: '市区线',               // 主界面当前选项卡（市区线/市域线/预控通道；他省与联络线不进列表）
       searching: false,           // 搜索态：结果占据整个面板主体（顶条与署名行保留）
       linePageId: null,           // 线路页当前线路（主线 id；setFocus 同源）
@@ -892,8 +879,6 @@
     const bb = totalBbox();
     // 2026-11-27 相机让位 padding 推广：初始全图 fit 同样扣左侧面板（面板在 splash 态也
     // 常驻显示），全图西端不再被面板压住
-    //（2026-11-27 动效例外：首次加载的初始定位保持即时 duration 0——首屏不闪；仅在
-    //  map 'load' 时调用一次，交互路径不走这里）
     if (bb) S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: cameraPadding(), duration: 0, maxZoom: 12 });
   }
 
@@ -1750,24 +1735,8 @@
   function fitFocusLine(id) {
     const bb = V.focusBboxOf(S.dispBbox, S.lineGroups, id, S.fadeConnPlan);
     if (!bb || !S.map) return;
-    // 2026-11-27 动效改版：fitBounds 改 flyTo——目标位由 cameraForBounds 按 cameraPadding/
-    // maxZoom 解出（vendored maplibre 的 fitBounds 内部同款「先解算再动画」模式），飞行缩放
-    // 曲线观感更平滑；duration 600→900 与车站定位 800 同档。⚠ padding 只作解算输入，
-    // flyTo 不传 padding 选项——它写持久 transform.padding 会污染后续 fitBounds 几何
-    //（见 cameraPadding 注，与搜索车站 flyTo 用一次性 offset 同一裁定的两种实现）。
-    // essential:false＝「减少动态」系统偏好下退化为即时定位；cameraForBounds 异常防御
-    // 回落旧 fitBounds 动画（同为平滑，行为不降级）。
-    let cam = null;
-    try {
-      cam = S.map.cameraForBounds([[bb[0], bb[1]], [bb[2], bb[3]]],
-        { padding: cameraPadding(), maxZoom: 13 });
-    } catch (e) { cam = null; }
-    if (cam && cam.center && Number.isFinite(cam.zoom)) {
-      S.map.flyTo({ center: cam.center, zoom: cam.zoom, duration: 900, maxZoom: 13, essential: false });
-    } else {
-      S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]],
-        { padding: cameraPadding(), duration: 600, maxZoom: 13 });
-    }
+    S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]],
+      { padding: cameraPadding(), duration: 600, maxZoom: 13 });
   }
   // 面板可见性运行时探测（demo：唯一左侧面板 #panel；抽屉收起＝.collapsed 移出屏）：
   // !hidden 且 rect 在屏内（width>0 且 right>0——collapsed 态 transform 移出后 right<0）。
@@ -1885,30 +1854,6 @@
   }
 
   // ---------- 视图切换（初始界面 / 主界面 / 线路页 / 车站页） ----------
-  // ---------- 视图切换（初始界面 / 主界面 / 线路页 / 车站页；2026-11-27 动效：滑动过渡） ----------
-  // 四视图绝对堆叠于 #panelViews（CSS data-pos 三态：center / off-left(-28% 淡) / off-right），
-  // 层级 rank 推挤方向：rank {splash:0 < main:1 < station:2 < line:3}——前进＝新视图自右滑入、
-  // 旧视图退左淡出；返回反向。覆盖链路：确认→main、列表/搜索→line、点站→station、车站页
-  // 线路行→line、逐级返回 line→station→main→splash 全部自动推导正确；「线路页状态下点站」
-  // （line→station，降级）走返回向——侧向切换视觉为「回到车站层」。视图常驻 DOM（不再
-  // display 硬切），滚动位置/搜索词/焦点在切换间零丢失；动画期间非活动视图
-  // pointer-events:none。时长/缓动＝index.html --slide-dur(420ms)/--slide-ease（与既有
-  // 420ms 玻璃过渡同档）；noanim＝进场起始位瞬时跳转（reflow 生效后即移除）。
-  const VIEW_RANK = { splash: 0, main: 1, station: 2, line: 3 };
-  const VIEW_IDS = { splash: 'viewSplash', main: 'viewMain', station: 'viewStation', line: 'viewLine' };
-  function viewEl(view) { return $(VIEW_IDS[view]); }
-  // 初始化（wireUI 头部调用）：解除 HTML 的无 JS 降级 [hidden]，改挂 data-pos 滑轨位
-  //（当前视图 center、其余 off-right；visibility 由 CSS 即时隐藏，同帧无闪烁）
-  function initViewPositions() {
-    for (const v of Object.keys(VIEW_IDS)) {
-      const el = viewEl(v);
-      el.hidden = false;
-      el.dataset.pos = v === S.ui.view ? 'center' : 'off-right';
-    }
-    // 搜索结果容器的降级 [hidden] 一并解除——此后显隐全由 #viewMain.searching 类驱动
-    const sr = $('searchResults');
-    if (sr) sr.hidden = false;
-  }
   function showView(view) {
     const prev = S.ui.view;
     S.ui.view = view;
@@ -1964,6 +1909,119 @@
       tip.textContent = '无信息';
       body.appendChild(tip);
     }
+    // 车站列表（2026-11-27）：信息（或「无信息」提示）下方——竖直线站序样式，主线段
+    // ＋分割线＋每条支线一段；arrow 出省端画线端箭头不写站名；接入标注（往支线去向/
+    // 往主线/联络对方线）＝V.lineStopSections 模型。lineinfo 有无与本列表无耦合。
+    const stopModel = V.lineStopSections(lineId, S.linesMap, S.stops, S.lineGroups, S.groupTree);
+    if (stopModel) body.appendChild(buildStopSection(stopModel));
+  }
+
+  // ---------- 线路页车站列表渲染（2026-11-27：竖直线站序；视觉常量与地图侧同源） ----------
+  // 样式基准（2026-11-27 用户澄清）：参照本图地图侧的线宽/站圈/组圈视觉体系等比适配——
+  // 竖线宽 7px＝LINE_WIDTH_PX、普通节点直径 11（r5.5）描边 1.2、黑边节点描边 1.32、
+  // 换乘大圈直径 15（r7.5）、药丸高 15 黑边 2.2（pills 层 19.4/15 的列表等价），数值与
+  // viewer.js 画布视觉参数注释一一对应，CSS 侧不再另立一套。节点形态由模型 glyph 给出
+  //（stopNodeGlyph＝buildStopView 同规则）；黑白灰 UI 约束不破——彩色仅竖线/节点描边
+  // /接入渐变短线的线路标志色，站名与标注文字恒黑。
+  // 接入标注行为：branch（主线行「往〈支线去向〉」）＝滚动到支线段；toMain（支线接入
+  // 端「往主线」）＝滚动回主线接入位置；conn（「联络〈对方自然线路名〉」＋对方线色）＝
+  // 与列表点击线路同款跳转（setFocus 聚焦＋相机＋面板线路页）。直角短线统一向右（回避
+  // 支线/联络方向未定义），渐变到透明。
+  function markElOfStopList(mk) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'lp-mark lp-mark-' + mk.type;
+    const tail = document.createElement('span');
+    tail.className = 'lp-mark-tail';
+    tail.style.background = 'linear-gradient(90deg, ' + (mk.color || '#888888') + ', rgba(0,0,0,0))';
+    const txt = document.createElement('span');
+    txt.className = 'lp-mark-txt';
+    txt.textContent = mk.label;
+    b.append(tail, txt);
+    b.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      handleStopListMark(mk);
+    });
+    return b;
+  }
+  function handleStopListMark(mk) {
+    if (mk.type === 'conn' && mk.targetMainId) {
+      setFocus(mk.targetMainId);               // 与列表点击线路同款：聚焦＋相机让位
+      openLinePage(mk.targetMainId, 'list');   // 面板线路页（来源＝列表口径）
+      return;
+    }
+    let target = null;
+    if (mk.type === 'branch') {
+      target = document.getElementById('lpsec-' + mk.targetSectionIdx);
+    } else if (mk.type === 'toMain') {
+      const ta = mk.targetAt;
+      if (ta && ta.row != null) target = document.getElementById('lprow-' + mk.targetSectionIdx + '-' + ta.row);
+      else if (ta && ta.after != null) target = document.getElementById('lpinter-' + mk.targetSectionIdx + '-' + ta.after);
+      if (!target) target = document.getElementById('lpsec-' + mk.targetSectionIdx);
+    }
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function buildStopSection(model) {
+    const wrap = document.createElement('div');
+    wrap.className = 'lp-stops';
+    model.sections.forEach((sec, si) => {
+      if (si > 0) {   // 支线分割线（用户描述：主线站全部写完后「断一下」）
+        const dv = document.createElement('div');
+        dv.className = 'lp-divider';
+        wrap.appendChild(dv);
+      }
+      const rowMarks = new Map(), interMarks = new Map();
+      for (const mk of sec.marks || []) {
+        if (mk.at.row != null) {
+          if (!rowMarks.has(mk.at.row)) rowMarks.set(mk.at.row, []);
+          rowMarks.get(mk.at.row).push(mk);
+        } else if (mk.at.after != null) {
+          if (!interMarks.has(mk.at.after)) interMarks.set(mk.at.after, []);
+          interMarks.get(mk.at.after).push(mk);
+        }
+      }
+      const secEl = document.createElement('div');
+      secEl.className = 'lp-sec';
+      secEl.id = 'lpsec-' + si;
+      secEl.style.setProperty('--sec-color', sec.color || '#888888');
+      const rail = document.createElement('div');
+      const headArrow = sec.rows.length && sec.rows[0].kind === 'arrow';
+      const tailArrow = sec.rows.length && sec.rows[sec.rows.length - 1].kind === 'arrow';
+      rail.className = 'lp-rail' + (headArrow ? ' lp-rail-head' : '') + (tailArrow ? ' lp-rail-tail' : '');
+      secEl.appendChild(rail);
+      sec.rows.forEach((row, ri) => {
+        const inter = interMarks.get(ri - 1);   // at.after=ri-1：画在上一行与本行之间
+        if (inter) {
+          const iv = document.createElement('div');
+          iv.className = 'lp-inter';
+          iv.id = 'lpinter-' + si + '-' + (ri - 1);
+          for (const mk of inter) iv.appendChild(markElOfStopList(mk));
+          secEl.appendChild(iv);
+        }
+        if (row.kind === 'arrow') {   // 出省端：只画线端箭头（rail 端三角），不写站名
+          const ar = document.createElement('div');
+          ar.className = 'lp-row lp-row-arrow';
+          secEl.appendChild(ar);
+          return;
+        }
+        const r = document.createElement('div');
+        r.className = 'lp-row';
+        r.id = 'lprow-' + si + '-' + ri;
+        const g = row.glyph || { kind: 'dot', stroke: null };
+        const node = document.createElement('span');
+        node.className = 'lp-node lp-node-' + g.kind;
+        node.style.borderColor = g.stroke || sec.color || '#888888';
+        r.appendChild(node);
+        const nm = document.createElement('span');
+        nm.className = 'lp-station';
+        nm.textContent = row.name || V.stopDisplayName('');
+        r.appendChild(nm);
+        for (const mk of rowMarks.get(ri) || []) r.appendChild(markElOfStopList(mk));
+        secEl.appendChild(r);
+      });
+      wrap.appendChild(secEl);
+    });
+    return wrap;
   }
 
   // ---------- 车站页（2026-11-27 点击车站：flyTo＋多线高亮＋面板车站页；两入口一行为） ----------
@@ -1994,10 +2052,9 @@
     scheduleHover();      // cursor 重判（车站态/分期解除）
     // 相机：flyTo 站坐标 zoom13＋相机让位一次性 offset（不碰 flyTo 的 padding 选项——
     // 它写持久 transform.padding 会污染后续 fitBounds 几何，见 cameraPadding 注）＋波纹
-    //（2026-11-27 动效：补 essential:false——「减少动态」系统偏好下退化为即时定位）
     const pad = cameraPadding();
     S.map.flyTo({
-      center: S.dispCoord(st.lon, st.lat), zoom: 13, duration: 800, essential: false,
+      center: S.dispCoord(st.lon, st.lat), zoom: 13, duration: 800,
       offset: [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2],
     });
     playStopFx(st.lon, st.lat);
@@ -2191,13 +2248,11 @@
     const input = $('searchInput');
     const searching = !!(input && input.value.trim());
     S.ui.searching = searching;
-    // 2026-11-27 动效改版：搜索态展开/收起改 #viewMain.searching 类驱动交叉滑动过渡
-    //（#mainBody 退左淡出、#searchResults 自右淡入，CSS 见 index.html #mainSwap 段），
-    // 不再 hidden 硬切——搜索词与结果 DOM 在往返线路页/车站页之间照旧保留
-    const vm = $('viewMain');
-    if (vm) vm.classList.toggle('searching', searching);
+    const mb = $('mainBody');
+    if (mb) mb.hidden = searching;
     if (!host) return;
-    if (!searching) return;   // 收起时保留结果 DOM（再次输入即重建，与旧 hidden 行为一致）
+    host.hidden = !searching;
+    if (!searching) return;
     host.textContent = '';
     const hits = currentHits();
     if (!hits.length) {
@@ -2263,7 +2318,7 @@
       if (pin && enterStationByPin(pin)) return;
       const pad = cameraPadding();
       S.map.flyTo({
-        center: S.dispCoord(lb.lon, lb.lat), zoom: 13, duration: 800, essential: false,
+        center: S.dispCoord(lb.lon, lb.lat), zoom: 13, duration: 800,
         offset: [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2],
       });
       playStopFx(lb.lon, lb.lat);
@@ -2494,7 +2549,6 @@
 
   // ---------- 交互接线（demo 新 UI；二轮 1/2/7/13 改版） ----------
   function wireUI() {
-    initViewPositions();   // 2026-11-27 动效：解除降级 [hidden]、四视图上滑轨（data-pos）
     // 视图切换：确认→主界面；主界面返回→（搜索态先清搜索回列表，二轮①）→清聚焦分期后回初始
     // 界面（二轮⑬）；线路页返回→main 视图（搜索来源自动恢复搜索态——二轮②，词与结果保留）
     $('btnConfirm').addEventListener('click', () => showView('main'));
