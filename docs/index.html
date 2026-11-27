@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>上海市城市轨道交通远期线网规划示意图</title>
+  <meta name="description" content="上海轨道交通远期线网规划示意图：线路走向、设站与换乘节点、分段建设状态（既有 / 近期 / 远期），数据纯手工录入。">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#ffffff">
+  <!-- 新 UI（2026-11-26 实装，源＝零散/新UI-demo/ 定稿 demo；同日二轮全面去蓝改黑白灰；
+       真素材：favicon/初始页/右上 logo＝assets/logo.svg） -->
+  <link rel="icon" href="assets/logo.svg">
+  <link rel="stylesheet" href="assets/vendor/maplibre-gl.css">
+  <style>
+    /* ============ 新 UI（2026-11-26 定稿实装；同日二轮按用户 12+1 条反馈改版） ============
+       一轮：移除顶栏/图例卡/站点面板/聚焦框/hover 提示/缩放数字；唯一左侧面板三视图＋
+       搜索占面板＋三循环按钮＋抽屉＋右上 logo＋车站波纹；磨砂玻璃四档对比。
+       二轮（用户目验反馈）：①搜索态返回先清搜索回列表；②线路页按来源返回（搜索来源
+       保留词与结果）；③搜索线路条目加色点、副行改分类；④全面去蓝——除线路色外界面只留
+       黑白灰；⑤波纹锚点下偏修复（wrapper 改 0×0 定点、子元素绝对定位于点）；⑥无字高德
+       白罩加深至 60/40（viewer.js，待目验微调）；⑦玻璃定稿 0.45＋blur20（对比控件删除）；
+       ⑧右上小面板两行署名；⑨原生 title 提示全删；⑩滚动条细灰简约＋把手改外悬避让；
+       ⑪收起把手/展开条改全高形态；⑫排版（大标题加大加粗、版本号不换行、注意事项去字距、
+       面板内文字纯黑）；⑬返回初始界面时清除聚焦与分期（viewer.js）。
+       三轮（2026-11-27 动效）：面板四视图切换与搜索态展开/收起由 display 硬切改为滑动过渡
+       （视图推挤：前进新视图自右滑入、旧视图退左淡出；返回反向——数据位与时长见
+       #panelViews 段与 viewer.js showView/VIEW_RANK；相机侧改动见 viewer.js）。 */
+    :root {
+      --bg: #ffffff;
+      --panel-border: rgba(0, 0, 0, 0.08);
+      --control-border: rgba(0, 0, 0, 0.16);
+      --hover: rgba(0, 0, 0, 0.05);
+      --active-bg: rgba(0, 0, 0, 0.08);
+      --text: #000000;
+      --text-dim: #000000;   /* 二轮⑫：面板内灰色层次全部废掉，一律纯黑（例外仅线路色） */
+      --accent: #000000;     /* 二轮④：去蓝——强调色改纯黑（hover 边框/激活态/按钮） */
+      /* 2026-11-27 动效：视图滑动过渡时长/缓动（与既有 420ms 玻璃过渡同档）；搜索态交叉滑动更轻快 */
+      --slide-dur: 420ms;
+      --slide-ease: cubic-bezier(.3, .1, .3, 1);
+      --swap-dur: 240ms;
+    }
+    /* 2026-11-27：prefers-reduced-motion 归零分支已拆——用户明令要看到动画（系统
+       「减少动态」偏好下降级与其意愿相反），滑动/交叉滑动时长恒为标准值。 */
+    @font-face {
+      font-family: "SHMetro Web";
+      src: url("assets/fonts/subset-regular.woff2") format("woff2");
+      font-weight: 400;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "SHMetro Web";
+      src: url("assets/fonts/subset-semibold.woff2") format("woff2");
+      font-weight: 600;
+      font-display: swap;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); }
+    body { font: 14px/1.5 "PingFang SC", "SHMetro Web", system-ui, "Microsoft YaHei", sans-serif; color: var(--text); overflow: hidden; }
+
+    #map { position: absolute; inset: 0; }
+
+    /* ---------- 磨砂玻璃（二轮⑦：档位定稿 0.45＋blur20 saturate1.7，对比控件已删） ---------- */
+    .glass {
+      -webkit-backdrop-filter: blur(20px) saturate(1.7);
+      backdrop-filter: blur(20px) saturate(1.7);
+      background: rgba(255, 255, 255, 0.45);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6), 0 4px 18px rgba(0, 0, 0, 0.08);
+    }
+    @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+      .glass {
+        background: rgba(248, 249, 251, 0.97);
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+      }
+      /* 无 blur 降级：视图底色改不透明（面板底已透明化，0.45 会透底） */
+      #panel .pview { background: rgba(248, 249, 251, 0.97); }
+    }
+
+    /* ---------- HTML 中文标签叠加层（沿旧实现；opacity 渐隐渐显属高亮渐变一环） ---------- */
+    #labelLayer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 1; }
+    #coordinateRuler { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; overflow: hidden; }
+    #coordinateRuler text { fill: #6b7280; font: 11px "PingFang SC","SHMetro Web",system-ui,sans-serif; font-variant-numeric: tabular-nums; }
+    .map-label {
+      position: absolute; left: 0; top: 0;
+      font-size: 12px; line-height: 1.2; color: #000;
+      white-space: nowrap; pointer-events: none; will-change: transform;
+      paint-order: stroke fill;
+      -webkit-text-stroke: 3px #fff;
+      transform-origin: 50% 140%;
+      transition: opacity .25s ease;   /* 分期/聚焦站名显隐渐变（原 visibility 硬切改 opacity） */
+    }
+    .map-label.is-group {
+      font-size: 13px; font-weight: 600; color: #000;
+      -webkit-text-stroke: 3.25px #fff;
+    }
+
+    /* ---------- 车站定位 focus 动画（二轮④去蓝：黑环；二轮⑤锚点修复） ----------
+       wrapper＝0×0 定点（map.project 坐标 translate3d 到此），子元素绝对定位于该点、
+       各自 margin 负值居中——原实现子元素为流内排布导致整体向下偏移，已修。 */
+    #focusFx { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
+    .fx-item { position: absolute; left: 0; top: 0; width: 0; height: 0; will-change: transform; }
+    .fx-ring {
+      position: absolute; left: 0; top: 0;
+      width: 40px; height: 40px; margin: -20px 0 0 -20px; border-radius: 50%;
+      border: 3px solid #000; opacity: 0;
+      animation: fxRing 1.15s cubic-bezier(.2,.6,.35,1) forwards;
+    }
+    .fx-ring.fx-ring-2 { animation-delay: .3s; }
+    .fx-dot {
+      position: absolute; left: 0; top: 0;
+      width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%;
+      background: #000; opacity: 0;
+      animation: fxDot 1.15s ease-out forwards;
+    }
+    @keyframes fxRing {
+      0% { transform: scale(.35); opacity: .95; }
+      100% { transform: scale(2.7); opacity: 0; }
+    }
+    @keyframes fxDot {
+      0% { transform: scale(1.4); opacity: 1; }
+      60% { opacity: .85; }
+      100% { transform: scale(1); opacity: 0; }
+    }
+
+    /* ---------- 唯一左侧面板：垂直占满全高（上下留 12px），宽 236×1.25≈295px ---------- */
+    #panel {
+      position: absolute; top: 12px; left: 12px; bottom: 12px; width: 295px; z-index: 10;
+      display: flex; flex-direction: column;
+      border: 1px solid var(--panel-border); border-radius: 14px;
+      overflow: hidden;
+      transition: transform .3s ease, opacity .3s ease;
+    }
+    #panel.collapsed { transform: translateX(calc(-100% - 14px)); opacity: 0; }
+    /* ⚠ hidden 坑沿旧注：display:flex 压过 UA 的 [hidden]{display:none}——显式补 */
+    #panel[hidden], .pview[hidden], #panelTab[hidden] { display: none; }
+
+    /* 2026-11-27 动效：底色下沉——#panel 只留玻璃 blur/边框/圆角，白底由各 .pview 自带
+       （滑动叠加时进入视图必须自带底色，否则透出退场视图）；blur 仍在 #panel 层，
+       常态单视图观感与旧「面板整底」完全一致 */
+    #panel.glass { background: transparent; }
+
+    /* ---------- 面板视图滑轨（2026-11-27 动效：四视图滑动过渡取代 display 硬切） ----------
+       四视图（splash/main/station/line）绝对定位堆叠于 #panelViews，data-pos 三态驱动：
+       center＝在位；off-left＝退场停靠（左移 28%＋降透明——返回时自此滑回）；off-right＝
+       右侧进场停靠。方向语义＝层级推挤（rank：splash<main<station<line，见 viewer.js
+       VIEW_RANK）：前进新视图自右滑入、旧视图退左；返回反向。visibility 走「终态规则」
+       延迟切换（藏时等滑动完、显时即时）。视图常驻 DOM（display 恒 flex），滚动位置/
+       搜索词/焦点在切换间零丢失；[hidden] 规则保留作无 JS 降级（JS 初始化后改用
+       data-pos，见 viewer.js initViewPositions）。 */
+    #panelViews { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+    .pview {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column; overflow: hidden;
+      background: rgba(255, 255, 255, 0.45);   /* 原 #panel 玻璃底色（同值下移） */
+      transition: transform var(--slide-dur) var(--slide-ease),
+                  opacity var(--slide-dur) var(--slide-ease), visibility 0s;
+    }
+    .pview.noanim { transition: none !important; }   /* 进场起始位瞬时跳转（JS reflow 生效后即移除） */
+    .pview[data-pos="off-left"] {
+      transform: translateX(-28%); opacity: .7;
+      visibility: hidden; pointer-events: none;
+      transition: transform var(--slide-dur) var(--slide-ease),
+                  opacity var(--slide-dur) var(--slide-ease),
+                  visibility 0s calc(var(--slide-dur) + 40ms);
+    }
+    .pview[data-pos="off-right"] {
+      transform: translateX(100%);
+      visibility: hidden; pointer-events: none;
+      transition: transform var(--slide-dur) var(--slide-ease),
+                  opacity var(--slide-dur) var(--slide-ease),
+                  visibility 0s calc(var(--slide-dur) + 40ms);
+    }
+    .pview[hidden] { display: none; }
+
+    /* ---------- 面板滚动容器统一细灰滚动条（二轮⑩：简约、无花哨） ---------- */
+    .splash-scroll, #lineList, #lineBody, #stationBody, #searchResults {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(0, 0, 0, 0.28) transparent;
+    }
+    .splash-scroll::-webkit-scrollbar, #lineList::-webkit-scrollbar,
+    #lineBody::-webkit-scrollbar, #stationBody::-webkit-scrollbar, #searchResults::-webkit-scrollbar { width: 6px; }
+    .splash-scroll::-webkit-scrollbar-thumb, #lineList::-webkit-scrollbar-thumb,
+    #lineBody::-webkit-scrollbar-thumb, #stationBody::-webkit-scrollbar-thumb, #searchResults::-webkit-scrollbar-thumb {
+      background: rgba(0, 0, 0, 0.28); border-radius: 3px;
+    }
+    .splash-scroll::-webkit-scrollbar-track, #lineList::-webkit-scrollbar-track,
+    #lineBody::-webkit-scrollbar-track, #stationBody::-webkit-scrollbar-track, #searchResults::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    /* ---- 初始界面（splash；二轮⑫：大标题加大加粗挤压边距、版本号不换行、正文纯黑） ---- */
+    #viewSplash { overflow: hidden; }
+    .splash-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 24px 14px 12px; }
+    /* 初始页居中 logo（二轮⑭：真素材 assets/logo.svg——品牌配色，不受黑白灰约束） */
+    .splash-logo {
+      display: block; width: 96px; height: 96px; margin: 0 auto 14px;
+      user-select: none;
+    }
+    .splash-title {
+      text-align: center; font-size: 25px; font-weight: 700;
+      letter-spacing: 1px; line-height: 1.4; color: #000;
+    }
+    .splash-sub { text-align: center; color: #000; font-size: 12.5px; margin-top: 10px; line-height: 1.75; }
+    .splash-sub span { white-space: nowrap; display: block; }   /* 版本号不得换行 */
+    .splash-note { margin-top: 18px; border-top: 1px solid var(--panel-border); padding-top: 12px; }
+    .splash-note-cap { font-size: 12px; color: #000; letter-spacing: 0; margin-bottom: 6px; font-weight: 600; }
+    .splash-note ol { margin: 0; padding-left: 18px; }
+    .splash-note li { font-size: 11.5px; color: #000; line-height: 1.7; margin: 0 0 6px; text-align: justify; }
+    .splash-note .warn { color: #8B0000; }   /* 两段警示文字深红，其余维持纯黑 */
+    /* 二维码卡片（二轮⑮：素材本身即完整卡片设计——直接整张全宽当卡片用、分两行摆放
+      （grid 单列）；不加任何修饰（边框/圆角/阴影/hover）。2026-11-27 更新裁定：
+      两卡均为链接（新窗口打开：公众号文章页 / B 站账号主页） */
+    .splash-cards { margin-top: 16px; display: grid; grid-template-columns: 1fr; gap: 10px; }
+    .splash-cards a { display: block; text-decoration: none; }
+    .splash-cards img { display: block; width: 100%; height: auto; }
+    .splash-foot {
+      flex: none; padding: 12px 22px 16px; border-top: 1px solid var(--panel-border);
+      background: rgba(255,255,255,.25);
+    }
+    #btnConfirm {
+      display: block; width: 100%; padding: 9px 0; cursor: pointer;
+      font-size: 15px; font-weight: 600; letter-spacing: 6px; text-indent: 6px;
+      color: #fff; background: #000; border: none; border-radius: 12px;
+    }
+    #btnConfirm:hover { background: #222; }
+
+    /* ---- 主界面（列表视图） ---- */
+    #mainTop {
+      flex: none; display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px; border-bottom: 1px solid var(--panel-border);
+    }
+    #btnBackSplash, #btnLineBack, #btnStationBack {
+      flex: none; width: 28px; height: 28px; cursor: pointer;
+      border: 1px solid var(--control-border); border-radius: 9px;
+      background: transparent; color: #000; font-size: 15px; line-height: 1;
+    }
+    #btnBackSplash:hover, #btnLineBack:hover, #btnStationBack:hover { border-color: #000; background: var(--hover); }
+    .vsep { flex: none; width: 1px; height: 18px; background: var(--panel-border); }
+    #searchInput {
+      flex: 1; min-width: 0; padding: 6px 10px;
+      background: rgba(255, 255, 255, 0.55); color: #000;
+      border: 1px solid var(--control-border); border-radius: 10px; outline: none;
+    }
+    #searchInput::placeholder { color: #000; opacity: .55; }
+    #searchInput:focus { border-color: #000; }
+    #mainTabs {
+      flex: none; display: grid; grid-template-columns: 1fr 1fr 1fr;
+      border-bottom: 1px solid var(--panel-border);
+      position: relative;   /* 2026-11-27：承载激活指示线 #tabIndicator */
+    }
+    #mainTabs button {
+      padding: 8px 0; cursor: pointer; font-size: 13.5px; letter-spacing: 1px;
+      background: transparent; border: none; color: #000;
+      border-bottom: 2px solid transparent; margin-bottom: -1px;
+    }
+    #mainTabs button:hover { background: var(--hover); }
+    #mainTabs button.active { font-weight: 600; }
+    /* 激活指示线（2026-11-27 动效）：替代 button.active 的 border 瞬跳——细线自旧 tab
+       位移/变宽过渡滑到新 tab；位置由 viewer.js syncTabIndicator 按激活按钮 offsetLeft/
+       offsetWidth 写 inline style（宽度/位移双过渡，不依赖三等分等宽）。初始 opacity 0
+       （无 JS 时不出现），首挂 noanim 瞬时定位。 */
+    #tabIndicator {
+      position: absolute; bottom: -1px; left: 0; height: 2px; width: 0;
+      background: #000; opacity: 0; pointer-events: none;
+      transition: transform var(--swap-dur) var(--slide-ease),
+                  width var(--swap-dur) var(--slide-ease), opacity 120ms linear;
+    }
+    #tabIndicator.noanim { transition: none !important; }
+    /* 选项卡列表换页滑动（2026-11-27 动效）：tab 序前进＝新列表自右滑入（tab-in-r）、
+       反向＝自左（tab-in-l）；--swap-dur 240ms 与搜索态交叉滑动同档。一次性动画类由
+       viewer.js slideLineList 挂（重挂前清旧类＋reflow 重启）；to 态＝列表常态缺省。 */
+    @keyframes tab-in-r { from { transform: translateX(18%); opacity: 0; } }
+    @keyframes tab-in-l { from { transform: translateX(-18%); opacity: 0; } }
+    #lineList.tab-in-r { animation: tab-in-r var(--swap-dur) var(--slide-ease); }
+    #lineList.tab-in-l { animation: tab-in-l var(--swap-dur) var(--slide-ease); }
+    /* 搜索态让位（2026-11-27 动效）：#mainBody 与 #searchResults 绝对叠放于 #mainSwap，
+       #viewMain.searching 驱动交叉滑动——展开＝列表退左淡出、结果自右淡入；收起反向。
+       短时长轻过渡（即输即搜高频路径）；收起时结果 DOM 保留（再次输入即重建，与旧
+       hidden 行为一致），列表滚动位置常驻不丢 */
+    #mainSwap { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+    #mainBody, #searchResults {
+      transition: transform var(--swap-dur) var(--slide-ease),
+                  opacity var(--swap-dur) var(--slide-ease), visibility 0s;
+    }
+    #viewMain.searching #mainBody {
+      transform: translateX(-14%); opacity: 0;
+      visibility: hidden; pointer-events: none;
+      transition: transform var(--swap-dur) var(--slide-ease),
+                  opacity var(--swap-dur) var(--slide-ease),
+                  visibility 0s calc(var(--swap-dur) + 30ms);
+    }
+    #viewMain:not(.searching) #searchResults {
+      transform: translateX(14%); opacity: 0;
+      visibility: hidden; pointer-events: none;
+      transition: transform var(--swap-dur) var(--slide-ease),
+                  opacity var(--swap-dur) var(--slide-ease),
+                  visibility 0s calc(var(--swap-dur) + 30ms);
+    }
+    #mainBody { position: absolute; inset: 0; display: flex; flex-direction: column; }
+    #mainBody[hidden] { display: none; }
+    #lineList { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 0; }
+    .line-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 6px 14px; cursor: pointer; user-select: none;
+    }
+    .line-item:hover { background: var(--hover); }
+    .line-item.focused { background: var(--active-bg); }
+    /* 分期单选态：未被高亮到的线路（选中期内一截/一站都没有）变灰、不可点击 */
+    .line-item.phase-out { opacity: 0.38; cursor: default; }
+    .line-item.phase-out:hover { background: transparent; }
+    .line-swatch { flex: none; width: 18px; height: 5px; border-radius: 2.5px; }
+    .line-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .panel-tip { padding: 10px 14px; color: #000; font-size: 12px; }
+
+    /* 底部三按钮区（显示线路/站名两循环＋底图清单展开；列表视图底部、署名行上方；线路页不显示） */
+    #cycleBar {
+      flex: none; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
+      padding: 10px 12px 12px; border-top: 1px solid var(--panel-border);
+    }
+    .cycle-cell { text-align: center; }
+    .cycle-cell button {
+      width: 100%; padding: 7px 0; cursor: pointer; font-size: 13.5px;
+      color: #000; background: rgba(255,255,255,.5);
+      border: 1px solid var(--control-border); border-radius: 10px;
+    }
+    .cycle-cell button:hover { border-color: #000; }
+    .cycle-cap { margin-top: 4px; font-size: 10.5px; color: #000; letter-spacing: 1px; }
+
+    /* 底图清单弹出（2026-11-27 改版：底图按钮单点展开全部清单，循环退役）——挂在底图格
+       （position:relative）内、自按钮上方弹出；#panel overflow:hidden 只裁面板边界外，
+       清单在面板范围内（面板高≈视口-24，按钮在底部、上方有余）不会被裁。z 序＝面板内容
+       之上（面板整体 z-index 10 已在地图上，清单为面板内孙级、无跨层冲突）；开合走
+       opacity/translateY 短过渡（.18s，与右上 #brandPop 同款节奏），随面板抽屉收展动画
+       自然跟随（面板内子元素）。抽屉收起/离开主界面时 viewer.js 主动收起。 */
+    .cell-basemap { position: relative; }
+    #basemapMenu {
+      position: absolute; bottom: calc(100% + 8px); right: 0;
+      min-width: 132px; padding: 5px; z-index: 5;
+      border: 1px solid var(--panel-border); border-radius: 12px;
+      opacity: 0; transform: translateY(4px); pointer-events: none;
+      transition: opacity .18s ease, transform .18s ease;
+    }
+    #basemapMenu.open { opacity: 1; transform: translateY(0); pointer-events: auto; }
+    #basemapMenu button {
+      display: flex; align-items: center; gap: 8px; width: 100%;
+      padding: 7px 10px; cursor: pointer; font-size: 13px; color: #000;
+      background: transparent; border: none; border-radius: 8px;
+      text-align: left; white-space: nowrap;
+    }
+    #basemapMenu button:hover { background: var(--hover); }
+    #basemapMenu button.active { background: var(--active-bg); font-weight: 600; }
+    .bm-swatch {
+      flex: none; width: 22px; height: 14px; border-radius: 3px;
+      border: 1px solid var(--control-border);   /* 浅色卡加描边防融进玻璃底 */
+    }
+
+    /* 搜索结果视图：占据整个左侧面板（顶条与署名行保留，主体让位） */
+    #searchResults { position: absolute; inset: 0; overflow-y: auto; padding: 6px 0; }
+    #searchResults[hidden] { display: none; }
+    .sr-cap { padding: 8px 14px 4px; font-size: 11px; color: #000; letter-spacing: 2px; }
+    .sr-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 14px; cursor: pointer;
+    }
+    .sr-item:hover { background: var(--hover); }
+    .sr-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; }
+    .sr-main { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sr-sub { flex: 1; color: #000; font-size: 11.5px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sr-empty { padding: 14px; color: #000; font-size: 12.5px; }
+
+    /* ---- 线路页 ---- */
+    #viewLine { overflow: hidden; }
+    #lineTop, #stationTop {
+      flex: none; display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px; border-bottom: 1px solid var(--panel-border);
+      font-size: 12px; color: #000;
+    }
+    #lineBody, #stationBody { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 16px 14px; }
+    .lp-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+    .lp-swatch { flex: none; width: 34px; height: 10px; border-radius: 5px; }
+    .lp-name { font-size: 20px; font-weight: 600; line-height: 1.3; }
+    .lp-none {
+      margin-top: 14px; color: #000; font-size: 13px;
+      border: 1px dashed var(--control-border); border-radius: 10px;
+      padding: 18px 12px; text-align: center;
+    }
+    .lp-foot { flex: none; padding: 12px 16px 14px; border-top: 1px solid var(--panel-border); }
+    #btnKml {
+      display: block; width: 100%; padding: 8px 0; cursor: pointer;
+      color: #000; background: rgba(255,255,255,.5);
+      border: 1px solid var(--control-border); border-radius: 10px; font-size: 13.5px;
+    }
+    #btnKml:hover { border-color: #000; }
+
+    /* ---- 线路页车站列表（2026-11-27）：竖直线站序。视觉常量与地图侧同源等比（用户
+       裁定「参照我们自己这张图的线宽/站圆/换乘站样式」）：竖线宽 7px＝LINE_WIDTH_PX、
+       普通节点 11px（r5.5）描边 1.2、黑边节点描边 1.32、换乘大圈 15px（r7.5）、药丸
+       高 15 黑边 2.2——与 viewer.js 画布视觉参数注（z≥11 基准）一一对应。节点形态由
+       VIEWER_CORE.stopNodeGlyph（buildStopView 同规则）给出，颜色规则同地图：普通站
+       线色描边、出闸成员黑边小圈、同站大圈黑边、junction 大圈角色优先级色、药丸黑边。
+       黑白灰 UI 不破：彩色仅竖线/节点描边/接入渐变短线，文字恒黑 ---- */
+    .lp-stops { margin-top: 14px; }
+    .lp-sec { position: relative; }
+    .lp-rail {
+      position: absolute; left: 6px; width: 7px; top: 14px; bottom: 14px;
+      border-radius: 3.5px; background: var(--sec-color, #888888); z-index: 0;
+    }
+    .lp-rail-head::before, .lp-rail-tail::after {
+      content: ''; position: absolute; left: 50%; transform: translateX(-50%);
+      border-left: 6px solid transparent; border-right: 6px solid transparent;
+    }
+    .lp-rail-head::before { top: -10px; border-bottom: 9px solid var(--sec-color, #888888); }
+    .lp-rail-tail::after { bottom: -10px; border-top: 9px solid var(--sec-color, #888888); }
+    .lp-row {
+      position: relative; display: flex; align-items: center; flex-wrap: wrap;
+      min-height: 30px; padding-left: 27px; column-gap: 6px;
+    }
+    .lp-row-arrow { min-height: 24px; padding-left: 0; }
+    .lp-node {
+      position: absolute; left: 9.5px; top: 50%; transform: translate(-50%, -50%);
+      box-sizing: border-box; background: #ffffff; z-index: 1;
+    }
+    .lp-node-dot { width: 11px; height: 11px; border-radius: 50%; border: 1.2px solid #888888; }
+    .lp-node-dark { width: 11px; height: 11px; border-radius: 50%; border: 1.32px solid #000000; }
+    .lp-node-big { width: 15px; height: 15px; border-radius: 50%; border: 1.32px solid #000000; }
+    .lp-node-pill { width: 22px; height: 15px; border-radius: 7.5px; border: 2.2px solid #000000; }
+    .lp-station { color: #000; }
+    /* 站行可点（2026-11-27 用户需求）：与地图点站同款跳转进车站页——arrow 出省端行
+       （无站）不参与；hover 与车站页线路行同款语言（灰底、黑白灰不破） */
+    .lp-row:not(.lp-row-arrow) { cursor: pointer; }
+    .lp-row:not(.lp-row-arrow):hover { background: var(--hover); }
+    .lp-divider { border-top: 1px solid var(--panel-border); margin: 14px 2px; }
+    .lp-inter { position: relative; min-height: 24px; display: flex; align-items: center; }
+    /* 接入标注：直角短线统一向右渐变到透明（回避支线/联络实际方向未定义），色＝标注
+       所属线的标志色（往支线＝支线色 / 往主线＝主线色 / 联络＝对方线色） */
+    .lp-mark {
+      display: inline-flex; align-items: center; gap: 4px;
+      border: 0; background: none; padding: 3px 4px; margin: 0;
+      font: inherit; color: #000; cursor: pointer; border-radius: 4px;
+    }
+    .lp-mark:hover { background: var(--hover); }
+    .lp-mark-tail { width: 24px; height: 4px; border-radius: 2px; flex: none; }
+    .lp-mark-txt { font-size: 12px; line-height: 1.3; white-space: nowrap; }
+    .lp-inter .lp-mark { margin-left: 6px; }
+    /* 换乘信息（2026-11-27 用户需求）：站行末尾右侧对齐（margin-left:auto）「小色点＋
+       线名」，可点＝跳该线线路页（返回回原线路页）。次要信息弱一档＝12px 灰字（仍黑白灰
+       体系，主站名黑 14px 拉开层级）；色点＝线路标志色（黑白灰 UI 的彩色例外，与 lp-mark
+       尾线/节点描边同源）。真数据单站最多 6 条换乘（上海南站），一行放不下自然换行收紧：
+       .lp-row 已 flex-wrap，本区内部再 wrap、row-gap 2px 行距贴紧；直接可见不 hover 才显 */
+    .lp-xfer {
+      margin-left: auto;
+      display: inline-flex; flex-wrap: wrap; justify-content: flex-end;
+      gap: 2px 2px;
+    }
+    .lp-xfer-item {
+      display: inline-flex; align-items: center; gap: 3px;
+      border: 0; background: none; padding: 2px 3px; margin: 0;
+      font: inherit; cursor: pointer; border-radius: 4px;
+    }
+    .lp-xfer-item:hover { background: var(--hover); }
+    .lp-xfer-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+    .lp-xfer-name { font-size: 12px; line-height: 1.3; color: #555555; white-space: nowrap; }
+
+    /* ---- 车站页（2026-11-27 点击车站）：顶条/标题区复用线路页（lp-head/lp-name），
+       主体＝一行一自然线路（色块＋线名＋多名标注），行可点（点行＝高亮该线＋跳线路页） ---- */
+    #viewStation { overflow: hidden; }
+    .st-lines { margin-top: 6px; }
+    .st-line {
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 2px; cursor: pointer; user-select: none;
+      border-bottom: 1px solid var(--panel-border);
+    }
+    .st-line:last-child { border-bottom: none; }
+    .st-line:hover { background: var(--hover); }
+    .st-line-name { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .st-line-call {
+      flex: 1; min-width: 0; font-size: 12px; color: #000;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    /* lineinfo 渲染（沿旧样式体系；文字纯黑） */
+    .info-row { display: flex; gap: 10px; padding: 3px 0; }
+    .info-key { flex: none; width: 62px; color: #000; }
+    .info-val { flex: 1; word-break: break-all; }
+    .lineinfo { margin-top: 12px; }
+    .lineinfo-body { font-size: 13px; line-height: 1.7; word-break: break-all; margin-top: 6px; }
+    .lineinfo-body p { margin: 0 0 8px; }
+    .lineinfo-body p:last-child { margin-bottom: 0; }
+    .lineinfo-body ul { margin: 0 0 8px; padding-left: 18px; }
+    .lineinfo-body li { margin: 2px 0; }
+    /* lineinfo 链接色（2026-11-27 用户显式裁定）：Wikipedia 链接深蓝 #3366CC——全 UI
+       黑白灰钉死规则的唯一超链接例外（仅 lineinfo 内容里的 <a>，下划线保持）；其他
+       UI 元素仍黑白灰不动 */
+    .lineinfo a { color: #3366CC; text-decoration: underline; }
+    .lineinfo-links { margin: 8px 0 0; padding: 0; list-style: none; }
+    .lineinfo-links li { margin: 2px 0; word-break: break-all; }
+
+    /* 署名行：面板最底部一行（当前底图对应服务署名；carto 文案备用） */
+    #attrRow {
+      flex: none; padding: 5px 12px 7px; border-top: 1px solid var(--panel-border);
+      color: #000; font-size: 10.5px; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+
+    /* 面板收起把手（二轮⑪：全高右悬条，贴面板右缘外侧——不与面板内滚动条重叠）。
+       ⚠ 必须是 body 级独立元素：#panel 有 overflow:hidden（圆角裁切），作为其子元素
+       溢出摆放（right:-17px）会被裁掉不可见。位置跟随面板（left=12+295），收起时随
+       .stowed 移出屏（transition 与面板同步）。 */
+    #panelCollapse {
+      position: absolute; left: 307px; top: 12px; bottom: 12px;
+      width: 17px; cursor: pointer; z-index: 11;
+      border: 1px solid var(--panel-border); border-left: none;
+      border-radius: 0 10px 10px 0;
+      color: #000; padding: 0;
+      background: rgba(255,255,255,.45);
+      -webkit-backdrop-filter: blur(20px) saturate(1.7);
+      backdrop-filter: blur(20px) saturate(1.7);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; line-height: 1;
+      transition: left .3s ease, opacity .3s ease;
+    }
+    #panelCollapse.stowed { left: -20px; opacity: 0; pointer-events: none; }
+    #panelCollapse:hover { background: rgba(255,255,255,.75); }
+
+    /* 收起态左缘展开条（二轮⑪：全高条形态）：上部 » 把手＋下方竖排小字底图署名 */
+    #panelTab {
+      position: absolute; left: 0; top: 12px; bottom: 12px; z-index: 10;
+      display: flex; flex-direction: column; align-items: center;
+      border: 1px solid var(--panel-border); border-left: none;
+      border-radius: 0 10px 10px 0;
+      padding: 14px 0 16px; cursor: pointer; user-select: none;
+    }
+    #panelTabArrow {
+      writing-mode: vertical-rl; letter-spacing: 4px; font-weight: 600;
+      color: #000; font-size: 13px; margin-bottom: 12px;
+    }
+    #panelTab:hover { background: var(--hover); }
+    #panelTabAttr {
+      writing-mode: vertical-rl; font-size: 10px; color: #000;
+      letter-spacing: 1px; line-height: 1.4;
+    }
+
+    /* ---------- 右上角常驻公众号 logo（二轮⑭：真素材——品牌配色不受黑白灰约束；
+       半透明常态＋hover 亮起保留，作用于真 logo）＋hover 小面板两行署名（二轮⑧）；
+       2026-11-27：logo 包链接新标签页打开公众号文章页 ---------- */
+    #brandBadge { position: absolute; top: 14px; right: 14px; z-index: 10; }
+    #brandBadge a { display: block; text-decoration: none; }   /* 消除 inline 包 block img 的行高空隙 */
+    #brandLogo {
+      display: block; width: 46px; height: 46px;
+      opacity: .55; cursor: pointer; user-select: none;
+      transition: opacity .2s ease, transform .2s ease;
+    }
+    #brandBadge:hover #brandLogo { opacity: 1; transform: scale(1.06); }
+    #brandPop {
+      position: absolute; top: 0; right: 56px;
+      border: 1px solid var(--panel-border); border-radius: 12px;
+      padding: 10px 14px; white-space: nowrap;
+      opacity: 0; transform: translateX(6px); pointer-events: none;
+      transition: opacity .18s ease, transform .18s ease;
+    }
+    #brandBadge:hover #brandPop { opacity: 1; transform: translateX(0); }
+    #brandPop span { font-size: 11.5px; color: #000; display: block; white-space: nowrap; }
+    #brandPop span + span { margin-top: 4px; }
+
+    /* ---------- 中央提示（加载中/失败；非常驻界面元素，加载完成即隐） ---------- */
+    #centerMsg {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      z-index: 20; text-align: center; pointer-events: none;
+      border: 1px solid var(--panel-border); border-radius: 12px;
+      padding: 18px 26px; max-width: 70%;
+    }
+    #centerMsgText { font-size: 16px; font-weight: 600; }
+    #centerMsgDetail { margin-top: 6px; color: #000; font-size: 13px; }
+
+    /* ---------- 右下缩放控件（保留；玻璃参数随定稿档 0.45/blur20） ---------- */
+    .maplibregl-ctrl-group {
+      overflow: hidden; border: 1px solid var(--panel-border) !important; border-radius: 10px !important;
+      background: rgba(255, 255, 255, 0.45) !important;
+      -webkit-backdrop-filter: blur(20px) saturate(1.7);
+      backdrop-filter: blur(20px) saturate(1.7);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.6), 0 4px 18px rgba(0,0,0,.08) !important;
+    }
+    .maplibregl-ctrl-group button { background-color: transparent !important; width: 32px; height: 32px; }
+    .maplibregl-ctrl-group button:hover { background-color: var(--hover) !important; }
+    .maplibregl-ctrl-group button + button { border-top-color: var(--panel-border) !important; }
+    .maplibregl-ctrl-group button .maplibregl-ctrl-icon { filter: none; }
+    @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+      .maplibregl-ctrl-group { background: rgba(248,249,251,.97) !important; -webkit-backdrop-filter: none; backdrop-filter: none; box-shadow: 0 2px 10px rgba(0,0,0,.06) !important; }
+    }
+    .maplibregl-ctrl-bottom-right { right: 8px; bottom: 8px; }
+    .maplibregl-ctrl-bottom-right .maplibregl-ctrl { margin: 0; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="labelLayer"></div>
+  <svg id="coordinateRuler" aria-hidden="true"></svg>
+  <div id="focusFx" aria-hidden="true"></div>
+
+  <!-- 唯一左侧面板：初始界面 / 主界面（列表） / 车站页 / 线路页 四视图（滑动滑轨，见 CSS
+       #panelViews 段）＋底部署名行 -->
+  <aside id="panel" class="glass">
+    <div id="panelViews">
+    <!-- 初始界面（刷新/初次进入；地图正常渲染可交互） -->
+    <div id="viewSplash" class="pview">
+      <div class="splash-scroll">
+        <img class="splash-logo" src="assets/logo.svg" alt="公众号 logo">
+        <div class="splash-title">上海市城市轨道交通<br>远期线网规划示意图</div>
+        <div class="splash-sub"><span>制作 By Atabe（v3.12.0_20260219_1624）</span><span>移植 By IncimathCal</span></div>
+        <div class="splash-note">
+          <div class="splash-note-cap">注意事项</div>
+          <ol>
+            <li><span class="warn">本图非官方，请注意甄别！远景规划极易被更改，请勿用于现实生活用途！规划信息请注意时效性，以官方为准！</span>本图免费公开，建议从作者（Atabe/贵道蕉通）处获取本图，开放不修改转载，但需保留作者信息，二创需联系作者；</li>
+            <li>规划信息为搜集到的有一定可信度的市级（含建设、运营部门等）材料，不包含区镇级意向，无法推测前后段落的孤证暂不包括在内；部分资料难以确定时间先后，本图中存在以作者个人推测挑选及缝合方案进行绘制的情况；<span class="warn">本次新线网无设站信息，本图中绝大部分新规划线路设站均为作者个人推测，请勿当真！</span></li>
+            <li>本图中的标识色尽可能选取官方标识色，无官方资料的为作者自行挑选；本图中所有站名包括部分已运营车站为作者自行挑选；</li>
+            <li>本图中的换乘标未根据运营网络的不同进行区分，不代表可以一票换乘、付费区内换乘等。跨线运行情况请以实际运营为准；</li>
+            <li>已运营浦江线由原本的市区线（隶属于8号线）重新划归于局域线，因此本图不绘制，不代表浦江线所发生的的任何情况。</li>
+          </ol>
+        </div>
+        <div class="splash-cards">
+          <!-- 公众号卡：链接至公众号文章页（2026-11-27 用户更新裁定——原「纯图片无链接」作废） -->
+          <a href="https://mp.weixin.qq.com/s/r6N3RPniHLlMSThBx4ITKQ" target="_blank" rel="noopener">
+            <img src="assets/qrcode-gzh.png" alt="贵道蕉通微信公众号二维码">
+          </a>
+          <!-- B 站卡：链接至账号主页（2026-11-26 用户定稿） -->
+          <a href="https://space.bilibili.com/1028685261/" target="_blank" rel="noopener">
+            <img src="assets/qrcode-bilibili.png" alt="B 站账号二维码">
+          </a>
+        </div>
+      </div>
+      <div class="splash-foot">
+        <button id="btnConfirm" type="button">确认</button>
+      </div>
+    </div>
+
+    <!-- 主界面：顶条（返回＋搜索框）＋三选项卡＋线路列表＋底部三按钮（显示线路/站名循环＋底图清单）；搜索时主体让位给结果 -->
+    <div id="viewMain" class="pview" hidden>
+      <div id="mainTop">
+        <button id="btnBackSplash" type="button">←</button>
+        <span class="vsep"></span>
+        <input id="searchInput" type="text" placeholder="搜索线路或车站…" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="mainTabs">
+        <button type="button" data-tab="市区线">市区线</button>
+        <button type="button" data-tab="市域线">市域线</button>
+        <button type="button" data-tab="预控通道">预控通道</button>
+        <!-- 激活指示线（2026-11-27 动效）：viewer.js syncTabIndicator 驱动位移/宽度过渡 -->
+        <span id="tabIndicator" aria-hidden="true"></span>
+      </div>
+      <div id="mainSwap">
+      <div id="mainBody">
+        <div id="lineList"></div>
+        <div id="cycleBar">
+          <div class="cycle-cell">
+            <button id="btnCyclePhase" type="button">全部</button>
+            <div class="cycle-cap">显示线路</div>
+          </div>
+          <div class="cycle-cell">
+            <button id="btnCycleNames" type="button">显示</button>
+            <div class="cycle-cap">站名</div>
+          </div>
+          <div class="cycle-cell cell-basemap">
+            <button id="btnCycleBasemap" type="button">高德</button>
+            <div class="cycle-cap">底图</div>
+            <!-- 底图清单（2026-11-27 改版：按钮循环退役，单点展开全部 5 态；终态序
+                 高德→无字高德→用地→卫星→OSM；carto 源保留 viewer.js 后备不进清单。
+                 色块＝各底图外观低饱和示意色卡（功能色，同搜索结果线路色点性质，
+                 不属界面装饰色）；当前态 .active 由 viewer.js syncBasemapUI 同步 -->
+            <div id="basemapMenu" class="glass">
+              <button type="button" data-basemap="gaode"><span class="bm-swatch" style="background:#EDE4CE"></span>高德</button>
+              <button type="button" data-basemap="gaode-plain"><span class="bm-swatch" style="background:#F7F4EC"></span>高德·无字</button>
+              <button type="button" data-basemap="planblock"><span class="bm-swatch" style="background:#C5CDA6"></span>用地</button>
+              <button type="button" data-basemap="shanghai_W"><span class="bm-swatch" style="background:#46543F"></span>卫星</button>
+              <button type="button" data-basemap="osm"><span class="bm-swatch" style="background:#E8E8E6"></span>OSM</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="searchResults" hidden></div>
+      </div>
+    </div>
+
+    <!-- 线路页：顶条返回＋lineinfo（无信息＝名称＋色块＋「无信息」）＋KML 下载 -->
+    <div id="viewLine" class="pview" hidden>
+      <div id="lineTop">
+        <button id="btnLineBack" type="button">←</button>
+        <span>线路</span>
+      </div>
+      <div id="lineBody"></div>
+      <div class="lp-foot">
+        <button id="btnKml" type="button">下载 KML</button>
+      </div>
+    </div>
+
+    <!-- 车站页（2026-11-27 点击车站）：顶条返回（样式与线路页一致）＋站名＋一行一自然
+         线路（多名标注；行可点＝高亮该线＋跳线路页，逐级返回） -->
+    <div id="viewStation" class="pview" hidden>
+      <div id="stationTop">
+        <button id="btnStationBack" type="button">←</button>
+        <span>车站</span>
+      </div>
+      <div id="stationBody"></div>
+    </div>
+    </div>
+
+    <!-- 面板最底部：当前底图署名（高德／无字高德／OSM／用地／卫星按态显示；carto 文案备用） -->
+    <div id="attrRow"></div>
+  </aside>
+
+  <!-- 右缘收起把手（全高悬条；body 级独立元素，见 CSS 注） -->
+  <button id="panelCollapse" type="button">‹</button>
+
+  <!-- 收起态左缘展开条（全高）：把手＋竖排小字署名 -->
+  <div id="panelTab" class="glass" hidden>
+    <span id="panelTabArrow">»</span>
+    <span id="panelTabAttr"></span>
+  </div>
+
+  <!-- 右上角常驻公众号 logo（assets/logo.svg）＋hover 小面板（两行署名）。
+       2026-11-27 用户裁定：点击 logo 新标签页打开公众号文章页；hover 亮起/署名面板挂
+       在 #brandBadge:hover（CSS 祖先选择器），img 包进 <a> 后仍是后代，hover 行为不变、
+       与点击不互斥（新开标签页，本页与面板原地不动） -->
+  <div id="brandBadge">
+    <a href="https://mp.weixin.qq.com/s/r6N3RPniHLlMSThBx4ITKQ" target="_blank" rel="noopener">
+      <img id="brandLogo" src="assets/logo.svg" alt="公众号 logo">
+    </a>
+    <div id="brandPop" class="glass">
+      <span>制作 By Atabe（v3.12.0_20260219_1624）</span>
+      <span>移植 By IncimathCal</span>
+    </div>
+  </div>
+
+  <div id="centerMsg" class="glass" hidden>
+    <div id="centerMsgText"></div>
+    <div id="centerMsgDetail"></div>
+  </div>
+
+  <noscript><p style="padding:2em">本页需要启用 JavaScript 才能显示地图。</p></noscript>
+
+  <!-- 本地预览（数据为相对路径，按 net → build/net 依次回退）：
+       ① python -X utf8 tools/flatten.py --data data --out build/net
+          （或 python -X utf8 tools/sync_workspace.py --watch 持续同步用户工作区录入成果）
+       ② python -X utf8 tools/serve.py  →  http://localhost:8000/index.html
+       正式发布：python -X utf8 tools/publish.py 生成 docs/ 快照（含 net/，GitHub Pages 项目页相对路径不破）。 -->
+  <script src="assets/vendor/maplibre-gl.js"></script>
+  <script src="src/viewer_core.js"></script>
+  <script src="src/viewer.js"></script>
+</body>
+</html>

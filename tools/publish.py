@@ -14,7 +14,8 @@
   3. 白名单拷贝：index.html、src/viewer*.js、assets/vendor/（vendored MapLibre）、
      assets/fonts/（UI 字体子集，index.html @font-face 引用；2026-11-23 增）、
      assets/logo.svg＋assets/qrcode-{gzh,bilibili}.png（新 UI 素材：favicon/初始页/右上
-     logo 与两张二维码卡；2026-11-26 增）。
+     logo 与两张二维码卡；2026-11-26 增）；另在 docs/ 根写空 .nojekyll（GitHub Pages
+     关 Jekyll——防下划线开头文件被过滤；仓库无此源文件，白名单段直接产出）。
 
 白名单恒定——editor.html、编辑器代码、过程文档、源资产、import/ 永不进入部署目录
 （编辑器仅供本地使用，永不部署）。docs/ 为生成物，勿手改。
@@ -103,6 +104,10 @@ def main():
     cp("assets/logo.svg")
     cp("assets/qrcode-gzh.png")
     cp("assets/qrcode-bilibili.png")
+    # .nojekyll（GitHub Pages）：仓库根没有对应源文件，不走 cp——白名单段直接写空文件，
+    # 汇总自检（下方 rglob）与其他产物同口径覆盖。防 Jekyll 把下划线开头文件当特殊件过滤。
+    (out_dir / ".nojekyll").write_bytes(b"")
+    copied.append(".nojekyll")
 
     # 4. 汇总与自检
     total = 0
