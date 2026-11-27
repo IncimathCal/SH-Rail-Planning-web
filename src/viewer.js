@@ -2004,17 +2004,20 @@
     if (prev === view || !(view in VIEW_IDS) || !(prev in VIEW_IDS)) return;
     const fwd = VIEW_RANK[view] > VIEW_RANK[prev];
     const oldEl = viewEl(prev), newEl = viewEl(view);
-    // 2026-11-27 用户裁定：splash→main 前进改硬切（开屏「确认」瞬间进主界面、不滑动）；
-    // main→splash 返回仍走滑动。双视图同帧挂 noanim 直设终态、reflow 后即移除——
-    // visibility 延迟切换也被 noanim 盖住立即生效（真切换而非光速划过），无过渡类残留。
-    if (prev === 'splash' && view === 'main') {
+    // 2026-11-27 用户裁定：splash↔main 双向均硬切（前进＝开屏「确认」瞬间进主界面、
+    // 返回＝退回开屏同帧直达，都不滑动）。双视图同帧挂 noanim 直设终态、reflow 后即
+    // 移除——visibility 延迟切换也被 noanim 盖住立即生效（真切换而非光速划过），无过渡
+    // 类残留。终态停靠位与滑动语义同向：前进 splash 退左、返回 main 退右（off-right 是
+    // 返回向旧视图的退场位），此后无论哪个方向再切，进/退场位都自然正确。
+    if ((prev === 'splash' && view === 'main') || (prev === 'main' && view === 'splash')) {
       oldEl.classList.add('noanim');
       newEl.classList.add('noanim');
-      oldEl.dataset.pos = 'off-left';   // 返回停靠位：此后 main→splash 滑回方向自然正确
+      oldEl.dataset.pos = view === 'main' ? 'off-left' : 'off-right';
       newEl.dataset.pos = 'center';
       void newEl.offsetWidth;
       oldEl.classList.remove('noanim');
       newEl.classList.remove('noanim');
+      if (view !== 'main') closeBasemapMenu();   // 与滑动分支同口径：离开 main 即收底图清单
       return;
     }
     // 新视图瞬时跳到进场起始位（noanim 跳过过渡，强制 reflow 后恢复过渡能力）
