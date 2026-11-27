@@ -127,7 +127,7 @@ LONLAT_DECIMALS = 7
 # 虹桥路~宝山路）——任务书定值 1.2 像素：共线两线各向己侧偏 1.2，双线中心距恒
 # 2.4px（基准线宽 7px，观感目验后可调此一处常量）。line-offset 单位＝像素、
 # 正方向＝各自行进方向的右手侧（MapLibre 语义），符号决策见 compute_shared_offsets。
-SHARED_TRACK_OFFSET_PX = 1.2
+SHARED_TRACK_OFFSET_PX = 2.4
 
 
 # ------------------------------------------------------------- 折线裁取 --
