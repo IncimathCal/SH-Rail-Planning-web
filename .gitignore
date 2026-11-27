@@ -19,6 +19,11 @@
 /项目流程图.md
 /项目组织架构图.md
 
+# 数据中间产物与内部文档不公开（2026-11-28 裁定：仅本地，历史不重写）
+/import/
+/CLAUDE.md
+/架构方案-*.md
+
 # 本地会话与 Claude Code 运行文件（worktree、会话导出等，绝不入库）
 /claude-sessions/
 /.claude/
