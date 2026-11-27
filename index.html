@@ -164,8 +164,8 @@
     .splash-note li { font-size: 11.5px; color: #000; line-height: 1.7; margin: 0 0 6px; text-align: justify; }
     .splash-note .warn { color: #8B0000; }   /* 两段警示文字深红，其余维持纯黑 */
     /* 二维码卡片（二轮⑮：素材本身即完整卡片设计——直接整张全宽当卡片用、分两行摆放
-      （grid 单列）；不加任何修饰（边框/圆角/阴影/hover）。2026-11-26 定稿：公众号卡
-      纯图片无链接（.splash-cards a 样式只作用于 B 站卡——新窗口打开账号主页） */
+      （grid 单列）；不加任何修饰（边框/圆角/阴影/hover）。2026-11-27 更新裁定：
+      两卡均为链接（新窗口打开：公众号文章页 / B 站账号主页） */
     .splash-cards { margin-top: 16px; display: grid; grid-template-columns: 1fr; gap: 10px; }
     .splash-cards a { display: block; text-decoration: none; }
     .splash-cards img { display: block; width: 100%; height: auto; }
@@ -355,8 +355,10 @@
     }
 
     /* ---------- 右上角常驻公众号 logo（二轮⑭：真素材——品牌配色不受黑白灰约束；
-       半透明常态＋hover 亮起保留，作用于真 logo）＋hover 小面板两行署名（二轮⑧） ---------- */
+       半透明常态＋hover 亮起保留，作用于真 logo）＋hover 小面板两行署名（二轮⑧）；
+       2026-11-27：logo 包链接新标签页打开公众号文章页 ---------- */
     #brandBadge { position: absolute; top: 14px; right: 14px; z-index: 10; }
+    #brandBadge a { display: block; text-decoration: none; }   /* 消除 inline 包 block img 的行高空隙 */
     #brandLogo {
       display: block; width: 46px; height: 46px;
       opacity: .55; cursor: pointer; user-select: none;
@@ -428,8 +430,10 @@
           </ol>
         </div>
         <div class="splash-cards">
-          <!-- 公众号卡：纯图片展示，无链接（2026-11-26 用户定稿——不出现手型光标/悬停反应） -->
-          <img src="assets/qrcode-gzh.png" alt="贵道蕉通微信公众号二维码">
+          <!-- 公众号卡：链接至公众号文章页（2026-11-27 用户更新裁定——原「纯图片无链接」作废） -->
+          <a href="https://mp.weixin.qq.com/s/r6N3RPniHLlMSThBx4ITKQ" target="_blank" rel="noopener">
+            <img src="assets/qrcode-gzh.png" alt="贵道蕉通微信公众号二维码">
+          </a>
           <!-- B 站卡：链接至账号主页（2026-11-26 用户定稿） -->
           <a href="https://space.bilibili.com/1028685261/" target="_blank" rel="noopener">
             <img src="assets/qrcode-bilibili.png" alt="B 站账号二维码">
@@ -508,9 +512,14 @@
     <span id="panelTabAttr"></span>
   </div>
 
-  <!-- 右上角常驻公众号 logo（assets/logo.svg）＋hover 小面板（两行署名） -->
+  <!-- 右上角常驻公众号 logo（assets/logo.svg）＋hover 小面板（两行署名）。
+       2026-11-27 用户裁定：点击 logo 新标签页打开公众号文章页；hover 亮起/署名面板挂
+       在 #brandBadge:hover（CSS 祖先选择器），img 包进 <a> 后仍是后代，hover 行为不变、
+       与点击不互斥（新开标签页，本页与面板原地不动） -->
   <div id="brandBadge">
-    <img id="brandLogo" src="assets/logo.svg" alt="公众号 logo">
+    <a href="https://mp.weixin.qq.com/s/r6N3RPniHLlMSThBx4ITKQ" target="_blank" rel="noopener">
+      <img id="brandLogo" src="assets/logo.svg" alt="公众号 logo">
+    </a>
     <div id="brandPop" class="glass">
       <span>制作 By Atabe（v3.12.0_20260219_1624）</span>
       <span>移植 By IncimathCal</span>
