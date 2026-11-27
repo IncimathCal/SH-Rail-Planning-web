@@ -1685,5 +1685,34 @@ eq(V.lineInfoEntryOf('l1', lim, ligEmpty, { l1: { fields: [['a', 'b']], bodyHtml
 eq(V.lineInfoEntryOf(null, lim, lig, lix), null, '空 id → null');
 eq(V.lineInfoEntryOf('l1', lim, lig, undefined), null, 'lineInfo 缺失 → null');
 
+// ---------- 地图单击聚焦（2026-11-27：isLineHitLayerId 线身层判定 / lineClickAction 点击目标分类） ----------
+console.log('isLineHitLayerId / lineClickAction:');
+// 线身层：静态两层＋罩上重画/他省接管层＋动态渐变层族（含分期拆段 -seg- 变体）
+for (const id of ['lines', 'lines-dash', 'lines-displayonly', 'focus-copy', 'focus-copy-dash',
+  'arrow-fade-l1', 'arrow-fade-seg-l1-0', 'conn-blend-l9', 'conn-blend-seg-l9-2', 'conn-fade-l9']) {
+  ok(V.isLineHitLayerId(id), `线身层 ${id} 判真`);
+}
+// 非线身层：站圈/药丸/省界/白罩/底图（点车站/空白无操作——demo 裁定）
+for (const id of ['stops', 'stops-dark', 'stops-big', 'pills-outer', 'pills-inner',
+  'stops-focus', 'pills-inner-focus', 'provinces', 'focus-veil', 'basemap-veil', 'bg', '']) {
+  ok(!V.isLineHitLayerId(id), `非线身层 ${id || '(空)'} 判假`);
+}
+ok(!V.isLineHitLayerId(undefined) && !V.isLineHitLayerId(null) && !V.isLineHitLayerId(123), '非字符串输入判假（防御）');
+// 点击目标分类：普通本地线 focus；联络线（类别名或 connects）与他省线 silent；null 防御
+const mkLine = (o) => Object.assign({ lineId: 'x', name: 'x', layer: '', connects: [], segments: [] }, o);
+eq(V.lineClickAction(mkLine({ layer: '市区线' })), 'focus', '市区线 → focus');
+eq(V.lineClickAction(mkLine({ layer: '市域线' })), 'focus', '市域线 → focus');
+eq(V.lineClickAction(mkLine({ layer: '预控通道' })), 'focus', '预控通道 → focus（虚线身份不影响可聚焦）');
+eq(V.lineClickAction(mkLine({ layer: '联络线' })), 'silent', '联络线（类别名命中）→ silent');
+eq(V.lineClickAction(mkLine({ connects: ['a', 'b'] })), 'silent', '带 connects 结构字段 → silent');
+eq(V.lineClickAction(mkLine({ connects: ['a'] })), 'silent', 'connects 单元素也是联络线 → silent');
+// 真机「单击无反应」根因回归：flatten 键齐输出使一切线带 connects 空数组（normalizeLines
+// 保留键），旧轻提示版按 Array.isArray 判 → 空数组也命中 → 所有线静默。必须判非空。
+eq(V.lineClickAction(mkLine({ layer: '市区线', connects: [] })), 'focus', 'connects 空数组（flatten 键齐常态）→ focus（2026-11-26 真机 bug 回归）');
+eq(V.lineClickAction(mkLine({ layer: '市域线', connects: null })), 'focus', 'connects 缺失/null → focus');
+eq(V.lineClickAction(mkLine({ layer: '他省' })), 'silent', '他省线 → silent（纯背景既定裁定）');
+eq(V.lineClickAction(mkLine({ layer: '他省线' })), 'focus', '不在 DISPLAY_ONLY_LAYERS 的名字按普通线（名单精确匹配的边界）');
+eq(V.lineClickAction(null), 'silent', 'null → silent（防御）');
+
 console.log(fails ? `\nFAIL - ${fails} assertion(s)` : '\nPASS - viewer logic OK');
 process.exit(fails ? 1 : 0);

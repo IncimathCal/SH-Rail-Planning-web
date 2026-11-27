@@ -2,6 +2,17 @@
 // 逐条确认；同日二轮 12+1 条反馈改版：①搜索态返回先清搜索回列表 ②线路页按来源返回
 //（搜索来源保留词与结果） ③搜索线路条目色点＋副行分类 ⑥无字高德白罩 60/40 ⑦玻璃定稿
 // 删对比控件 ⑨原生 title 全删 ⑬返回初始界面清聚焦分期——其余视觉条目在 index.html）。
+// 2026-11-27 真机目验整改（三项）：①相机让位 padding 推广到一切相机动作——聚焦
+// fitBounds（原有）＋初始 fitAll＋搜索车站 flyTo（用一次性 offset，见 cameraPadding 注），
+// 左侧按面板态实时取（展开＝面板右缘＋24、收起＝24 默认呼吸量），抽屉收/展后续动作
+// 自动跟随；②单击线路＝聚焦高亮（用户裁定，取代轻提示浮卡）：全局 map.on('click')＋
+// e.point 查询式命中（queryRenderedFeatures 全层查询后按线身层过滤，不依赖层存在性、
+// 不受动态层重建影响——per-layer 委托版真机单击无反应，弃），行为与列表点击完全同款
+//（setFocus＋fitBounds＋面板线路页，来源恒 'list'）；分期态一律无效；联络线/他省线无
+// 操作；轻提示浮卡整套删除（DOM/rAF 时钟/防抖/CSS）；cursor 悬停本地线身变 pointer
+//（mousemove＋rAF 合帧，变化才写）；③7869eb1 随轻提示顺带修的两独立 bug 的等效防泄漏
+// 承载：不再注册任何 per-layer 委托监听（监听累积从结构上消灭——全局 click/mousemove/
+// mouseout 各恰一次）；不引入 setTimeout 链（hover 查询走 rAF 合帧，同 scheduleLabels）。
 // 相对实装前查看器：地图画法/高亮语义/调光/白罩分档/分期语义（含 2026-11-25 他省纠正）
 // 零改动，只重做 DOM/UI 层——移除顶栏/图例卡/站点面板/聚焦框/hover 提示/缩放数字，唯一
 // 左侧面板（初始界面→主界面三选项卡列表→线路页）＋搜索占面板＋三循环按钮（显示线路/
@@ -610,133 +621,71 @@
   // 不设 pointer 光标）。函数保留空实现占位，rebuildConnLayers 的旧调用点防御直通。
   function bindPinLayerInteraction(id) { /* demo：无交互 */ }
 
-  // ---------- 地图单击线路轻提示（2026-11-26 用户定稿追加） ----------
-  // 单击线身＝点击屏幕位附近小浮卡（色点＋自然线路名，黑白灰玻璃风），2.8s 自动淡出；
-  // 点空白/点他线换内容或隐藏、拖动/平移即藏。自然线路口径与列表一致：线组→组名＋组主色
-  //（主线色），独立线→线名＋线色；他省线照常显示（线名＋线色）。联络线（HIDDEN_LIST_
-  // LAYERS 或 connects）一律静默——技术线路名称不得在任何地方出现是钉死规则。
-  // 层覆盖＝一切态的线层：静态 lines/lines-dash＋动态 lines-displayonly（分期他省）/
-  // focus-copy(-dash)（罩上重画）/arrow-fade(-seg)（出省渐隐段，随 rebuildConnLayers 随建
-  // 随绑）；conn-blend/conn-fade（联络线层）与 conn-blend-seg 不绑＝点联络线无反应。
-  // 双击共存：现行地图线身无聚焦交互（2026-11-22 终裁撤除、放行原生双击缩放），但双击前
-  // 必先触发两次 click——show 走 260ms 防抖（第二击重置计时），dblclick/movestart 即时
-  // 取消与隐藏，双击缩放全程不闪提示；MapLibre click 在拖动后不触发（drag 天然无提示）。
-  // 时基＝rAF 时钟（防抖与自动淡出都走 requestAnimationFrame 到点检查，非 setTimeout）：
-  // 隐藏页/后台标签的 setTimeout 链会被浏览器节流甚至抑制（2026-11-26 无头冒烟实证
-  // timer 从不触发），rAF 挂起时行为与页面一致停摆、恢复即续跑，两种环境下行为可预期。
-  const LINE_TIP_SHOW_DELAY = 260;   // dblclick 判定窗口（两击间隔阈值）ms
-  const LINE_TIP_FADE_MS = 2800;     // 自动淡出（2.5~3s 量级）
-  function naturalLineBadge(lineId) {
-    const line = S.linesMap.get(String(lineId || ''));
-    if (!line) return null;
-    // 联络线静默：类别名命中（HIDDEN_LIST_LAYERS＝列表隐藏口径）或带 connects 结构字段
-    if (V.HIDDEN_LIST_LAYERS.indexOf(line.layer) >= 0 || Array.isArray(line.connects)) return null;
-    const grp = S.lineGroups.ofLine.get(line.lineId);
-    if (grp) {
-      const main = S.linesMap.get(grp.mainId);
-      return { name: grp.name || (main && main.name) || line.lineId, color: (main && main.color) || line.color };
+  // ---------- 地图单击线路＝聚焦高亮（2026-11-27 用户裁定，取代 2026-11-26 轻提示） ----------
+  // 单击本地自然线身＝与列表点击完全同款：setFocus（白罩＋罩上重画＋相机 fitBounds 带
+  // 面板让位 padding）＋面板进线路页（来源恒 'list'——保守裁定：地图点进不视为搜索来源，
+  // 返回回线路列表）。
+  // 实现＝全局 map.on('click')＋e.point 处 queryRenderedFeatures 查询式：不带 layers 参数
+  // 查全部渲染层、取回后按 feature.layer.id 过滤线身层（VIEWER_CORE.isLineHitLayerId——
+  // 不依赖层存在性、不受 rebuildConnLayers 全删全建影响；7869eb1 的 per-layer 委托版在
+  // 真机单击无反应，委托注册/解绑与动态层生命周期交错无稳定复现，弃委托改查询式）。
+  // 命中多条时取 queryRenderedFeatures 返回序的第一个线身层特征＝渲染最上层（用户视觉
+  // 上点到的那条线；同层多特征取第一个）。
+  // 无操作裁定：分期态（「显示线路」≠全部）单击一律无效（用户明令）；联络线（技术线路
+  // 不可聚焦）与他省线（纯背景）无操作——判定收在 VIEWER_CORE.lineClickAction（单测
+  // 覆盖）。分组口径与列表一致：支线命中归一到主线（mainOf）。
+  // 双击边缘行为：双击线身＝两次单击＋原生缩放——第一击已聚焦（第二击 setFocus 幂等
+  // 无感），随后原生 zoom 抢相机；不做防抖（单击即时响应优先，对齐列表点击手感）。
+  // cursor：非分期态悬停本地线身变 pointer（提示可点）、移开/分期态/联络线/他省线恢复
+  // 默认——mousemove＋rAF 合帧查询（每帧至多一次、不逐像素查询），pointer 态变化才写
+  // canvas.style.cursor。
+  // 防泄漏承载说明：7869eb1 随轻提示顺带修的两个独立真 bug——「removeLayer 不解绑
+  // delegated listener 致监听累积」与「隐藏页 setTimeout 被抑制」——轻提示删除后以更强
+  // 的结构等效保留：不再向 map 注册任何 per-layer 委托监听（监听累积无从发生——全局
+  // click/mousemove/mouseout 各恰一次，不随层重建增减）；不引入 setTimeout 链（hover
+  // 查询走 rAF 合帧，同 scheduleLabels 模式，隐藏页 rAF 停摆行为与页面一致）。
+  function clickableMainAt(point) {
+    if (!S.map || !point) return null;
+    let feats;
+    try {
+      feats = S.map.queryRenderedFeatures(point);   // 全层查询后按线身层过滤（见上注）
+    } catch (e) { return null; }
+    for (const f of feats) {
+      const layerId = f && f.layer ? f.layer.id : '';
+      if (!V.isLineHitLayerId(layerId)) continue;
+      const line = S.linesMap.get(String((f.properties || {}).lineId || ''));
+      if (!line || V.lineClickAction(line) !== 'focus') continue;
+      return S.lineGroups.mainOf.get(line.lineId) || line.lineId;
     }
-    return { name: line.name || line.lineId, color: line.color };
+    return null;
   }
-  function ensureLineTipEl() {
-    let tip = document.getElementById('lineTip');
-    if (tip) return tip;
-    tip = document.createElement('div');
-    tip.id = 'lineTip';
-    tip.className = 'glass';
-    const dot = document.createElement('span'); dot.className = 'lt-dot';
-    const nm = document.createElement('span'); nm.className = 'lt-name';
-    tip.append(dot, nm);
-    document.body.appendChild(tip);
-    return tip;
+  function onMapClick(e) {
+    if (S.phaseActive) return;               // 分期态：单击一律无效（用户明令）
+    const main = clickableMainAt(e && e.point);
+    if (main == null) return;
+    setFocus(main);                          // 与列表点击同款（内含 fitBounds 相机跳转）
+    openLinePage(main, 'list');              // 来源＝列表：返回回线路列表，不视为搜索来源
   }
-  // rAF 时钟：三个到期时刻（0＝无任务）——showAt 防抖、fadeAt 自动淡出；有任务才续帧。
-  let lineTipShowAt = 0, lineTipFadeAt = 0;
-  let lineTipBadge = null, lineTipPoint = null;
-  let lineTipRaf = 0;
-  function lineTipRafTick(now) {
-    lineTipRaf = 0;
-    if (lineTipShowAt > 0) {
-      if (now >= lineTipShowAt) {
-        lineTipShowAt = 0;
-        showLineTip(lineTipBadge, lineTipPoint);
-      } else lineTipRaf = requestAnimationFrame(lineTipRafTick);
-      return;   // 防抖期间不处理淡出（show 内自设 fadeAt）
-    }
-    if (lineTipFadeAt > 0) {
-      if (now >= lineTipFadeAt) {
-        lineTipFadeAt = 0;
-        const tip = document.getElementById('lineTip');
-        if (tip) tip.classList.remove('on');
-      } else lineTipRaf = requestAnimationFrame(lineTipRafTick);
-    }
+  let hoverFrame = 0, hoverPoint = null, hoverPointerOn = false;
+  function scheduleHover() {
+    if (hoverFrame) return;
+    hoverFrame = G.requestAnimationFrame(() => { hoverFrame = 0; updateHoverCursor(); });
   }
-  function lineTipRafWake() {
-    if (!lineTipRaf && (lineTipShowAt > 0 || lineTipFadeAt > 0)) {
-      lineTipRaf = requestAnimationFrame(lineTipRafTick);
-    }
+  function updateHoverCursor() {
+    const map = S.map;
+    if (!map) return;
+    const on = !S.phaseActive && hoverPoint != null && clickableMainAt(hoverPoint) != null;
+    if (on === hoverPointerOn) return;   // 态变化才写 cursor（不逐帧 setStyle）
+    hoverPointerOn = on;
+    map.getCanvas().style.cursor = on ? 'pointer' : '';
   }
-  function scheduleLineTip(badge, point) {
-    lineTipBadge = badge; lineTipPoint = point;
-    lineTipShowAt = performance.now() + LINE_TIP_SHOW_DELAY;
-    lineTipRafWake();
-  }
-  function showLineTip(badge, point) {
-    const tip = ensureLineTipEl();
-    tip.querySelector('.lt-dot').style.background = badge.color || '#000';
-    tip.querySelector('.lt-name').textContent = badge.name;
-    tip.classList.add('on');
-    // 定位：点击位右上为默认、放不下翻到左侧/下方（e.point＝#map 容器像素，inset:0 全屏
-    // ＝视口坐标，body 级 absolute 直接用）
-    const w = tip.offsetWidth, h = tip.offsetHeight;
-    let x = point.x + 14, y = point.y - h - 12;
-    if (x + w > window.innerWidth - 8) x = point.x - w - 14;
-    if (y < 8) y = point.y + 16;
-    tip.style.left = Math.max(8, x) + 'px';
-    tip.style.top = y + 'px';
-    lineTipFadeAt = performance.now() + LINE_TIP_FADE_MS;
-    lineTipRafWake();
-  }
-  function hideLineTip() {
-    lineTipShowAt = 0; lineTipFadeAt = 0;
-    const tip = document.getElementById('lineTip');
-    if (tip) tip.classList.remove('on');
-  }
-  // ⚠ MapLibre 的 removeLayer 不解绑 map.on('click', layerId, fn) 的 delegated listener——
-  // 全删全建的动态层若只绑不解，监听器无限累积（真数据一次冒烟即堆到数百个，每次 click
-  // 全量遍历）。簿记 handler，删层处（rebuildConnLayers 头部）随删随解绑。
-  const lineTipBound = new Map();   // layerId → click handler
-  function bindLineTipLayer(id) {
-    const handler = (e) => {
-      const p = e.features && e.features[0] && e.features[0].properties;
-      if (!p || !p.lineId) return;
-      const badge = naturalLineBadge(p.lineId);
-      if (!badge) { hideLineTip(); return; }   // 静默目标（联络线）：即时收起旧提示、不出新提示
-      scheduleLineTip(badge, e.point);   // 第二击重置防抖时刻＝dblclick 窗口
-    };
-    lineTipBound.set(id, handler);
-    S.map.on('click', id, handler);
-  }
-  function unbindLineTipLayer(id) {
-    const h = lineTipBound.get(id);
-    if (h && S.map) S.map.off('click', id, h);
-    lineTipBound.delete(id);
-  }
-  function wireLineTip() {
-    // 点空白隐藏＝查询式（不依赖监听注册序与标记传递）：全局 click 自查该点是否命中任何
-    // 线层特征，命中＝有线层 handler 接管（显示/换内容/静默），未命中＝空白，藏。
-    // dblclick 取消防抖并隐藏（双击缩放不闪提示）；movestart（拖动/惯性/程序跳转）即藏，
-    // 提示不随地图漂移。
-    S.map.on('click', (e) => {
-      try {
-        const layers = ['lines', 'lines-dash', ...lineTipBound.keys()];
-        if (e.point && S.map.queryRenderedFeatures(e.point, { layers }).length) return;
-      } catch (err) { /* 查询异常按空白处理 */ }
-      hideLineTip();
+  function wireLineClick() {
+    S.map.on('click', onMapClick);
+    S.map.on('mousemove', (e) => {
+      hoverPoint = e && Number.isFinite(e.point.x) ? [e.point.x, e.point.y] : null;
+      scheduleHover();
     });
-    S.map.on('dblclick', hideLineTip);
-    S.map.on('movestart', hideLineTip);
-    for (const id of ['lines', 'lines-dash']) bindLineTipLayer(id);   // 静态两层
+    S.map.on('mouseout', () => { hoverPoint = null; scheduleHover(); });   // 离开画布恢复默认
   }
   function buildMap() {
     const map = new G.maplibregl.Map({
@@ -816,15 +765,19 @@
     // 单/双击＝无动作，双击线路与双击空白一律原生缩放。精确命中工具链（lineWidthAt /
     // pointToScreenPolylineDist / DBLCLICK_TOL_PX）保留在 VIEWER_CORE 供日后回启，此处
     // 不再引用；hover 也不设 pointer 光标（不可点即不暗示可点）。
-    //（站圈/药丸交互照旧——点选开站点面板，见下。）
+    // ——2026-11-27 用户裁定改版：单击线身＝聚焦高亮回启（查询式实现，见 wireLineClick
+    // 段注；双击与原生缩放的冲突见该段「双击边缘行为」说明）。列表入口随新 UI 已是单击
+    //（buildLineList），toggleFocus 仍供内部路径复用。
+    //（站圈/药丸交互照旧——demo 新 UI 裁定点车站不触发任何面板，bindPinLayerInteraction
+    // 为空实现占位；聚焦时的罩上复制层（*-focus）在 rebuildConnLayers 建层处同绑。）
     // 站圈三层（big/dark 拆层，filter 互斥）＋药丸两层（成员圈已隐去，药丸本体承接点选/
     // hover，两层同源内外均可命中）共绑同一组交互——行为与单层时代完全一致；聚焦时的
     // 罩上复制层（*-focus）在 rebuildConnLayers 建层处同绑（聚焦成员 feature 只在其上渲染）
     for (const id of STOP_LAYER_DEFS.map((d) => d.id).concat(['pills-inner', 'pills-outer'])) {
       bindPinLayerInteraction(id);
     }
-    // 单击线路轻提示（2026-11-26 追加）：全局隐藏/dblclick/movestart 先注册，静态线层随后
-    wireLineTip();
+    // 单击线路＝聚焦（2026-11-27 改版）：全局 click＋hover cursor（各恰一次注册，不随层重建增减）
+    wireLineClick();
     map.on('error', (e) => {
       // MapLibre 运行时错误默认不上控制台（2026-11-22 黑屏排查教训：吞错害人）——显式转发
       console.error('map error:', e && e.error ? e.error.message || e.error : e);
@@ -849,7 +802,9 @@
   }
   function fitAll() {
     const bb = totalBbox();
-    if (bb) S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: 60, duration: 0, maxZoom: 12 });
+    // 2026-11-27 相机让位 padding 推广：初始全图 fit 同样扣左侧面板（面板在 splash 态也
+    // 常驻显示），全图西端不再被面板压住
+    if (bb) S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: cameraPadding(), duration: 0, maxZoom: 12 });
   }
 
   // ---------- 省级界线底图（常驻，2026-11-23 用户明示授权外部底图数据） ----------
@@ -1155,7 +1110,7 @@
       return { seg, range: phaseRange, coords };
     }).filter((item) => item.coords.length >= 2);
   }
-  function addPhaseDynamicSegments(line, reverse, baseDef, layerPrefix, addLow, addTop, feats, bindTip) {
+  function addPhaseDynamicSegments(line, reverse, baseDef, layerPrefix, addLow, addTop, feats) {
     for (const item of phaseDynamicSegments(line, reverse)) {
       const seg = item.seg;
       const selected = V.phaseStatusSelected(seg.segStatus, S.phases);
@@ -1172,7 +1127,6 @@
       // Selected segments are the only dynamic special geometry redrawn above the veil.
       if (selected) def.paint['line-opacity'] = 1;
       (selected ? addTop : addLow)(def);
-      if (bindTip) bindLineTipLayer(def.id);   // 出省渐隐段层（arrow-fade-seg-*）收单击提示；联络线段不收
     }
   }
   // blend 形态层定义：双端渐变全不透明（hex 直用，不带 alpha）＋dim case
@@ -1405,7 +1359,6 @@
     const map = S.map;
     if (!map) return;
     for (const id of S.connLayerIds) {
-      unbindLineTipLayer(id);   // 线提示 delegated 监听随层解绑（removeLayer 不自动解绑，防累积）
       if (map.getLayer(id)) map.removeLayer(id);
     }
     S.connLayerIds = [];
@@ -1471,10 +1424,9 @@
       if (copySrc) copySrc.setData(renderFocusCopyFC());
       addTop(focusCopyLayerDef());
       addTop(focusCopyDashLayerDef());   // 预控通道成员罩上保持虚线（2026-11-23）
-      bindLineTipLayer('focus-copy'); bindLineTipLayer('focus-copy-dash');
       // 分期态他省线罩上恒调光层（2026-11-25）：不被白罩压暗、不进期次高亮——位置在
       // focus-copy（本地选中段）之后、罩上符号复制层之前（线在下、符号在上）
-      if (S.phaseActive) { addTop(displayOnlyLineLayerDef()); bindLineTipLayer('lines-displayonly'); }
+      if (S.phaseActive) addTop(displayOnlyLineLayerDef());
     }
     // ③ fade 形态联络线层（聚焦绑定：聚焦线色→透明；罩上＝渐变高亮不被罩压白；非聚焦无此层）
     const focusColor = (S.linesMap.get(S.focus) || {}).color;
@@ -1513,10 +1465,9 @@
             feats.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords },
               properties: { lineId: line.lineId, dim: S.dimmed.has(line.lineId) ? 1 : 0 } });
             addTop(def);
-            bindLineTipLayer(def.id);   // 他省线照常显示单击提示
           }
         } else {
-          addPhaseDynamicSegments(line, false, def, 'arrow-fade-seg-', addLow, addTop, feats, true);
+          addPhaseDynamicSegments(line, false, def, 'arrow-fade-seg-', addLow, addTop, feats);
         }
       } else {
         const coords = connCoords(line, false);
@@ -1527,7 +1478,6 @@
           properties: { lineId: line.lineId, dim: S.dimmed.has(line.lineId) ? 1 : 0 },   // 照常受调光规则
         });
         if (arrowFocusIds.has(String(line.lineId))) addTop(def); else addLow(def);
-        bindLineTipLayer(def.id);
       }
     }
     // ⑤ 罩上符号复制层（2026-11-22 真机反馈轮：聚焦成员的站圈/药丸在罩上完整显示）——
@@ -1579,6 +1529,7 @@
     if (S.focus != null) setFocus(null);
     applyDimState();
     buildLineList();   // 分期单选态：变灰条目集随档位刷新
+    scheduleHover();   // 2026-11-27：分期态切换重判 hover cursor（pointer 只在非分期态出现）
   }
   //（2026-11-22 定案轮删除：高亮方式切换 setHlMode/S.hlMode 与白罩不透明度五档
   //   cycleVeilOpacity/S.veilOpacity 两套对比开关——用户定案遮罩 70%，恒定值见
@@ -1612,7 +1563,7 @@
     }
     if (!bb || !S.map) return;
     S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]],
-      { padding: focusPadding(), duration: 600, maxZoom: 13 });
+      { padding: cameraPadding(), duration: 600, maxZoom: 13 });
   }
   // 面板可见性运行时探测（demo：唯一左侧面板 #panel；抽屉收起＝.collapsed 移出屏）：
   // !hidden 且 rect 在屏内（width>0 且 right>0——collapsed 态 transform 移出后 right<0）。
@@ -1621,13 +1572,18 @@
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.right > 0;
   }
-  // demo 新 UI：聚焦跳转四边留白——顶栏/聚焦框/信息面板已退役，上下右取常量；
-  // 左＝面板可见时其右缘＋24（收起后回落 64），与旧语义同构。
-  function focusPadding() {
-    const GAP = 24, FALLBACK = 64;
+  // 2026-11-27 相机让位 padding（推广到一切相机动作）：左＝面板展开时其右缘＋24（面板宽
+  // 295＋左边距 12 → 常态 331）；抽屉收起回落 24（与其他边同档的默认呼吸量，不给面板
+  // 留位）。上/下 24、右 64（右下有缩放控件）。每次调用实时取面板 rect——收/展后续相机
+  // 动作自动跟随。⚠ fitBounds 的 padding 选项是一次性几何输入（vendored 5.24.1 的实现
+  // 与 transform 持久 padding 分账，fitBounds 从不写它）；但 flyTo 的 padding 选项**会**
+  // 写持久 transform.padding，后续 fitBounds 几何会把两者叠扣——故搜索车站的 flyTo 用
+  // 等效一次性 offset，不碰 padding 选项。
+  function cameraPadding() {
+    const GAP = 24, RIGHT = 64;
     const lp = $('panel');
-    const left = panelVisible(lp) ? lp.getBoundingClientRect().right + GAP : FALLBACK;
-    return { top: GAP, bottom: GAP, left, right: FALLBACK };
+    const left = panelVisible(lp) ? lp.getBoundingClientRect().right + GAP : GAP;
+    return { top: GAP, bottom: GAP, left, right: RIGHT };
   }
   // 2026-11-22 主支线合并：双击支线线身等效双击主线——入口先归一到主线 id 再 toggle
   //（列表行已合并为主线行，支线 id 实际来源＝地图线身双击；pickEntry 走 setFocus 的
@@ -1953,8 +1909,15 @@
     } else {
       const lb = ent.ref;
       if (!lb || !S.map) return;
-      // 跳转＋zoom 13＋短暂 focus 动画（扩散圆环）；不触发任何面板，搜索结果保留
-      S.map.flyTo({ center: S.dispCoord(lb.lon, lb.lat), zoom: 13, duration: 800 });
+      // 跳转＋zoom 13＋短暂 focus 动画（扩散圆环）；不触发任何面板，搜索结果保留。
+      // 2026-11-27 相机让位：offset＝虚拟视口中心相对真实视口中心的像素偏移（一次性，
+      // 车站点落在扣除面板后的可视区正中；不用 flyTo 的 padding 选项——它写持久
+      // transform.padding 会污染后续 fitBounds 几何，见 cameraPadding 注）
+      const pad = cameraPadding();
+      S.map.flyTo({
+        center: S.dispCoord(lb.lon, lb.lat), zoom: 13, duration: 800,
+        offset: [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2],
+      });
       playStopFx(lb.lon, lb.lat);
     }
   }

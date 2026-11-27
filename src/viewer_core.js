@@ -78,6 +78,11 @@
   // 名单同款集中式，勿散落 if）；命中类别的线特征带 dash 0/1 位，渲染层据此分虚实两层
   //（viewer.js corridorLineLayerDef）。
   const DASHED_LAYERS = ['预控通道'];
+  // 线身渲染层 id 名单（2026-11-27 地图单击聚焦）：静态两层＋罩上重画/他省接管层＋动态
+  // 渐变层族前缀（arrow-fade-*/conn-blend-*/conn-fade-*，分期拆段的 -seg- 变体天然被
+  // 前缀匹配）。站圈/药丸/省界/白罩/底图不在内——点车站无操作（demo 裁定不变）。
+  const LINE_HIT_LAYER_IDS = ['lines', 'lines-dash', 'lines-displayonly', 'focus-copy', 'focus-copy-dash'];
+  const LINE_HIT_LAYER_PREFIXES = ['arrow-fade-', 'conn-blend-', 'conn-fade-'];
   // 标签只按 zoom 门槛分级，**不设标签总数上限**。组/换乘标签含出闸换乘成员，z≥10 渐显；
   // 普通单线站 z≥11 渐显，同屏数量由渲染层视口裁剪约束。
   const LABEL_ZOOM_GROUP = 10;  // 换乘组及出闸换乘标签最低 zoom
@@ -1272,6 +1277,31 @@
     const layer = line && typeof line.layer === 'string' ? line.layer : '';
     return DASHED_LAYERS.indexOf(layer) >= 0 ? 1 : 0;
   }
+  // ---------- 地图单击聚焦（2026-11-27 用户裁定，取代 2026-11-26 单击轻提示） ----------
+  // 两个纯判定供胶水层 click/cursor 共用：
+  // isLineHitLayerId——渲染层 id 是否线身层（见 LINE_HIT_LAYER_IDS 注）；
+  // lineClickAction——线路是否可聚焦目标：联络线（类别名命中 HIDDEN_LIST_LAYERS 或带
+  // **非空** connects——技术线路不可聚焦）与他省线（displayOnly——纯背景是既定裁定）
+  // 一律 'silent'，其余 'focus'。⚠ 联络线判定必须「非空」：normalizeLines 对一切线保留
+  // connects 键（flatten 键齐输出、非联络线为空数组），旧轻提示版按 Array.isArray 判——
+  // 空数组也命中 → 真数据所有线被判联络线而静默＝2026-11-26 真机「单击线路无反应」的
+  // 真根因（与委托/层生命周期无关）。分期态「单击一律无效」是会话态判定，留在胶水层
+  //（不进纯逻辑）；支线→主线归一由胶水层 lineGroups.mainOf 承担。
+  function isLineHitLayerId(layerId) {
+    if (typeof layerId !== 'string') return false;
+    if (LINE_HIT_LAYER_IDS.indexOf(layerId) >= 0) return true;
+    for (let i = 0; i < LINE_HIT_LAYER_PREFIXES.length; i++) {
+      if (layerId.indexOf(LINE_HIT_LAYER_PREFIXES[i]) === 0) return true;
+    }
+    return false;
+  }
+  function lineClickAction(line) {
+    if (!line) return 'silent';
+    const connects = Array.isArray(line.connects) ? line.connects : [];
+    if (HIDDEN_LIST_LAYERS.indexOf(line.layer) >= 0 || connects.length > 0) return 'silent';
+    if (lineLayerRank(line) === 'displayOnly') return 'silent';
+    return 'focus';
+  }
 
   // 调光线集：state＝{ phase: 'none'|'existing'|'approved'|'future', focus: lineId|null,
   //                   lineGroups: buildLineGroups 产物（可选，缺省＝逐线旧行为） }。
@@ -1725,6 +1755,7 @@
     parseNetIndex, buildGroupTree, logicalLineCount, groupRelations,
     planGroupPillChain, planarOf, lineSummaries, layerGroups, visibleListGroups,
     linePhaseOf, lineLayerRank, lineDashed, computeDimmedSet, nextPhase, normalizePhaseSelection, phaseSelectionActive, phaseStatusSelected, phaseSegments, segmentProgressRanges, stopPhaseOf, connectorFadePlan,
+    LINE_HIT_LAYER_IDS, LINE_HIT_LAYER_PREFIXES, isLineHitLayerId, lineClickAction,
     connectorBlendPlan, arrowFadePlan, arrowFadeGradient, ARROW_FADE_M,
     zoomInterp, scaledSize, LINE_WIDTH_PX, DBLCLICK_TOL_PX, lineWidthAt,
     pointToScreenPolylineDist,
