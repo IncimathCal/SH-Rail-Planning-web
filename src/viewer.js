@@ -1076,7 +1076,8 @@
     S.dimmed = V.computeDimmedSet(S.linesMap,
       { phase: S.phase,
         focus: S.focus != null ? S.focus
-          : (S.station != null && S.station.lines && S.station.lines.length ? S.station.lines[0] : null),
+          : (S.station != null && S.station.lines && S.station.lines.length
+            ? String(S.station.lines[0].mainId || '') || null : null),
         lineGroups: S.lineGroups });
     if (S.phaseActive) {
       // 分期态他省线恒入调光集（2026-11-25 纠正裁定：照常显示、罩上恒调光 0.5——与聚焦态
@@ -1120,8 +1121,11 @@
   function updateFadeSet() {
     const plan = [];
     if (S.station != null && S.focus == null) {
+      // S.station.lines 元素＝行对象（{mainId,…}），联络线判定循环取 mainId 字段
       const seen = new Set();
-      for (const mainId of S.station.lines || []) {
+      for (const ln of S.station.lines || []) {
+        const mainId = ln && ln.mainId != null ? String(ln.mainId) : '';
+        if (!mainId) continue;
         const color = (S.linesMap.get(mainId) || {}).color;
         for (const it of V.connectorFadePlan(S.linesMap, mainId)) {
           if (seen.has(it.lineId)) continue;
