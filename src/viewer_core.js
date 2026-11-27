@@ -996,6 +996,37 @@
     return plan;
   }
 
+  // ---------- 聚焦取景 bbox（2026-11-27 真机反馈轮：相机让位两病灶修复） ----------
+  // focusBboxOf(dispBbox, lineGroups, focusId, fadeConnPlan)：聚焦相机取景 bbox ＝
+  // 聚焦组全体成员（无组退单线；组 members 空亦退单线，与 updateLabels 的 focusMembers
+  // 兜底同口径）渲染 bbox 联合 **∪ 聚焦绑定联络线（fadeConnPlan＝connectorFadePlan 产物，
+  // connects 含聚焦线者）的渲染 bbox**。
+  // 病灶①（用户真机抓包：聚焦「东西联络线」时，其西衔嘉青松金线的联络线 l0087 被切出
+  // 画面）：联络线以 conn-fade 罩上渐变高亮呈现（聚焦线色→透明）、视觉上属于聚焦呈现的
+  // 一部分，但其几何可延伸到线路本体 bbox 之外——取景必须并入。口径与 conn-fade 渲染
+  // 判定完全一致＝直接吃 fadeConnPlan，不另立关联规则（conn-blend 常驻层是白罩下的背景，
+  // 不并入；connects 指向支线 id 的形态 connectorFadePlan 本就防御从简不扩展，这里同口径）。
+  // dispBbox：lineId → [minX,minY,maxX,maxY]（渲染同帧记账——渐变/重画接管的线跳
+  // feature 不跳 bbox，联络线恒有记账）；lineGroups：buildLineGroups 产物 {ofLine:Map}；
+  // 缺 bbox 的成员逐个跳过，全体缺失返回 null（调用方静默不跳相机，保持既有行为）。
+  function focusBboxOf(dispBbox, lineGroups, focusId, fadeConnPlan) {
+    if (focusId == null) return null;
+    const into = (bb, id) => {
+      const b = dispBbox instanceof Map && id != null ? dispBbox.get(id) : null;
+      if (!b) return bb;
+      if (!bb) return [b[0], b[1], b[2], b[3]];
+      return [Math.min(bb[0], b[0]), Math.min(bb[1], b[1]), Math.max(bb[2], b[2]), Math.max(bb[3], b[3])];
+    };
+    const grp = lineGroups && lineGroups.ofLine instanceof Map ? lineGroups.ofLine.get(focusId) : null;
+    const ids = grp && Array.isArray(grp.members) && grp.members.length ? grp.members : [focusId];
+    let bb = null;
+    for (const id of ids) bb = into(bb, id);
+    for (const it of fadeConnPlan || []) {
+      if (it && it.lineId != null) bb = into(bb, it.lineId);
+    }
+    return bb;
+  }
+
   // ---------- 联络线双端渐变取色（2026-11-22 用户需求 2：取消联络线颜色属性） ----------
   // connectorBlendPlan(linesMap)：找 linesMap 中全部「有效」联络线，返回
   // [{lineId, headColor, tailColor}]——head/tailColor＝该线拼接折线首/末端各自
@@ -1754,7 +1785,7 @@
     normalizeLines, lineBboxOf, stopList, buildStopView,
     parseNetIndex, buildGroupTree, logicalLineCount, groupRelations,
     planGroupPillChain, planarOf, lineSummaries, layerGroups, visibleListGroups,
-    linePhaseOf, lineLayerRank, lineDashed, computeDimmedSet, nextPhase, normalizePhaseSelection, phaseSelectionActive, phaseStatusSelected, phaseSegments, segmentProgressRanges, stopPhaseOf, connectorFadePlan,
+    linePhaseOf, lineLayerRank, lineDashed, computeDimmedSet, nextPhase, normalizePhaseSelection, phaseSelectionActive, phaseStatusSelected, phaseSegments, segmentProgressRanges, stopPhaseOf, connectorFadePlan, focusBboxOf,
     LINE_HIT_LAYER_IDS, LINE_HIT_LAYER_PREFIXES, isLineHitLayerId, lineClickAction,
     connectorBlendPlan, arrowFadePlan, arrowFadeGradient, ARROW_FADE_M,
     zoomInterp, scaledSize, LINE_WIDTH_PX, DBLCLICK_TOL_PX, lineWidthAt,

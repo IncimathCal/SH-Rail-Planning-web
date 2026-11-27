@@ -1714,5 +1714,49 @@ eq(V.lineClickAction(mkLine({ layer: '他省' })), 'silent', '他省线 → sile
 eq(V.lineClickAction(mkLine({ layer: '他省线' })), 'focus', '不在 DISPLAY_ONLY_LAYERS 的名字按普通线（名单精确匹配的边界）');
 eq(V.lineClickAction(null), 'silent', 'null → silent（防御）');
 
+// ---------- 聚焦取景 bbox（2026-11-27 真机病灶①：聚焦绑定联络线并入取景） ----------
+console.log('focusBboxOf:');
+{
+  // 东西联络线病灶的抽象化：聚焦线本体 bbox ＋西延联络线，取景须含联络线几何
+  const bb = new Map([
+    ['l50', [121.22, 30.99, 121.78, 31.12]],           // 聚焦线本体（东西向）
+    ['l87', [121.18, 30.98, 121.22, 31.00]],           // 西衔嘉青松金线的联络线（西延出本体）
+    ['l88', [121.35, 31.02, 121.36, 31.04]],           // 东侧联络线（在本体范围内）
+    ['l57', [121.05, 30.95, 121.19, 31.05]],           // 嘉青松金线（未绑定——不进 fadeConnPlan）
+  ]);
+  const lgNone = V.buildLineGroups(new Map(), []);
+  // 单线无组＋fade 绑定联络线：bbox 并入 l87（西界扩到 121.18）与 l88（已在范围内，无副作用）
+  eq(V.focusBboxOf(bb, lgNone, 'l50', [{ lineId: 'l87', attachEnd: 0 }, { lineId: 'l88', attachEnd: 1 }]),
+    [121.18, 30.98, 121.78, 31.12], '聚焦绑定联络线几何并入取景（东西联络线病灶回归：西衔联络线不再出画）');
+  // fadeConnPlan 空 → 只线本体（原行为）
+  eq(V.focusBboxOf(bb, lgNone, 'l50', []), [121.22, 30.99, 121.78, 31.12], '无绑定联络线 → 只线本体 bbox');
+  eq(V.focusBboxOf(bb, lgNone, 'l50', null), [121.22, 30.99, 121.78, 31.12], 'fadeConnPlan 未传 → 只线本体 bbox');
+  // 未绑定的联络线（conn-blend 常驻背景）不并入
+  eq(V.focusBboxOf(bb, lgNone, 'l50', [{ lineId: 'l87', attachEnd: 0 }])[0], 121.18, '绑定即并入');
+  // 组路径：成员联合（支线也是这条线的一部分）＋联络线并入
+  const linesMap = new Map([
+    ['l11', { lineId: 'l11', name: '主线', layer: '市域线', role: 'main', segments: [] }],
+    ['l12', { lineId: 'l12', name: '支线', layer: '市域线', role: 'branch', segments: [] }],
+  ]);
+  const lg = V.buildLineGroups(linesMap, [{ id: 'lg01', name: '组', mainId: 'l11', members: ['l11', 'l12'] }]);
+  const bb2 = new Map([
+    ['l11', [121.1, 31.0, 121.5, 31.2]],
+    ['l12', [121.3, 30.9, 121.6, 31.1]],
+    ['l99', [121.0, 31.3, 121.2, 31.4]],               // 绑定联络线（北延出组范围）
+  ]);
+  eq(V.focusBboxOf(bb2, lg, 'l11', [{ lineId: 'l99', attachEnd: 0 }]),
+    [121.0, 30.9, 121.6, 31.4], '组路径：成员联合 ∪ 绑定联络线（attachEnd 不影响 bbox）');
+  eq(V.focusBboxOf(bb2, lg, 'l12', []), [121.1, 30.9, 121.6, 31.2], '支线 id 归一到组 bbox（setFocus 已归一，防御）');
+  // 防御：null id／全缺 bbox／lineGroups 非 Map／组成员缺 bbox 跳过／空 members 退单线
+  eq(V.focusBboxOf(bb2, lg, null, []), null, '空 focusId → null');
+  eq(V.focusBboxOf(new Map(), lg, 'l11', [{ lineId: 'l99', attachEnd: 0 }]), null, '全体缺 bbox → null（调用方静默不跳）');
+  eq(V.focusBboxOf(bb2, null, 'l11', []), [121.1, 31.0, 121.5, 31.2], 'lineGroups 缺失 → 退单线 bbox');
+  const bb3 = new Map([['l11', [121.1, 31.0, 121.5, 31.2]]]);
+  eq(V.focusBboxOf(bb3, lg, 'l11', [{ lineId: 'missing', attachEnd: 0 }]), [121.1, 31.0, 121.5, 31.2], '联络线缺 bbox → 跳过不炸');
+  const lgEmpty = V.buildLineGroups(linesMap, [{ id: 'lg02', name: '空组', mainId: 'l11', members: [] }]);
+  eq(V.focusBboxOf(bb3, lgEmpty, 'l11', []), [121.1, 31.0, 121.5, 31.2], '组 members 空 → 退单线（与 focusMembers 兜底同口径）');
+  eq(V.focusBboxOf(bb3, lg, 'l11', [{ attachEnd: 0 }]), [121.1, 31.0, 121.5, 31.2], 'fadeConnPlan 脏条目（无 lineId）→ 跳过');
+}
+
 console.log(fails ? `\nFAIL - ${fails} assertion(s)` : '\nPASS - viewer logic OK');
 process.exit(fails ? 1 : 0);

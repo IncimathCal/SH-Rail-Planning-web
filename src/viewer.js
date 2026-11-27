@@ -1553,14 +1553,13 @@
   // 渲染特征同帧，gaode 底图下也正确）；bbox 不存在时静默不跳。maxZoom 13 与搜索定位同档。
   // 2026-11-22 主支线合并：bbox＝组全体成员渲染 bbox 联合（支线也是这条线的一部分）；
   // 单成员缺 bbox 跳过，全体缺失 → null 静默不跳（保留原行为）。
+  // 2026-11-27 真机病灶①修复：bbox 另并入**聚焦绑定联络线**的渲染 bbox（V.focusBboxOf
+  // ——联络线以 conn-fade 罩上渐变高亮呈现、视觉上属于聚焦呈现的一部分，但几何可延伸到
+  // 线路本体 bbox 之外；用户抓包＝聚焦东西联络线时西衔嘉青松金线的联络线被切出画面。
+  // 口径与 conn-fade 渲染判定同源＝S.fadeConnPlan（connectorFadePlan 产物），不另立关联
+  // 规则；S.fadeConnPlan 已由本函数调用前的 applyDimState→updateFadeSet 与渲染同帧就绪）。
   function fitFocusLine(id) {
-    const grp = S.lineGroups.ofLine.get(id);
-    let bb = null;
-    if (grp) {
-      for (const m of grp.members) bb = mergeBbox(bb, S.dispBbox.get(m));
-    } else {
-      bb = S.dispBbox.get(id);
-    }
+    const bb = V.focusBboxOf(S.dispBbox, S.lineGroups, id, S.fadeConnPlan);
     if (!bb || !S.map) return;
     S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]],
       { padding: cameraPadding(), duration: 600, maxZoom: 13 });
@@ -1579,11 +1578,21 @@
   // 与 transform 持久 padding 分账，fitBounds 从不写它）；但 flyTo 的 padding 选项**会**
   // 写持久 transform.padding，后续 fitBounds 几何会把两者叠扣——故搜索车站的 flyTo 用
   // 等效一次性 offset，不碰 padding 选项。
+  // 2026-11-27 真机病灶②修复：站名标签余量。端点站名以站点居中左右伸展（HTML 标签
+  // nowrap＋translate(-50%,-140%)，普通站 12px／组站 13px 加粗，zoom≥11 原尺寸——聚焦
+  // 短线被 maxZoom 13 夹住时正是原尺寸），只给呼吸量会让西端点贴面板右缘、居中的站名被
+  // 裁一半。水平余量按真数据最长站名实测定半宽（组站「上海国际旅游度假区」9 汉字 13px
+  // ≈117px、普通站「蟠祥路·国家会计学院」≈114px → 半宽 ≤60px，含 3px 描边外扩取 70）；
+  // 垂直站名向上伸 ≈13×1.2×1.4＋描边 ≈24px（取 26），top 补同量、bottom 无需（标签恒在
+  // 站点上方）；右侧基线 64（缩放控件）与「呼吸＋半宽」94 取大——东端组站名右伸不被屏缘
+  // 裁掉。原则：聚焦后线路全部几何＋两端站名完整可见。
+  const LABEL_MARGIN_X = 70, LABEL_MARGIN_Y = 26;
   function cameraPadding() {
     const GAP = 24, RIGHT = 64;
     const lp = $('panel');
-    const left = panelVisible(lp) ? lp.getBoundingClientRect().right + GAP : GAP;
-    return { top: GAP, bottom: GAP, left, right: RIGHT };
+    const left = panelVisible(lp) ? lp.getBoundingClientRect().right + GAP + LABEL_MARGIN_X
+      : GAP + LABEL_MARGIN_X;
+    return { top: GAP + LABEL_MARGIN_Y, bottom: GAP, left, right: Math.max(RIGHT, GAP + LABEL_MARGIN_X) };
   }
   // 2026-11-22 主支线合并：双击支线线身等效双击主线——入口先归一到主线 id 再 toggle
   //（列表行已合并为主线行，支线 id 实际来源＝地图线身双击；pickEntry 走 setFocus 的
