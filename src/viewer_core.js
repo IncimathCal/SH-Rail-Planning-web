@@ -1998,6 +1998,16 @@
     return PHASE_CYCLE[((i < 0 ? 0 : i) + 1) % PHASE_CYCLE.length];
   }
 
+  // 主界面三选项卡切换方向（2026-11-27 动效）：order＝tab 序（HTML 按钮序，市区线/市域线/
+  // 预控通道），from/to＝tab 名。返回 1＝前进（新列表自右滑入）、-1＝反向（自左）、
+  // 0＝同名或任一不在序表内（不动，防御他省/联络线等不进列表的类别名）。
+  function tabSwapDir(order, from, to) {
+    if (from === to) return 0;
+    const i = order.indexOf(from), j = order.indexOf(to);
+    if (i < 0 || j < 0) return 0;
+    return j > i ? 1 : -1;
+  }
+
   // ---------- 尺寸随缩放等比表达式（z≥11 恒基准封顶、z<11 按 2^(z−11) 等比缩小） ----------
   // zoomInterp(sizeLow, sizeHigh)：构造 ['interpolate',['exponential',2],['zoom'], 5, 低端, 11, 高端]；
   // 两端自动 clamp（z≤5 恒低端、z≥11 恒高端——高端即「向上封顶」，拉近不变粗）。
@@ -2408,7 +2418,7 @@
     normalizeLines, lineBboxOf, stopList, buildStopView,
     parseNetIndex, buildGroupTree, logicalLineCount, groupRelations,
     planGroupPillChain, planarOf, lineSummaries, layerGroups, visibleListGroups,
-    linePhaseOf, lineLayerRank, lineDashed, computeDimmedSet, deepHighlightDimIds, deepPhaseDimBit, nextPhase, normalizePhaseSelection, phaseSelectionActive, phaseStatusSelected, phaseSegments, segmentProgressRanges, stopPhaseOf, connectorFadePlan, focusBboxOf,
+    linePhaseOf, lineLayerRank, lineDashed, computeDimmedSet, deepHighlightDimIds, deepPhaseDimBit, nextPhase, tabSwapDir, normalizePhaseSelection, phaseSelectionActive, phaseStatusSelected, phaseSegments, segmentProgressRanges, stopPhaseOf, connectorFadePlan, focusBboxOf,
     LINE_HIT_LAYER_IDS, LINE_HIT_LAYER_PREFIXES, isLineHitLayerId, lineClickAction,
     STOP_HIT_LAYER_IDS, isStopHitLayerId,
     stationMemberStops, stationLinesOf, stationFocusOf, focusBboxOfSet,

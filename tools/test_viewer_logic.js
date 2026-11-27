@@ -380,6 +380,16 @@ eq(V.nextPhase('existing'), 'approved', '既有→已批复');
 eq(V.nextPhase('approved'), 'future', '已批复→远期');
 eq(V.nextPhase('future'), 'none', '远期→无');
 eq(V.nextPhase('weird'), 'existing', '非法输入回「无」再前进一步＝existing');
+// 选项卡切换方向（2026-11-27 动效：序＝HTML 按钮序 市区线/市域线/预控通道；前进 1/反向 -1/不动 0）
+const TABS3 = ['市区线', '市域线', '预控通道'];
+eq(V.tabSwapDir(TABS3, '市区线', '市域线'), 1, '市区→市域＝前进（列表自右入）');
+eq(V.tabSwapDir(TABS3, '市域线', '预控通道'), 1, '市域→预控＝前进');
+eq(V.tabSwapDir(TABS3, '市区线', '预控通道'), 1, '市区→预控跨位仍前进');
+eq(V.tabSwapDir(TABS3, '预控通道', '市域线'), -1, '预控→市域＝反向（列表自左入）');
+eq(V.tabSwapDir(TABS3, '市域线', '市区线'), -1, '市域→市区＝反向');
+eq(V.tabSwapDir(TABS3, '市区线', '市区线'), 0, '同 tab 不动');
+eq(V.tabSwapDir(TABS3, '他省', '市区线'), 0, '来源不在序表 → 0（防御不进列表类别）');
+eq(V.tabSwapDir(TABS3, '市域线', '联络线'), 0, '目标不在序表 → 0（防御）');
 // 可交互层级：他省线 displayOnly，其余 normal（集中判断）
 eq(V.lineLayerRank(lm.get('lc')), 'normal', '联络线是 normal（可交互，仅左栏列表隐藏）');
 eq(V.lineLayerRank({ layer: '他省' }), 'displayOnly', '他省线 displayOnly（仅显示级）');

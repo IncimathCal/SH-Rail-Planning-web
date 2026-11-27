@@ -1974,6 +1974,19 @@
     if (prev === view || !(view in VIEW_IDS) || !(prev in VIEW_IDS)) return;
     const fwd = VIEW_RANK[view] > VIEW_RANK[prev];
     const oldEl = viewEl(prev), newEl = viewEl(view);
+    // 2026-11-27 用户裁定：splash→main 前进改硬切（开屏「确认」瞬间进主界面、不滑动）；
+    // main→splash 返回仍走滑动。双视图同帧挂 noanim 直设终态、reflow 后即移除——
+    // visibility 延迟切换也被 noanim 盖住立即生效（真切换而非光速划过），无过渡类残留。
+    if (prev === 'splash' && view === 'main') {
+      oldEl.classList.add('noanim');
+      newEl.classList.add('noanim');
+      oldEl.dataset.pos = 'off-left';   // 返回停靠位：此后 main→splash 滑回方向自然正确
+      newEl.dataset.pos = 'center';
+      void newEl.offsetWidth;
+      oldEl.classList.remove('noanim');
+      newEl.classList.remove('noanim');
+      return;
+    }
     // 新视图瞬时跳到进场起始位（noanim 跳过过渡，强制 reflow 后恢复过渡能力）
     newEl.classList.add('noanim');
     newEl.dataset.pos = fwd ? 'off-right' : 'off-left';
@@ -2728,14 +2741,49 @@
     $('btnKml').addEventListener('click', () => {
       if (S.ui.linePageId != null) exportLine(S.ui.linePageId, 'kml');   // 仅 KML，不提供 GeoJSON
     });
-    // 三选项卡（市区线/市域线/预控通道）
-    document.querySelectorAll('#mainTabs button').forEach((btn) => {
+    // 三选项卡（市区线/市域线/预控通道）——2026-11-27 动效：①激活细线 #tabIndicator 自旧
+    // tab 位移/变宽过渡滑到新 tab（不再瞬跳，同步见 syncTabIndicator）；②列表内容按 tab 序
+    // 滑动换页（前进自右入/反向自左入，--swap-dur 240ms 与搜索态同档；换页后滚动回顶属正常）。
+    // 方向＝V.tabSwapDir（viewer_core 纯逻辑可单测，序取 HTML 按钮序）。搜索态下 tabs 仍可见
+    // 可点：列表照常重建、滑动动画在退场容器内自行播放不碍事；分期态变灰走 buildLineList 既有
+    // 逻辑不受影响（1709/1722 两处非 tab 触发的重建不带动画，语义正确）。初始同步 active 类
+    // （原实现 HTML 静态无 active、JS 也不挂——初始三 tab 均无激活样式，本次顺带补齐）。
+    const tabsBar = $('mainTabs');
+    const tabBtns = Array.from(tabsBar.querySelectorAll('button'));
+    const TAB_ORDER = tabBtns.map((b) => b.dataset.tab || '市区线');
+    // 指示线对齐激活按钮（instant＝首挂瞬时定位，不播过渡）；无激活按钮则不动（保持原位）
+    function syncTabIndicator(instant) {
+      const ind = $('tabIndicator');
+      const btn = tabsBar.querySelector('button.active');
+      if (!ind || !btn) return;
+      if (instant) ind.classList.add('noanim');
+      ind.style.width = btn.offsetWidth + 'px';
+      ind.style.transform = 'translateX(' + btn.offsetLeft + 'px)';
+      ind.style.opacity = '1';
+      if (instant) { void ind.offsetWidth; ind.classList.remove('noanim'); }
+    }
+    // 列表换页滑动：一次性动画类（重挂前清旧类＋reflow 重启，快速连点不吞动画）
+    function slideLineList(dir) {
+      const host = $('lineList');
+      if (!host || !dir) return;
+      host.classList.remove('tab-in-r', 'tab-in-l');
+      void host.offsetWidth;
+      host.classList.add(dir > 0 ? 'tab-in-r' : 'tab-in-l');
+    }
+    tabBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
+        const prevTab = S.ui.tab;
         S.ui.tab = btn.dataset.tab || '市区线';
-        document.querySelectorAll('#mainTabs button').forEach((b2) => b2.classList.toggle('active', b2 === btn));
+        tabBtns.forEach((b2) => b2.classList.toggle('active', b2 === btn));
         buildLineList();
+        if (S.ui.tab !== prevTab) {
+          syncTabIndicator();
+          slideLineList(V.tabSwapDir(TAB_ORDER, prevTab, S.ui.tab));
+        }
       });
     });
+    tabBtns.forEach((b2) => b2.classList.toggle('active', (b2.dataset.tab || '市区线') === S.ui.tab));
+    syncTabIndicator(true);
     // 循环/清单按钮：显示线路（全部→既有→近期→远期）、站名（显示⇄隐藏）保持循环；
     // 底图按钮 2026-11-27 改版——循环退役，单点展开 #basemapMenu 全部清单（终态序
     // 高德→无字高德→用地→卫星→OSM 共 5 态，DOM 在 index.html 底图格内），再点收起。

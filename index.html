@@ -247,6 +247,7 @@
     #mainTabs {
       flex: none; display: grid; grid-template-columns: 1fr 1fr 1fr;
       border-bottom: 1px solid var(--panel-border);
+      position: relative;   /* 2026-11-27：承载激活指示线 #tabIndicator */
     }
     #mainTabs button {
       padding: 8px 0; cursor: pointer; font-size: 13.5px; letter-spacing: 1px;
@@ -254,7 +255,25 @@
       border-bottom: 2px solid transparent; margin-bottom: -1px;
     }
     #mainTabs button:hover { background: var(--hover); }
-    #mainTabs button.active { font-weight: 600; border-bottom-color: #000; }
+    #mainTabs button.active { font-weight: 600; }
+    /* 激活指示线（2026-11-27 动效）：替代 button.active 的 border 瞬跳——细线自旧 tab
+       位移/变宽过渡滑到新 tab；位置由 viewer.js syncTabIndicator 按激活按钮 offsetLeft/
+       offsetWidth 写 inline style（宽度/位移双过渡，不依赖三等分等宽）。初始 opacity 0
+       （无 JS 时不出现），首挂 noanim 瞬时定位。 */
+    #tabIndicator {
+      position: absolute; bottom: -1px; left: 0; height: 2px; width: 0;
+      background: #000; opacity: 0; pointer-events: none;
+      transition: transform var(--swap-dur) var(--slide-ease),
+                  width var(--swap-dur) var(--slide-ease), opacity 120ms linear;
+    }
+    #tabIndicator.noanim { transition: none !important; }
+    /* 选项卡列表换页滑动（2026-11-27 动效）：tab 序前进＝新列表自右滑入（tab-in-r）、
+       反向＝自左（tab-in-l）；--swap-dur 240ms 与搜索态交叉滑动同档。一次性动画类由
+       viewer.js slideLineList 挂（重挂前清旧类＋reflow 重启）；to 态＝列表常态缺省。 */
+    @keyframes tab-in-r { from { transform: translateX(18%); opacity: 0; } }
+    @keyframes tab-in-l { from { transform: translateX(-18%); opacity: 0; } }
+    #lineList.tab-in-r { animation: tab-in-r var(--swap-dur) var(--slide-ease); }
+    #lineList.tab-in-l { animation: tab-in-l var(--swap-dur) var(--slide-ease); }
     /* 搜索态让位（2026-11-27 动效）：#mainBody 与 #searchResults 绝对叠放于 #mainSwap，
        #viewMain.searching 驱动交叉滑动——展开＝列表退左淡出、结果自右淡入；收起反向。
        短时长轻过渡（即输即搜高频路径）；收起时结果 DOM 保留（再次输入即重建，与旧
@@ -608,6 +627,8 @@
         <button type="button" data-tab="市区线">市区线</button>
         <button type="button" data-tab="市域线">市域线</button>
         <button type="button" data-tab="预控通道">预控通道</button>
+        <!-- 激活指示线（2026-11-27 动效）：viewer.js syncTabIndicator 驱动位移/宽度过渡 -->
+        <span id="tabIndicator" aria-hidden="true"></span>
       </div>
       <div id="mainSwap">
       <div id="mainBody">
