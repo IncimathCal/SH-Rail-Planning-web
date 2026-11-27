@@ -2,6 +2,16 @@
 // 逐条确认；同日二轮 12+1 条反馈改版：①搜索态返回先清搜索回列表 ②线路页按来源返回
 //（搜索来源保留词与结果） ③搜索线路条目色点＋副行分类 ⑥无字高德白罩 60/40 ⑦玻璃定稿
 // 删对比控件 ⑨原生 title 全删 ⑬返回初始界面清聚焦分期——其余视觉条目在 index.html）。
+// 2026-11-27 底图扩容＋按钮改版（用户终局裁定，研究报告
+// 零散/底图研究-天地图卫星与用地图-261127.md）：①新增「用地」（planblock 规划用地图，
+// 不透明底独立态）与「卫星」（shanghai_W 上海正射影像）两态，终态清单序
+// 高德→无字高德→用地→卫星→OSM，carto 源保留代码后备不进清单；两源均 3857 标准 XYZ、
+// WGS84 恒等（S.dispCoord 走恒等通道）、256px（planblock minzoom 10/maxzoom 18＝实际
+// 缓存层界、shanghai_W maxzoom 20）；②底图按钮循环退役——单点展开全部清单
+//（#basemapMenu，短名＋色块＋当前态高亮；点选直达并收起／再点按钮收／点面板外收；
+// 抽屉收起与离开主界面时自动收）；③白罩分档重构＝按底图明暗类归档 VEIL_BANDS
+//（浅色矢量 60/40、carto 35/30、用地 32/27、卫星 32/22——后两档研究建议区间中值待
+// 目验微调）；④署名补两态（用地＝市规资局、卫星＝市测绘院，惯例署名）。
 // 2026-11-27 真机目验整改（三项）：①相机让位 padding 推广到一切相机动作——聚焦
 // fitBounds（原有）＋初始 fitAll＋搜索车站 flyTo（用一次性 offset，见 cameraPadding 注），
 // 左侧按面板态实时取（展开＝面板右缘＋24、收起＝24 默认呼吸量），抽屉收/展后续动作
@@ -212,7 +222,7 @@
     labelFrame: 0,                // rAF 合帧令牌
     searchIdx: [],                // 搜索条目
     dropIndex: 0,                 // 搜索下拉键盘焦点序
-    basemap: 'off',               // 测试阶段底图四态：'off'|'osm'|'gaode'|'carto'（默认无＝与现状零差别；不持久化）
+    basemap: 'off',               // 测试阶段底图态：'off'|'osm'|'gaode'|'gaode-plain'|'carto'（后备）|'planblock'|'shanghai_W'（默认无＝零差别；不持久化；UI 初始在 wireUI 里置 'gaode'）
     dispCoord: V.makeDispCoord('none'), // 显示坐标变换（gaode＝WGS84→GCJ02，osm/carto 恒等；仅显示侧，见下方底图段）
     basemapPending: false,        // 样式未就绪时点击的补应用标记（目标态恒存 S.basemap）
     styleReady: false,            // map 'load' 已触发（样式只建一次，就绪后 addSource/addLayer 恒可用）
@@ -928,45 +938,70 @@
     });
   }
 
-  // ---------- 测试阶段底图（四态：无 → OSM → 高德 → CARTO无字 → 无 循环） ----------
+  // ---------- 测试阶段底图（2026-11-27 扩容：清单 5 态＋carto 代码后备） ----------
   // ⚠ 测试阶段功能（2026-11-22 用户指示的阶段性豁免）：早前用户曾裁定「查看器不放底图、
   // 零外部资源」，本段为测试期豁免，正式上线可能保留也可能移除（2026-11-23 用户裁定：打磨
   // 最后阶段移除白板/OSM/高德、只留 CARTO 并删切换按钮）——移除时删本段＋顶栏按钮＋
   // 图例卡署名行＋S 里三字段即可。默认 'off' 与无底图现状完全一致（不 addSource、零网络请求）；
   // 状态会话内不持久化（每次加载默认无底图）。
-  // 对齐设计：OSM 与 CARTO（Positron 无字版，2026-11-23 接入，瓦片 WGS84）与数据同基准
-  // 直接叠（S.dispCoord 恒等直通）；高德瓦片 GCJ02——不动瓦片、只把显示用坐标
-  // 过 S.dispCoord（WGS84→GCJ02），权威数据与 GeoJSON/KML 导出一律 WGS84 一个字节不动
-  //（编辑器是「逐瓦片常量偏移」动瓦片侧，查看器数据侧变换，各自单侧适配、殊途同归）。
-  // demo 新 UI：底图循环三态（用户 2026-11-26 追加裁定）——高德 → 无字高德 → OSM → 高德；
-  // 不再提供「无」白板态；carto 源保留在代码里作后备、不进循环按钮。
+  // 对齐设计：OSM／CARTO（Positron 无字版）／用地（planblock）／卫星（shanghai_W）瓦片均
+  // WGS84（3857 标准网格），与数据同基准直接叠（S.dispCoord 恒等直通）；高德瓦片 GCJ02——
+  // 不动瓦片、只把显示用坐标过 S.dispCoord（WGS84→GCJ02），权威数据与 GeoJSON/KML 导出
+  // 一律 WGS84 一个字节不动（编辑器是「逐瓦片常量偏移」动瓦片侧，查看器数据侧变换，
+  // 各自单侧适配、殊途同归）。
+  // 2026-11-27 扩容改版（用户终局裁定）：底图按钮循环退役——单点展开全部清单（终态序
+  // 高德 → 无字高德 → 用地 → 卫星 → OSM），清单 UI 见 index.html #basemapMenu；carto 源
+  // 保留代码后备不进清单（天地图 img_w+cia_w 官方渠道备选未接，需 tk key——研究报告 1 节）。
   // 无字高德（研究报告 零散/底图研究-无字高德百度-261126.md）：wprd0{1-4}＋scl=2&style=7
   // ＝完全无文字/路名/POI 的浅米白底（512×512 retina，tileSize 256 摆放即高清）；
   // 只有 wprd 域名支持 scl=2（webrd 返回错误页）；GCJ02 偏移与有字高德同源。
-  const BASEMAP_LABEL_ZH = { off: '无', osm: 'OSM', gaode: '高德', 'gaode-plain': '高德·无字', carto: 'CARTO无字' };
+  // 用地／卫星（研究报告 零散/底图研究-天地图卫星与用地图-261127.md 2.2/2.4 节，实测结论）：
+  // map4.shanghai-map.net ArcGIS REST 根级服务、/tile/{z}/{y}/{x}、3857 标准 XYZ、256px、
+  // CORS 反射任意 Origin、无 token 无 Referer 校验；坐标偏移实测亚像素级＝WGS84 恒等直用
+  //（planblock z12 陆家嘴与 OSM 程序化配准、黄浦江中带中位差 -0.5px）。内部端点直连的
+  // 性质与高德 appmaptile 同类（无 SLA）；shanghai_W 无 key 无配额、1–2 米级分辨率。
+  const BASEMAP_LABEL_ZH = { off: '无', osm: 'OSM', gaode: '高德', 'gaode-plain': '高德·无字',
+    carto: 'CARTO无字', planblock: '用地', shanghai_W: '卫星' };
   const BASEMAP_ATTR_ZH = {
     osm: '底图 © OpenStreetMap 贡献者',
     gaode: '底图 © 高德',
     'gaode-plain': '底图 © 高德',   // 无字与有字同属高德服务，同一署名
     carto: '底图 © OpenStreetMap contributors © CARTO',   // CARTO 条款硬性署名（文字即可）
+    planblock: '用地数据 © 上海市规划和自然资源局',   // 惯例署名（性质同省界：无硬性条款，礼貌标注）
+    shanghai_W: '影像 © 上海市测绘院',                 // 同上（shanghai_W＝上海测绘院正射影像）
   };
-  // 底图白色遮罩不透明度按底图态分档（2026-11-23 用户裁定「对于carto无字来讲，这个遮罩太厚了。
-  // 仅carto正常情况改为35，高亮情况下改为30」）：carto 态常态 35%/聚焦 30%——Positron 本就浅，
-  // 60% 下几乎只剩水系轮廓；OSM／高德态维持 60%/40% 不变（用户点名仅 carto，字面执行）。
-  // 聚焦态恒比常态薄一档——聚焦高亮已有 70% 白罩（FOCUS_VEIL_OPACITY），底图遮罩再叠厚
-  // 两层叠白会看不清。历史档位：2026-11-22 用户档位测试定值 40%（临时下拉控件已删，调值改
-  // 此处）；2026-11-23 常态提亮 60%、唯聚焦态保持 40%；同日 carto 态再降档为查表分档。
-  // 聚焦态判定＝现有状态变量 S.focus（null＝未聚焦），不新造状态；随聚焦进出与底图切换
-  // 换档走 syncBasemapVeil（applyDimState＝分期/聚焦两条路径的汇聚点＋applyBasemapToMap＝
-  // 底图开启时补一档）。
-  // 无字高德白罩（二轮⑥：用户目验 35/30 太浅——加深至与 OSM/高德同档 60%/40%，待目验微调；
-  // carto 态维持原 35%/30% 档不动）
-  const VEIL_OPACITY = { osm: 0.6, gaode: 0.6, 'gaode-plain': 0.6, carto: 0.35 };
-  const VEIL_OPACITY_FOCUS = { osm: 0.4, gaode: 0.4, 'gaode-plain': 0.4, carto: 0.30 };
-  // 取当态档位；off／未知态兜底取 osm 档（veil 仅底图非 off 时可见，值不生效，纯防御）
+  // 底图白色遮罩不透明度——按「底图明暗类」归档取值（2026-11-27 扩容重构，研究报告
+  // 零散/底图研究-天地图卫星与用地图-261127.md 3.3 节建议；旧的两张平铺查表
+  // VEIL_OPACITY/VEIL_OPACITY_FOCUS 已删）：
+  //   light 浅色矢量图（高德／无字高德／OSM）……常态 60%/聚焦 40%（2026-11-23 用户定档，
+  //     历史：11-22 定值 40%、11-23 常态提亮 60% 唯聚焦保持 40%）
+  //   pale  中浅色矢量图（CARTO Positron）……常态 35%/聚焦 30%（2026-11-23 用户裁定——
+  //     Positron 本就浅，60% 下几乎只剩水系轮廓）
+  //   dark  深图类·用地（planblock）……常态 32%/聚焦 27%＝研究建议区间（常态 30–35%、
+  //     聚焦 25–30%）中值，待目验微调（用户 2026-11-27 终局裁定）
+  //   darkSat 深图类·卫星（shanghai_W）……常态 32%/聚焦 22%＝研究建议区间（30–35%、
+  //     20–25%）中值，影像纹理比用地更重、聚焦档再放薄，待目验微调
+  // 归类依据：浅色矢量＝白/米白底细线网，中浅＝Positron 特浅灰白，深图＝彩色地块饱和
+  // （60% 白罩会洗没色彩）或深色影像纹理。聚焦态恒比常态薄——聚焦高亮已有 70% 白罩
+  //（FOCUS_VEIL_OPACITY），底图遮罩再叠厚两层叠白会看不清。
+  // 聚焦态判定＝现有 focusOrStation()（聚焦/车站高亮任一）|| S.phaseActive（分期），
+  // 不新造状态；换档路径 syncBasemapVeil（applyDimState＝汇聚点＋applyBasemapToMap＝
+  // 底图切换补一档）。
+  const VEIL_BANDS = {
+    light: { normal: 0.6, focus: 0.4 },
+    pale: { normal: 0.35, focus: 0.30 },
+    dark: { normal: 0.32, focus: 0.27 },
+    darkSat: { normal: 0.32, focus: 0.22 },
+  };
+  const BASEMAP_VEIL_BAND = {
+    gaode: 'light', 'gaode-plain': 'light', osm: 'light',
+    carto: 'pale',
+    planblock: 'dark', shanghai_W: 'darkSat',
+  };
+  // 取当态档位；off／未知态兜底取 light 档（veil 仅底图非 off 时可见，值不生效，纯防御）
   function veilOpacityFor(focused) {
-    const t = focused ? VEIL_OPACITY_FOCUS : VEIL_OPACITY;
-    return t[S.basemap] != null ? t[S.basemap] : t.osm;
+    const band = VEIL_BANDS[BASEMAP_VEIL_BAND[S.basemap] || 'light'];
+    return focused ? band.focus : band.normal;
   }
   // 遮罩层未建（底图从未开过）防御跳过——样式未就绪期由 dimPending/basemapPending 补应用
   // 机制兜底（load 后两路径都会重进 applyDimState/applyBasemapToMap）。
@@ -978,7 +1013,9 @@
     S.map.setPaintProperty('basemap-veil', 'fill-opacity', veilOpacityFor(focusOrStation() || S.phaseActive));
   }
   // demo 新 UI：署名移进左侧面板最底部一行（#attrRow）＋收起态窄条竖排小字（#panelTabAttr）；
-  // 底图三态循环（高德→无字高德→OSM）按钮文案同步。carto 文案保留在 BASEMAP_ATTR_ZH 备用。
+  // 底图按钮文案（当前态短名）同步。carto 文案保留在 BASEMAP_ATTR_ZH 备用。
+  // 2026-11-27 改版：循环退役——按钮单点展开 #basemapMenu 清单（5 态短名＋色块、当前态
+  // 高亮 .active），此处顺带同步清单高亮。
   function syncBasemapUI() {
     const b = $('btnCycleBasemap');
     if (b) b.textContent = BASEMAP_LABEL_ZH[S.basemap] || S.basemap;
@@ -987,7 +1024,16 @@
     if (attr) attr.textContent = text;
     const attrTab = $('panelTabAttr');
     if (attrTab) attrTab.textContent = text;
+    const menu = $('basemapMenu');
+    if (menu) menu.querySelectorAll('button[data-basemap]').forEach((btn) =>
+      btn.classList.toggle('active', btn.dataset.basemap === S.basemap));
   }
+  // 底图清单开合（2026-11-27）：open 态即 DOM class（会话内不持久化）；抽屉收起
+  //（setLinePanelCollapsed）与离开主界面（showView 非 main）时收起——按钮不可见时
+  // 清单状态不残留。函数声明提升，两处前置调用安全。
+  function basemapMenuOpen() { const m = $('basemapMenu'); return !!(m && m.classList.contains('open')); }
+  function openBasemapMenu() { const m = $('basemapMenu'); if (m) m.classList.add('open'); }
+  function closeBasemapMenu() { const m = $('basemapMenu'); if (m) m.classList.remove('open'); }
   // 惰性建层：首次开底图才 addSource/addLayer（默认路径零请求）；raster＋白色遮罩插到首条
   // 线路图层之下——数据压瓦片、bg 背景层被瓦片盖住（无妨，瓦片即底色）。切回「无」只藏不删
   //（setLayoutProperty visibility none，source 保留——再开免重建）。
@@ -997,8 +1043,8 @@
   // 公开属官方接受的用法，建议用户在 CARTO dashboard 配 referer 限制防盗用。
   // 2026-11-22 三批：瓦片 100% 不透明（旧 0.45 透明作废），提亮改走白色遮罩 fill 层——
   // 全世界矩形（Mercator ±85.0511，任何平移不出界），插在瓦片之上、线路之下，只洗底图
-  // 不碰线网站名；不透明度＝按底图态分档查表（见 VEIL_OPACITY 注：carto 35%/聚焦 30%、
-  // 其余 60%/40%；2026-11-23 用户裁定）。
+  // 不碰线网站名；不透明度＝按底图明暗类归档查表（见 VEIL_BANDS 注：浅色矢量 60/40、
+  // carto 35/30、用地 32/27、卫星 32/22；2026-11-23 分档、2026-11-27 归档重构）。
   function ensureBasemapLayers() {
     const map = S.map;
     if (!map || map.getSource('basemap-osm')) return;
@@ -1022,6 +1068,22 @@
       type: 'raster', tileSize: 256,
       tiles: ['https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png?key=cb1_5e93_1_df67d9c33ed32773609298af'],
     });
+    // 用地（planblock，2026-11-27 扩容）：上海规划用地图——不透明白底彩色地块、无文字注记。
+    // 层级：LOD 表声称 0–23 但实际缓存 z10–18（z9/19/20 实测 404）——minzoom 10 免掉
+    // 总览档的无谓 404 请求（z<10 用地层空白＝白底＋线网，用户终局裁定接受独立态）；
+    // maxzoom 18＝更深处 overzoom 复用 18 级瓦片（MapLibre raster 语义）。市域外瓦片 404
+    // 静默空白不阻断。坐标 WGS84 恒等（实测亚像素配准，研究报告 2.2 节）。
+    map.addSource('basemap-planblock', {
+      type: 'raster', tileSize: 256, minzoom: 10, maxzoom: 18,
+      tiles: ['https://map4.shanghai-map.net/arcgis/rest/services/planblock/MapServer/tile/{z}/{y}/{x}'],
+    });
+    // 卫星（shanghai_W，2026-11-27 扩容）：上海正射航空影像（上海测绘院）——无文字、
+    // z0–20、无 key 无配额、CORS 反射（研究报告 2.4 节）；maxzoom 20 同上 overzoom 语义。
+    // 天地图 img_w+cia_w（官方 key 渠道）为后备未接。
+    map.addSource('basemap-shanghai_W', {
+      type: 'raster', tileSize: 256, maxzoom: 20,
+      tiles: ['https://map4.shanghai-map.net/arcgis/rest/services/shanghai_W/MapServer/tile/{z}/{y}/{x}'],
+    });
     map.addSource('basemap-veil', {
       type: 'geojson',
       data: {
@@ -1041,6 +1103,10 @@
     map.addLayer({ id: 'basemap-gaode-plain', type: 'raster', source: 'basemap-gaode-plain',
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-carto', type: 'raster', source: 'basemap-carto',
+      layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
+    map.addLayer({ id: 'basemap-planblock', type: 'raster', source: 'basemap-planblock',
+      layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
+    map.addLayer({ id: 'basemap-shanghai_W', type: 'raster', source: 'basemap-shanghai_W',
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-veil', type: 'fill', source: 'basemap-veil',
       layout: { visibility: 'none' },
@@ -1064,11 +1130,13 @@
     vis('basemap-gaode', S.basemap === 'gaode');
     vis('basemap-gaode-plain', S.basemap === 'gaode-plain');
     vis('basemap-carto', S.basemap === 'carto');
-    // 遮罩随底图开关（不透明度＝veilOpacityFor 按底图态分档：gaode-plain 沿 carto 档
-    // 35%/聚焦 30%、gaode/osm 60%/40%，无其他运行时档位）
+    vis('basemap-planblock', S.basemap === 'planblock');
+    vis('basemap-shanghai_W', S.basemap === 'shanghai_W');
+    // 遮罩随底图开关（不透明度＝veilOpacityFor 按底图明暗类归档取值：浅色矢量 60/40、
+    // carto 35/30、用地 32/27、卫星 32/22——见 VEIL_BANDS 注）
     vis('basemap-veil', S.basemap !== 'off');
-    // 显示坐标变换：gaode 与 gaode-plain 同走 GCJ02（同一偏移体系）；osm/carto 瓦片均
-    // WGS84 恒等直通（carto 显式传 'carto'，makeDispCoord 恒等分支，与 osm 同类）
+    // 显示坐标变换：gaode 与 gaode-plain 同走 GCJ02（同一偏移体系）；osm/carto/用地/卫星
+    // 瓦片均 WGS84 恒等直通（carto 显式传 'carto'，makeDispCoord 恒等分支，与 none 同效）
     S.dispCoord = V.makeDispCoord((S.basemap === 'gaode' || S.basemap === 'gaode-plain') ? 'gaode'
       : (S.basemap === 'carto' ? 'carto' : 'none'));
     if (S.map.getSource('lines')) S.map.getSource('lines').setData(renderLinesFC());
@@ -1855,6 +1923,7 @@
     // 双视图同帧对滑（旧视图退场、新视图进场；visibility 由 CSS 按终态规则延迟切换）
     oldEl.dataset.pos = fwd ? 'off-left' : 'off-right';
     newEl.dataset.pos = 'center';
+    if (view !== 'main') closeBasemapMenu();   // 2026-11-27：底图清单只在主界面（离开即收，防回主界面残留展开态）
   }
 
   // ---------- 线路页（demo 新 UI：lineinfo 或「无信息」；最下方 KML 下载） ----------
@@ -2420,6 +2489,7 @@
     $('panel').classList.toggle('collapsed', collapsed);
     $('panelCollapse').classList.toggle('stowed', collapsed);
     $('panelTab').hidden = !collapsed;
+    if (collapsed) closeBasemapMenu();   // 2026-11-27：抽屉收起＝底图按钮不可见，清单一并收起（防展开回来残留）
   }
 
   // ---------- 交互接线（demo 新 UI；二轮 1/2/7/13 改版） ----------
@@ -2467,14 +2537,28 @@
         buildLineList();
       });
     });
-    // 三循环按钮：显示线路（全部→既有→近期→远期）、站名（显示⇄隐藏）、底图（高德→无字高德→OSM）
+    // 循环/清单按钮：显示线路（全部→既有→近期→远期）、站名（显示⇄隐藏）保持循环；
+    // 底图按钮 2026-11-27 改版——循环退役，单点展开 #basemapMenu 全部清单（终态序
+    // 高德→无字高德→用地→卫星→OSM 共 5 态，DOM 在 index.html 底图格内），再点收起。
     $('btnCyclePhase').addEventListener('click', () => {
       const i = PHASE_CYCLE_ORDER.indexOf(S.phaseCycle);
       applyPhaseCycle(PHASE_CYCLE_ORDER[((i < 0 ? 0 : i) + 1) % PHASE_CYCLE_ORDER.length]);
     });
     $('btnCycleNames').addEventListener('click', toggleNames);
     $('btnCycleBasemap').addEventListener('click', () => {
-      setBasemap(S.basemap === 'gaode' ? 'gaode-plain' : (S.basemap === 'gaode-plain' ? 'osm' : 'gaode'));
+      if (basemapMenuOpen()) closeBasemapMenu(); else openBasemapMenu();
+    });
+    // 清单条目：点选直达并收起（setBasemap 内 syncBasemapUI 已同步按钮文案/署名/清单高亮）
+    $('basemapMenu').querySelectorAll('button[data-basemap]').forEach((btn) => {
+      btn.addEventListener('click', () => { setBasemap(btn.dataset.basemap); closeBasemapMenu(); });
+    });
+    // 点面板外收起清单（document 级一处；清单内与底图按钮上的点击不在此路径——按钮
+    // 自身 click 已处理 toggle，closest 双排除防「点按钮开、冒泡到这里又立即关」）
+    document.addEventListener('click', (ev) => {
+      if (!basemapMenuOpen()) return;
+      const t = ev.target;
+      if (t && t.closest && (t.closest('#basemapMenu') || t.closest('#btnCycleBasemap'))) return;
+      closeBasemapMenu();
     });
     // 抽屉收起/展开（高亮状态不受收起影响）
     $('panelCollapse').addEventListener('click', () => setLinePanelCollapsed(true));
@@ -2497,7 +2581,7 @@
     syncPhaseUI();     // 与 phaseCycle 初始态（all）对齐：按钮文案「全部」
     syncNamesUI();     // 与 namesOn 初始态（true）对齐：按钮文案「显示」
     syncBasemapUI();
-    // 底图初始＝高德（demo 三态循环：高德→无字高德→OSM；「无」白板态退役）
+    // 底图初始＝高德（清单 5 态默认落在高德；「无」白板态退役、carto 后备不进清单）
     setBasemap('gaode');
   }
 

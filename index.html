@@ -294,7 +294,7 @@
     .line-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .panel-tip { padding: 10px 14px; color: #000; font-size: 12px; }
 
-    /* 三个循环按钮区（列表视图底部、署名行上方；线路页不显示） */
+    /* 底部三按钮区（显示线路/站名两循环＋底图清单展开；列表视图底部、署名行上方；线路页不显示） */
     #cycleBar {
       flex: none; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
       padding: 10px 12px 12px; border-top: 1px solid var(--panel-border);
@@ -307,6 +307,34 @@
     }
     .cycle-cell button:hover { border-color: #000; }
     .cycle-cap { margin-top: 4px; font-size: 10.5px; color: #000; letter-spacing: 1px; }
+
+    /* 底图清单弹出（2026-11-27 改版：底图按钮单点展开全部清单，循环退役）——挂在底图格
+       （position:relative）内、自按钮上方弹出；#panel overflow:hidden 只裁面板边界外，
+       清单在面板范围内（面板高≈视口-24，按钮在底部、上方有余）不会被裁。z 序＝面板内容
+       之上（面板整体 z-index 10 已在地图上，清单为面板内孙级、无跨层冲突）；开合走
+       opacity/translateY 短过渡（.18s，与右上 #brandPop 同款节奏），随面板抽屉收展动画
+       自然跟随（面板内子元素）。抽屉收起/离开主界面时 viewer.js 主动收起。 */
+    .cell-basemap { position: relative; }
+    #basemapMenu {
+      position: absolute; bottom: calc(100% + 8px); right: 0;
+      min-width: 132px; padding: 5px; z-index: 5;
+      border: 1px solid var(--panel-border); border-radius: 12px;
+      opacity: 0; transform: translateY(4px); pointer-events: none;
+      transition: opacity .18s ease, transform .18s ease;
+    }
+    #basemapMenu.open { opacity: 1; transform: translateY(0); pointer-events: auto; }
+    #basemapMenu button {
+      display: flex; align-items: center; gap: 8px; width: 100%;
+      padding: 7px 10px; cursor: pointer; font-size: 13px; color: #000;
+      background: transparent; border: none; border-radius: 8px;
+      text-align: left; white-space: nowrap;
+    }
+    #basemapMenu button:hover { background: var(--hover); }
+    #basemapMenu button.active { background: var(--active-bg); font-weight: 600; }
+    .bm-swatch {
+      flex: none; width: 22px; height: 14px; border-radius: 3px;
+      border: 1px solid var(--control-border);   /* 浅色卡加描边防融进玻璃底 */
+    }
 
     /* 搜索结果视图：占据整个左侧面板（顶条与署名行保留，主体让位） */
     #searchResults { position: absolute; inset: 0; overflow-y: auto; padding: 6px 0; }
@@ -515,7 +543,7 @@
       </div>
     </div>
 
-    <!-- 主界面：顶条（返回＋搜索框）＋三选项卡＋线路列表＋三循环按钮；搜索时主体让位给结果 -->
+    <!-- 主界面：顶条（返回＋搜索框）＋三选项卡＋线路列表＋底部三按钮（显示线路/站名循环＋底图清单）；搜索时主体让位给结果 -->
     <div id="viewMain" class="pview" hidden>
       <div id="mainTop">
         <button id="btnBackSplash" type="button">←</button>
@@ -539,9 +567,20 @@
             <button id="btnCycleNames" type="button">显示</button>
             <div class="cycle-cap">站名</div>
           </div>
-          <div class="cycle-cell">
+          <div class="cycle-cell cell-basemap">
             <button id="btnCycleBasemap" type="button">高德</button>
             <div class="cycle-cap">底图</div>
+            <!-- 底图清单（2026-11-27 改版：按钮循环退役，单点展开全部 5 态；终态序
+                 高德→无字高德→用地→卫星→OSM；carto 源保留 viewer.js 后备不进清单。
+                 色块＝各底图外观低饱和示意色卡（功能色，同搜索结果线路色点性质，
+                 不属界面装饰色）；当前态 .active 由 viewer.js syncBasemapUI 同步 -->
+            <div id="basemapMenu" class="glass">
+              <button type="button" data-basemap="gaode"><span class="bm-swatch" style="background:#EDE4CE"></span>高德</button>
+              <button type="button" data-basemap="gaode-plain"><span class="bm-swatch" style="background:#F7F4EC"></span>高德·无字</button>
+              <button type="button" data-basemap="planblock"><span class="bm-swatch" style="background:#C5CDA6"></span>用地</button>
+              <button type="button" data-basemap="shanghai_W"><span class="bm-swatch" style="background:#46543F"></span>卫星</button>
+              <button type="button" data-basemap="osm"><span class="bm-swatch" style="background:#E8E8E6"></span>OSM</button>
+            </div>
           </div>
         </div>
       </div>
@@ -572,7 +611,7 @@
     </div>
     </div>
 
-    <!-- 面板最底部：当前底图署名（高德／无字高德／OSM 按态显示；carto 文案备用） -->
+    <!-- 面板最底部：当前底图署名（高德／无字高德／OSM／用地／卫星按态显示；carto 文案备用） -->
     <div id="attrRow"></div>
   </aside>
 
