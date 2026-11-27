@@ -7,7 +7,9 @@
 // 不透明底独立态）与「卫星」（shanghai_W 上海正射影像）两态，终态清单序
 // 高德→无字高德→用地→卫星→OSM，carto 源保留代码后备不进清单；两源均 3857 标准 XYZ、
 // WGS84 恒等（S.dispCoord 走恒等通道）、256px（planblock minzoom 10/maxzoom 18＝实际
-// 缓存层界、shanghai_W maxzoom 20）；②底图按钮循环退役——单点展开全部清单
+// 缓存层界、shanghai_W maxzoom 20；卫星态另有 z12 双层结构——shanghai_W 实际缓存 z12
+// 起，低 zoom 垫 Esri World Imagery，见 ensureBasemapLayers 卫星 source 注）；②底图按钮
+// 循环退役——单点展开全部清单
 //（#basemapMenu，短名＋色块＋当前态高亮；点选直达并收起／再点按钮收／点面板外收；
 // 抽屉收起与离开主界面时自动收）；③白罩分档重构＝按底图明暗类归档 VEIL_BANDS
 //（浅色矢量 60/40、carto 35/30、用地 32/27、卫星 32/22——后两档研究建议区间中值待
@@ -988,7 +990,9 @@
     'gaode-plain': '底图 © 高德',   // 无字与有字同属高德服务，同一署名
     carto: '底图 © OpenStreetMap contributors © CARTO',   // CARTO 条款硬性署名（文字即可）
     planblock: '用地数据 © 上海市规划和自然资源局',   // 惯例署名（性质同省界：无硬性条款，礼貌标注）
-    shanghai_W: '影像 © 上海市测绘院',                 // 同上（shanghai_W＝上海测绘院正射影像）
+    shanghai_W: '影像 © 上海市测绘院 · 低层影像 © Esri',   // shanghai_W＝上海测绘院正射影像；
+    // 低层垫底（z<12）＝Esri World Imagery，其条款要求署名（同 CARTO 口径）——2026-11-27
+    // 双层结构追加，署名行全 zoom 恒定不随层切换
   };
   // 底图白色遮罩不透明度——按「底图明暗类」归档取值（2026-11-27 扩容重构，研究报告
   // 零散/底图研究-天地图卫星与用地图-261127.md 3.3 节建议；旧的两张平铺查表
@@ -1000,7 +1004,9 @@
   //   dark  深图类·用地（planblock）……常态 32%/聚焦 27%＝研究建议区间（常态 30–35%、
   //     聚焦 25–30%）中值，待目验微调（用户 2026-11-27 终局裁定）
   //   darkSat 深图类·卫星（shanghai_W）……常态 32%/聚焦 22%＝研究建议区间（30–35%、
-  //     20–25%）中值，影像纹理比用地更重、聚焦档再放薄，待目验微调
+  //     20–25%）中值，影像纹理比用地更重、聚焦档再放薄，待目验微调。2026-11-27 双层
+  //     结构后低 zoom（z<12）垫底 Esri 影像同为深色影像——档位全 zoom 段沿用 darkSat
+  //     不分层（用户裁定按深图类即可）
   // 归类依据：浅色矢量＝白/米白底细线网，中浅＝Positron 特浅灰白，深图＝彩色地块饱和
   // （60% 白罩会洗没色彩）或深色影像纹理。聚焦态恒比常态薄——聚焦高亮已有 70% 白罩
   //（FOCUS_VEIL_OPACITY），底图遮罩再叠厚两层叠白会看不清。
@@ -1110,11 +1116,27 @@
       tiles: ['https://map4.shanghai-map.net/arcgis/rest/services/planblock/MapServer/tile/{z}/{y}/{x}'],
     });
     // 卫星（shanghai_W，2026-11-27 扩容）：上海正射航空影像（上海测绘院）——无文字、
-    // z0–20、无 key 无配额、CORS 反射（研究报告 2.4 节）；maxzoom 20 同上 overzoom 语义。
-    // 天地图 img_w+cia_w（官方 key 渠道）为后备未接。
+    // 无 key 无配额、CORS 反射（研究报告 2.4 节）；maxzoom 20 同上 overzoom 语义。
+    // ⚠ 实际缓存 z12 起（z11 及以下 404，LOD 表声称 z0–20 表实不符——2026-11-27 主窗口
+    // 实测确诊「卫星态拉远空白」），故本态＝双层结构（2026-11-27 用户裁定修法）：
+    //   垫底层 basemap-shanghai_W-underlay＝Esri World Imagery（下方新 source），
+    //     layer maxzoom 12——z<12 渲染、z≥12 不渲染不请求；
+    //   卫星层 basemap-shanghai_W＝layer minzoom 12——z≥12 才渲染、z<12 不再发 404 请求。
+    // 交界 z=12 恰好卫星接管、垫底退场，无重叠无空档。天地图 img_w+cia_w（官方 key
+    // 渠道）为后备未接。
     map.addSource('basemap-shanghai_W', {
       type: 'raster', tileSize: 256, maxzoom: 20,
       tiles: ['https://map4.shanghai-map.net/arcgis/rest/services/shanghai_W/MapServer/tile/{z}/{y}/{x}'],
+    });
+    // 卫星垫底（Esri World Imagery，2026-11-27 用户裁定）：卫星态低 zoom（z<12）的底图。
+    // 选它不选无字高德的关键＝3857 标准 XYZ、WGS84 恒等——与 shanghai_W 同坐标系，
+    // z12 交界底图零位置跳变（高德是 GCJ02 会跳 ~500m）；主窗口实测 z3/6/9/11 上海区域
+    // 全 200、CORS *。256px 标准 LOD；服务层级覆盖远超 z12，无需 source 级 zoom 参数
+    //（渲染边界全在 layer 级，见上方双层结构注）。署名＝卫星态文案追加「低层影像
+    // © Esri」（Esri 服务条款要求署名，口径同 CARTO 硬性署名先例）。
+    map.addSource('basemap-esri-imagery', {
+      type: 'raster', tileSize: 256,
+      tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
     });
     map.addSource('basemap-veil', {
       type: 'geojson',
@@ -1138,8 +1160,13 @@
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-planblock', type: 'raster', source: 'basemap-planblock',
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
+    // 卫星态双层（见上方 source 注）：垫底层 maxzoom 12（z≥12 不渲染不请求）＋卫星层
+    // minzoom 12（z<12 不渲染不发请求，低 zoom 404 空白的根治）。两 layer 均只在
+    // shanghai_W 态置 visible（applyBasemapToMap），zoom 分工交给 layer 级 min/maxzoom。
+    map.addLayer({ id: 'basemap-shanghai_W-underlay', type: 'raster', source: 'basemap-esri-imagery',
+      maxzoom: 12, layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-shanghai_W', type: 'raster', source: 'basemap-shanghai_W',
-      layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
+      minzoom: 12, layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-veil', type: 'fill', source: 'basemap-veil',
       layout: { visibility: 'none' },
       paint: {
@@ -1164,6 +1191,9 @@
     vis('basemap-gaode-plain', S.basemap === 'gaode-plain');
     vis('basemap-carto', S.basemap === 'carto');
     vis('basemap-planblock', S.basemap === 'planblock');
+    // 卫星态两 layer 同置 visible，zoom 分工在 layer 级 min/maxzoom（z12 分界，见
+    // ensureBasemapLayers 双层结构注）；切走卫星态两 layer 一并隐藏、无残留
+    vis('basemap-shanghai_W-underlay', S.basemap === 'shanghai_W');
     vis('basemap-shanghai_W', S.basemap === 'shanghai_W');
     // 遮罩随底图开关（不透明度＝veilOpacityFor 按底图明暗类归档取值：浅色矢量 60/40、
     // carto 35/30、用地 32/27、卫星 32/22——见 VEIL_BANDS 注）
