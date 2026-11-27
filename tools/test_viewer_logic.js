@@ -2,8 +2,9 @@
 // viewer_core.js 纯逻辑单测：数据归一（normalizeLines/stopList）、组归并（buildStopView）、
 // 线路摘要与分组（lineSummaries/layerGroups/visibleListGroups 类别过滤）、搜索匹配
 //（matchEntries）、标签分级与可见性（filterLabels zoom 门槛 11 组站统一＋visibleLabels 优先级：
-// 全局开关＞聚焦常显·其余隐藏＞调光隐藏＞zoom 门槛——2026-11-22 真机反馈轮：聚焦时
-// 非聚焦线站名一律隐藏、focusMembers 组成员集常显）、调光纯逻辑（linePhaseOf 线路期次归类/
+// 全局开关＞聚焦常显·其余隐藏＞车站态单显 stationKey＞调光隐藏＞zoom 门槛——2026-11-22
+// 真机反馈轮：聚焦时非聚焦线站名一律隐藏、focusMembers 组成员集常显；2026-11-27 用户裁定
+// 车站高亮态＝只有被点站/组标签显示且常显）、调光纯逻辑（linePhaseOf 线路期次归类/
 // lineLayerRank 仅显示级/computeDimmedSet 分期＋displayOnly/nextPhase 四档循环）、尺寸缩放
 //冻结改等比（zoomInterp/scaledSize：z≥11 封顶、z<11 按 2^(z−11) 与画布同比例）、单线导出（buildLineGeoJSON/buildLineKML——2026-11-22
 // 改版后纯色实线统一不透明）、颜色与转义工具、药丸链序（planGroupPillChain）、出省渐隐
@@ -456,6 +457,18 @@ eq(V.visibleLabels(vlLabelsG, 9, { focus: 'm1', focusMembers: [] }).map((l) => l
   'focusMembers 空数组退 [focus]（脏输入防御）');
 eq(V.visibleLabels(vlLabelsG, 9, { focus: 'm1', focusMembers: [null, ''] }).map((l) => l.key).sort(), ['gm', 's1'],
   'focusMembers 全脏项过滤后空 → 退 [focus]');
+// stationKey（2026-11-27 用户裁定：点击车站高亮＝只有该站标签显示且常显）：无视 zoom 门槛
+// 与调光；与聚焦互斥（并传时聚焦优先——胶水层不并传，防御序）；hideAll 仍压过
+eq(V.visibleLabels(vlLabelsG, 8, { stationKey: 'gm' }).map((l) => l.key), ['gm'],
+  'stationKey：z8 远低于组门槛 z10 仍常显、其余一切站名（含同组成员线的单站 b1/s1）全隐藏');
+eq(V.visibleLabels(vlLabelsG, 13, { stationKey: 'b1', dimmedSet: new Set(['b1']) }).map((l) => l.key), ['b1'],
+  'stationKey：被点站自身被调光也照显（调光维度让位）、他站不因调光口径混入');
+eq(V.visibleLabels(vlLabelsG, 13, { hideAll: true, stationKey: 'gm' }), [],
+  'stationKey 让位于全局站名开关（hideAll 优先级最高，与聚焦常显同待遇）');
+eq(V.visibleLabels(vlLabelsG, 13, { stationKey: 'zzz' }).map((l) => l.key), [],
+  'stationKey 无匹配标签（脏 key）→ 全隐（防御）');
+eq(V.visibleLabels(vlLabelsG, 9, { focus: 'm1', stationKey: 'o1' }).map((l) => l.key).sort(), ['gm', 's1'],
+  'stationKey 与 focus 并传时聚焦优先（胶水层互斥不并传——防御位，对齐优先级注释序）');
 // displayOnlyIds（2026-11-25 用户纠正裁定：分期态他省线照常显示——站名只按 zoom 门槛，
 // 不受「被调光线隐藏」约束；他省线分期态恒入 dimmed 但那是线身恒调光口径，不再连坐站名）
 const vlLabelsTP = [

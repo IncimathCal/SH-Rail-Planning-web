@@ -1217,11 +1217,15 @@
     return [];
   }
 
-  // ---------- 标签可见性（优先级：全局站名开关 ＞ 聚焦常显·其余隐藏 ＞ 被调光线隐藏 ＞ zoom 门槛） ----------
+  // ---------- 标签可见性（优先级：全局站名开关 ＞ 聚焦常显·其余隐藏 ＞ 车站态单显 ＞ 被调光线隐藏 ＞ zoom 门槛） ----------
   // state：{ hideAll: 全局站名开关（true＝一切站名不显示，优先级最高）,
   //          dimmedSet: Set<lineId> 被调光线集, focus: 聚焦 lineId|null,
   //          focusMembers: 聚焦组成员线 id 数组（可选——2026-11-22 主支线合并后支线站的
   //                        站名也是聚焦线站名，须常显；缺省/空/全脏退 [focus]）,
+  //          stationKey: 车站态被点站/组标签 key（可选，2026-11-27 用户裁定——点击车站
+  //                        高亮态：只有该 pin 的标签显示、常显无视 zoom 门槛与调光，其余
+  //                        一切站名隐藏；与聚焦互斥〔胶水层仅在 S.station 激活且无聚焦时
+  //                        传入〕；hideAll 全局开关仍压过它）,
   //          displayOnlyIds: 他省线 id 集（可选，2026-11-25 纠正裁定——分期态他省线站名
   //                        照常显示：全部成员线为他省的标签不受「被调光线隐藏」约束，
   //                        只走 zoom 门槛；混合单元仍按本地成员规则）}。
@@ -1230,6 +1234,9 @@
   // 常显且无视分期调光与 zoom 门槛。非聚焦时维持既有两级：调光隐藏
   //（组标签全部成员线被调光才隐藏，任一成员未调光则显示；无所属线信息的标签防御性
   // 不因调光隐藏）→ zoom 门槛。
+  // 2026-11-27 车站态单显（用户裁定）：stationKey 命中的标签唯一显示（常显——zoom 门槛/
+  // 调光/分期全让位），其余隐藏；进车站态时分期已解除（labelNotHidden 纯防御位，与聚焦
+  // 分支同构）。
   function labelHasFocus(l, members) {
     const ids = Array.isArray(l.lineIds) ? l.lineIds : [];
     for (const m of members) if (ids.indexOf(m) >= 0) return true;   // 任一成员命中 → 聚焦参与
@@ -1253,6 +1260,7 @@
       : new Set(Array.isArray(st.dimmedSet) ? st.dimmedSet.map(String) : []);
     const arr = Array.isArray(labels) ? labels.filter(Boolean) : [];
     const focus = st.focus != null && st.focus !== '' ? String(st.focus) : null;
+    const stationKey = st.stationKey != null && st.stationKey !== '' ? String(st.stationKey) : null;
     const phase = st.phase && st.phase !== 'none' ? st.phase : null;
     const hiddenLineIds = st.hiddenLineIds instanceof Set ? st.hiddenLineIds : new Set(Array.isArray(st.hiddenLineIds) ? st.hiddenLineIds.map(String) : []);
     const displayOnlySet = st.displayOnlyIds instanceof Set ? st.displayOnlyIds
@@ -1281,6 +1289,10 @@
       // 其余隐藏，分期隐藏维度在聚焦时整体让位），其余标签一律隐藏
       return arr.filter((l) => labelHasFocus(l, members) && labelNotHidden(l));
     }
+    // 车站态单显（2026-11-27 用户裁定）：只有被点站/组 pin 的标签显示——常显（无视
+    // zoom 门槛与调光），其余一切站名隐藏。正常与聚焦互斥（胶水层不同时传）；
+    // 二者并传时聚焦在前已 return，此处仅在无聚焦时到达（防御序：对齐优先级注释）。
+    if (stationKey) return arr.filter((l) => String(l.key) === stationKey && labelNotHidden(l));
     return filterLabels(arr.filter((l) => labelNotHidden(l)
       && (labelDisplayOnly(l) || (stopMatches(l) === null ? labelShownUnderDim(l, dimSet) : stopMatches(l)))), zoom);
   }

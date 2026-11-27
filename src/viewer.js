@@ -2253,18 +2253,30 @@
       else accepted.push(candidate);
     }
   }
+  // 车站态标签 key（2026-11-27 用户裁定「只有该站站名显示」）：单线站＝站 sid、同站/药丸
+  // 组 pin＝'g:<组号>'，与 dispLabels 标签 key 天然同源。唯一例外＝出闸组（out-of-station）：
+  // 成员站各自成圈（pin.key＝站 sid）而该单元标签是组级（key＝'g:<组号>'、位置在直属站
+  // 均值）——按 pin 携带的组号回查组级标签（点出闸组的任一直属站圈，显示该组直属站标签）。
+  function stationLabelKeyOf(st) {
+    const key = st && st.key != null ? String(st.key) : '';
+    if (!key) return null;
+    const pin = S.pinByKey.get(key);
+    if (pin && pin.groupType === 'out-of-station' && pin.groupId != null) return 'g:' + pin.groupId;
+    return key;
+  }
   function updateLabels() {
     const wrap = $('labelLayer');
     const map = S.map;
     if (!wrap || !map) return;
-    // 站名可见性（优先级：全局站名开关 ＞ 聚焦常显·其余隐藏 ＞ 被调光线隐藏 ＞ zoom 门槛；
-    // 2026-11-22 真机反馈轮——聚焦时非聚焦线站名一律隐藏）。focusMembers＝聚焦组成员
-    // 集（主支线合并：支线站的站名也是聚焦线站名，须常显；无组退 [S.focus]）
+    // 站名可见性（优先级：全局站名开关 ＞ 聚焦常显·其余隐藏 ＞ 车站态单显 ＞ 被调光线隐藏
+    // ＞ zoom 门槛；2026-11-22 真机反馈轮——聚焦时非聚焦线站名一律隐藏）。focusMembers＝
+    // 聚焦组成员集（主支线合并：支线站的站名也是聚焦线站名，须常显；无组退 [S.focus]）。
+    // stationKey＝车站态（2026-11-27 用户裁定）：只有被点站/组 pin 的标签显示且常显
+    //（无视 zoom 门槛），其余一切站名隐藏——与聚焦互斥（车站页↔线路页链中 S.station
+    // 保留但 S.focus 已置，此时走聚焦分支）
     let focusMembers = null;
-    if (S.station != null && S.focus == null) {
-      // 车站高亮：经过该站的全部自然线组成员站名常显（2026-11-27）
-      focusMembers = S.station.memberIds && S.station.memberIds.length ? S.station.memberIds : null;
-    }
+    let stationKey = null;
+    if (S.station != null && S.focus == null) stationKey = stationLabelKeyOf(S.station);
     if (focusMembers == null && S.focus != null) {
       const grp = S.lineGroups.ofLine.get(S.focus);
       focusMembers = grp && Array.isArray(grp.members) && grp.members.length ? grp.members : [S.focus];
@@ -2274,7 +2286,7 @@
     const labels = S.phaseActive ? S.dispLabels.filter((label) => otherProvinceOnlyIds(label.lineIds)
       || phaseUnitMatches({ kind: label.group ? 'group' : 'stop', key: label.key, groupId: label.groupId, groupType: label.groupType })) : S.dispLabels;
     const items = V.visibleLabels(labels, map.getZoom(),
-      { hideAll: !S.namesOn, dimmedSet: S.dimmed, focus: S.focus, focusMembers, phase: S.phase,
+      { hideAll: !S.namesOn, dimmedSet: S.dimmed, focus: S.focus, focusMembers, stationKey, phase: S.phase,
         displayOnlyIds: S.phaseActive ? displayOnlyLineIds() : [] });
     const w = wrap.clientWidth, h = wrap.clientHeight, M = 60;   // 视口外裁剪边距
     // 站名文字随画布等比缩放（2026-11-22 用户指示「站名和站点也一样，以 z11 为界」）：
