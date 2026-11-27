@@ -272,7 +272,8 @@
       tab: '市区线',               // 主界面当前选项卡（市区线/市域线/预控通道；他省与联络线不进列表）
       searching: false,           // 搜索态：结果占据整个面板主体（顶条与署名行保留）
       linePageId: null,           // 线路页当前线路（主线 id；setFocus 同源）
-      linePageFrom: 'list',       // 线路页进入来源（'list'|'search'|'station'）——搜索来源返回保留词与结果；车站来源返回回车站页（2026-11-27 逐级返回链）
+      linePageFrom: 'list',       // 线路页进入来源（'list'|'search'|'station'|'line'）——搜索来源返回保留词与结果；车站来源返回回车站页（2026-11-27 逐级返回链）；'line'＝站行换乘项跳转来源，返回回原线路页（2026-11-27 换乘链）
+      linePagePrev: null,         // 换乘链栈（from='line' 时有效）：{ id, from, prev }——点换乘项前所在线路页及其来源，逐级返回（见 backFromLinePage）
       stationFrom: 'list',        // 车站页进入来源（'list'|'search'|'line'）
       stationResumeFocus: null,   // 进车站页前的聚焦线（from='line' 返回时恢复，不跳相机）
     },
@@ -2036,10 +2037,14 @@
   // 与结果（返回按钮回到 main 视图后搜索态 DOM 原样即恢复），列表来源维持回列表。
   // 2026-11-27 增 'station'：从车站页线路行进入——返回回车站页（逐级返回链）；非车站来源
   // 进入时清 S.station（跳出车站链，防聚焦清除后车站高亮残留）。
+  // 2026-11-27 增 'line'：从线路页站行换乘项跳转进入——返回回原线路页（换乘链逐级返回，
+  // linePagePrev 栈）。'line' 进入不清 S.station（原线路页可能来自车站链，返回后其
+  // from='station' 语义要靠 S.station 存活）；非换乘来源进入＝新链起点，清 linePagePrev。
   function openLinePage(lineId, from) {
     S.ui.linePageId = lineId;
-    S.ui.linePageFrom = from === 'search' ? 'search' : (from === 'station' ? 'station' : 'list');
-    if (from !== 'station') S.station = null;
+    S.ui.linePageFrom = from === 'search' ? 'search' : (from === 'station' ? 'station' : (from === 'line' ? 'line' : 'list'));
+    if (from !== 'station' && from !== 'line') S.station = null;
+    if (from !== 'line') S.ui.linePagePrev = null;
     showView('line');
     const body = $('lineBody');
     body.textContent = '';
@@ -2072,7 +2077,8 @@
     // 车站列表（2026-11-27）：信息（或「无信息」提示）下方——竖直线站序样式，主线段
     // ＋分割线＋每条支线一段；arrow 出省端画线端箭头不写站名；接入标注（往支线去向/
     // 往主线/联络对方线）＝V.lineStopSections 模型。lineinfo 有无与本列表无耦合。
-    const stopModel = V.lineStopSections(lineId, S.linesMap, S.stops, S.lineGroups, S.groupTree);
+    // 2026-11-27 增：站行 transfers（换乘信息，lineOrder 序与车站页一致）。
+    const stopModel = V.lineStopSections(lineId, S.linesMap, S.stops, S.lineGroups, S.groupTree, S.lineOrder);
     if (stopModel) {
       // 信息区与车站列表之间的分割线（2026-11-27 用户需求）：lineinfo／「无信息」态
       //（名称＋色块＋虚线提示框）与下方列表目前无缝——复用 .lp-divider（支线分割同款
@@ -2082,6 +2088,28 @@
       body.appendChild(dv);
       body.appendChild(buildStopSection(stopModel));
     }
+  }
+  // 线路页返回的统一行为（btnLineBack/Esc 共用，2026-11-27 换乘链改版抽函数）：
+  // 'station' 来源 → 车站页（S.station 保留、clearFocus 不动相机）；'line' 来源（换乘项
+  // 跳转进入）→ 原线路页（换乘链 linePagePrev 逐级弹回：openLinePage 重建页面内容，
+  // 聚焦手动置回原线——不走 setFocus 防跳相机）；其余 → main（搜索来源自动恢复搜索态）。
+  function backFromLinePage() {
+    if (S.ui.linePageFrom === 'station' && S.station != null) {
+      clearFocus();
+      showView('station');
+      return;
+    }
+    if (S.ui.linePageFrom === 'line' && S.ui.linePagePrev && S.ui.linePagePrev.id != null) {
+      const p = S.ui.linePagePrev;
+      S.ui.linePagePrev = p.prev || null;   // 弹栈：更早的链留给上一层返回用
+      openLinePage(p.id, p.from);
+      S.focus = p.id;                        // 恢复聚焦原线（不动相机）
+      syncFocusRows();
+      applyDimState();
+      return;
+    }
+    clearFocus();
+    showView('main');
   }
 
   // ---------- 线路页车站列表渲染（2026-11-27：竖直线站序；视觉常量与地图侧同源） ----------
@@ -2128,6 +2156,30 @@
       if (!target) target = document.getElementById('lpsec-' + mk.targetSectionIdx);
     }
     if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  // 换乘信息项（2026-11-27 用户需求：站行右侧「小色点＋线名」）：可点＝与车站页线路行
+  // 一致的交互语言——高亮该线＋跳线路页；来源恒 'line'（返回回原线路页，换乘链逐级
+  // 返回）。click stopPropagation 与站行点击（进车站页）区隔，lp-mark 同款。
+  function xferElOfStopList(t) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'lp-xfer-item';
+    const dot = document.createElement('span');
+    dot.className = 'lp-xfer-dot';
+    dot.style.background = t.color || '#888888';
+    const nm = document.createElement('span');
+    nm.className = 'lp-xfer-name';
+    nm.textContent = t.name;
+    b.append(dot, nm);
+    b.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (t.mainId == null) return;
+      // 换乘链栈：记住跳转前所在线路页（id＋其进入来源＋更早的链），返回时逐级弹回
+      S.ui.linePagePrev = { id: S.ui.linePageId, from: S.ui.linePageFrom, prev: S.ui.linePagePrev || null };
+      setFocus(t.mainId);               // 与列表点线路同款：聚焦＋相机让位
+      openLinePage(t.mainId, 'line');   // 面板线路页（来源＝换乘，返回回原线路页）
+    });
+    return b;
   }
   function buildStopSection(model) {
     const wrap = document.createElement('div');
@@ -2185,6 +2237,15 @@
         nm.textContent = row.name || V.stopDisplayName('');
         r.appendChild(nm);
         for (const mk of rowMarks.get(ri) || []) r.appendChild(markElOfStopList(mk));
+        // 换乘信息（2026-11-27）：站名/接入标注之后，行内右侧对齐收尾（margin-left:auto）；
+        // 空集（单线站/junction 同组站）不建 DOM 不占位；真数据最多 6 条（上海南站），
+        // 面板一行放不下时自然换行收紧（.lp-row 已 wrap、换乘区内部再 wrap）。
+        if (Array.isArray(row.transfers) && row.transfers.length) {
+          const xf = document.createElement('span');
+          xf.className = 'lp-xfer';
+          for (const t of row.transfers) xf.appendChild(xferElOfStopList(t));
+          r.appendChild(xf);
+        }
         // 站行可点（2026-11-27 用户需求）：与地图点该站同款行为——sid 反查绘制单元 pin
         //（stopPinKeyOf，口径＝emitUnit 出图）后走 enterStationByPin（flyTo 到站 zoom13＋
         // 波纹＋多线高亮＋面板车站页）。来源记忆按「点进去时面板是什么页面」：当前在线路
@@ -2757,18 +2818,13 @@
       if (S.phaseCycle !== 'all') resetPhaseSelection();
       showView('splash');
     });
-    // 线路页返回：'station' 来源回车站页（逐级返回链——列表→车站页→线路页逐级返回；
-    // 车站页上下文 S.station 保留，clearFocus 退出线路聚焦不动相机，高亮回到车站多线）；
-    // 其余来源回 main（搜索来源自动恢复搜索态）
-    $('btnLineBack').addEventListener('click', () => {
-      if (S.ui.linePageFrom === 'station' && S.station != null) {
-        clearFocus();
-        showView('station');
-        return;
-      }
-      clearFocus();
-      showView('main');
-    });
+    // 线路页返回（btnLineBack 与 Esc 共用 backFromLinePage）：'station' 来源回车站页
+    //（逐级返回链——列表→车站页→线路页逐级返回；车站页上下文 S.station 保留，clearFocus
+    // 退出线路聚焦不动相机，高亮回到车站多线）；'line' 来源（站行换乘项跳转进入）回原
+    // 线路页——换乘链逐级弹回（linePagePrev 栈：恢复页面内容与原聚焦线，聚焦手动置
+    // S.focus 不走 setFocus——其 fitFocusLine 跳相机，违背「返回不动相机」精神，与
+    // exitStationPage 的 resume 同款）；其余来源回 main（搜索来源自动恢复搜索态）。
+    $('btnLineBack').addEventListener('click', () => { backFromLinePage(); });
     // 车站页返回：按记录来源回视图（exitStationPage），地图高亮同时取消
     $('btnStationBack').addEventListener('click', () => { exitStationPage(); });
     $('btnKml').addEventListener('click', () => {
@@ -2845,16 +2901,13 @@
     $('panelTab').addEventListener('click', () => setLinePanelCollapsed(false));
     //（二轮⑦：玻璃档位定稿 0.45＋blur20——#glassCtl 对比控件与 data-glass 机制已删，
     //   样式固化在 index.html .glass 规则）
-    // Esc：车站页→按来源返回（取消高亮）；线路页→'station' 来源回车站页，其余回列表并
-    // 取消高亮；主界面→退出聚焦（分期不恢复旧选择，停在「全部」）
+    // Esc：车站页→按来源返回（取消高亮）；线路页→backFromLinePage（'station' 回车站页/
+    // 'line' 回原线路页/其余回列表并取消高亮）；主界面→退出聚焦（分期不恢复旧选择，停在「全部」）
     document.addEventListener('keydown', (ev) => {
       if (ev.key !== 'Escape') return;
       if (ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA')) return;
       if (S.ui.view === 'station') { exitStationPage(); }
-      else if (S.ui.view === 'line') {
-        if (S.ui.linePageFrom === 'station' && S.station != null) { clearFocus(); showView('station'); }
-        else { clearFocus(); showView('main'); }
-      }
+      else if (S.ui.view === 'line') { backFromLinePage(); }
       else clearFocus();
     });
     wireSearch();

@@ -1053,13 +1053,17 @@
   }
   // lineStopSections 主函数。返回：
   // { mainId, sections: [{ lineId, isMain, name, color,
-  //     rows: [{ sid, name, kind, t, glyph }],
+  //     rows: [{ sid, name, kind, t, glyph, transfers }],
   //     marks: [{ at: {row:i}|{after:i}, type:'branch'|'toMain'|'conn',
   //               label, color, targetSectionIdx, targetAt, targetMainId, approx }] }] }
   //   mark 定位：at.row＝行内（该站行处）、at.after＝行间（画在第 i 行与 i+1 行之间）。
   //   branch/toMain 的滚动目标 targetAt＝{row}|{after}（目标段内定位）；conn 的跳转目标
   //   targetMainId＝对方主线 id。color：branch＝支线色 / toMain＝主线色 / conn＝对方主线色。
-  function lineStopSections(mainId, linesMap, stops, lineGroups, tree) {
+  //   transfers（2026-11-27 换乘信息）：该站还能换乘的其他自然线路
+  //   [{ mainId, name, color }]，口径见「③ 换乘信息」注；arrow 行恒 []。
+  // lineOrder（可选第 6 参，2026-11-27 增）：换乘项排序（stationFocusOf 同款——自定义序
+  // 优先、未列入者 lineId 升序 tie-break）；不传＝纯 lineId 升序。
+  function lineStopSections(mainId, linesMap, stops, lineGroups, tree, lineOrder) {
     if (!(linesMap instanceof Map)) return null;
     const mid0 = mainId != null ? String(mainId) : '';
     const lg = lineGroups && lineGroups.mainOf instanceof Map ? lineGroups : null;
@@ -1255,6 +1259,63 @@
             targetMainId: mainOfId(other), targetSectionIdx: null, targetAt: null, approx: a.approx,
           });
         }
+      }
+    }
+    // —— ③ 换乘信息回填（2026-11-27 用户需求：线路页站行右侧「该站还能换乘哪些线」）——
+    // 口径与 stationLinesOf/stationFocusOf 完全同源：站 → 最外层组全部叶站
+    //（tree.rootOf＋leafStops，与「点站进车站页」的成员站口径一致；无组/树缺省退本站）
+    // → 逐成员站本线归一到主线（主支线算一条）、**联络线剔除**（HIDDEN_LIST_LAYERS 或
+    // connects 非空——技术线路名称禁令，换乘区绝不出现）、**他省线保留**（与车站页
+    // 口径一致），再减去本自然线路（mainIdNorm——支线段站同样归一后减）。孤站线不在
+    // linesMap 按普通线保留（防御不丢站）。name/color 取主线、组名优先（车站页线路行
+    // 同款）；排序 lineOrder 自定义序优先、未列入者 lineId 升序（stationFocusOf 同
+    // tie-break）。arrow 行恒 []（出省端无换乘信息）。
+    const isTechnicalLine = (lid) => {
+      const l = linesMap.get(lid);
+      if (!l) return false;   // 孤站线不在 linesMap：按普通线保留（防御）
+      const conn = Array.isArray(l.connects) ? l.connects : [];
+      return HIDDEN_LIST_LAYERS.indexOf(l.layer) >= 0 || conn.length > 0;
+    };
+    const xferRank = new Map();
+    if (Array.isArray(lineOrder)) {
+      lineOrder.forEach((id, i) => { const k = String(id); if (!xferRank.has(k)) xferRank.set(k, i); });
+    }
+    const transferListOf = (s) => {
+      let leaf = [s];
+      const gid = s && s.groupId != null && s.groupId !== '' ? String(s.groupId) : null;
+      if (gid && tree && typeof tree.group === 'function' && tree.group(gid)
+          && typeof tree.leafStops === 'function' && typeof tree.rootOf === 'function') {
+        const l = tree.leafStops(tree.rootOf(gid) || gid);   // 最外层组的全部叶站
+        if (l.length) leaf = l;
+      }
+      const mids = [];
+      const seen = new Set();
+      for (const y of leaf) {
+        const lid = y && y.lineId != null ? String(y.lineId) : '';
+        if (!lid || isTechnicalLine(lid)) continue;
+        const mid = String(mainOfId(lid));
+        if (!mid || mid === mainIdNorm || seen.has(mid)) continue;
+        seen.add(mid);
+        mids.push(mid);
+      }
+      mids.sort((a, b) => {
+        const ra = xferRank.has(a) ? xferRank.get(a) : Infinity, rb = xferRank.has(b) ? xferRank.get(b) : Infinity;
+        return ra !== rb ? ra - rb : (a < b ? -1 : a > b ? 1 : 0);
+      });
+      return mids.map((mid) => {
+        const grp = lg ? lg.ofLine.get(mid) : null;
+        const line = linesMap.get(mid);
+        return {
+          mainId: mid,
+          name: grp ? (grp.name || (line && line.name) || mid) : ((line && line.name) || mid),
+          color: line ? line.color : DEFAULT_LINE_COLOR,
+        };
+      });
+    };
+    for (const sec of sections) {
+      const srcRows = rowsByLine.get(sec.lineId) || [];
+      for (let i = 0; i < sec.rows.length; i++) {
+        sec.rows[i].transfers = srcRows[i] && srcRows[i].kind !== 'arrow' ? transferListOf(srcRows[i]) : [];
       }
     }
     return { mainId: mainIdNorm, sections };

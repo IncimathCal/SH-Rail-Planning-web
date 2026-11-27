@@ -1992,6 +1992,8 @@ console.log('lineStopSections / stopNodeGlyph:');
     lineFeat('lY', 0, 'existing', [[121.05, 31.005], [121.06, 31.01]], { role: 'standalone', color: '#aa00aa' }),
     lineFeat('lc', 0, 'existing', [[121.15, 31.00], [121.16, 30.99]], { connects: ['mA', 'lX'] }),
     lineFeat('lc2', 0, 'existing', [[121.025, 31.00], [121.025, 30.995], [121.16, 30.99]], { connects: ['mA', 'lX'] }),
+    // 他省线（换乘信息口径：与车站页一致——保留，参与换乘项）
+    lineFeat('lP', 0, 'existing', [[121.0501, 31.0001], [121.0502, 31.0002]], { role: 'standalone', color: '#990099', layer: '他省线' }),
   );
   const linesMap2 = V.normalizeLines(linesFC2);
   const lg2 = V.buildLineGroups(linesMap2, [{ id: 'lgA', name: 'A线组', mainId: 'mA', members: ['mA', 'mB', 'mC'] }]);
@@ -2011,12 +2013,13 @@ console.log('lineStopSections / stopNodeGlyph:');
     stopFeatX('lY-s2', 'Y二站', 'lY', 1, 121.06, 31.01, { idx: 1, gid: 'gO', gtype: 'out-of-station' }),
     stopFeatX('lc-s1', '联络接轨', 'lc', 0, 121.15, 31.00, { idx: 0, gid: 'j2', gtype: 'junction' }),
     stopFeatX('lc-s2', '联络中途', 'lc', 1, 121.16, 30.99, { idx: 1 }),
+    stopFeatX('lP-s1', 'P一站', 'lP', 0.5, 121.0501, 31.0001, { idx: 0, gid: 'gS', gtype: 'same-station' }),
   );
   const stops2 = V.stopList(stopsFC2);
   const sgTable = [
     { id: 'j1', type: 'junction', stops: ['mB-s1', 'mA-s2'], groups: [] },
     { id: 'j2', type: 'junction', stops: ['lc-s1', 'mA-s3'], groups: [] },
-    { id: 'gS', type: 'same-station', stops: ['mA-s1', 'lX-s2', 'lY-s1'], groups: [] },
+    { id: 'gS', type: 'same-station', stops: ['mA-s1', 'lX-s2', 'lY-s1', 'lP-s1'], groups: [] },
     { id: 'gO', type: 'out-of-station', stops: ['lY-s2'], groups: ['gO2'] },
     { id: 'gO2', type: 'same-station', stops: ['lX-s1'], groups: [] },
   ];
@@ -2090,6 +2093,38 @@ console.log('lineStopSections / stopNodeGlyph:');
   const dump = JSON.stringify(model) + JSON.stringify(modelX);
   ok(dump.indexOf('联络接轨') < 0 && dump.indexOf('联络中途') < 0, '联络线站名不进模型');
   ok(dump.indexOf('"lc"') < 0 && dump.indexOf('"lc2"') < 0, '联络线 lineId 不进模型');
+  // —— 换乘信息 transfers（2026-11-27：站行「还能换乘哪些线」；口径＝stationLinesOf 同源）——
+  // 同站组站（gS：mA组/lX/lY/lP，减本线 mA组）→ 默认序 lineId 升序；name/color 主线
+  //（组名优先）、他省线 lP 保留
+  eq(sec0rows[1].transfers, [
+    { mainId: 'lP', name: 'lP名', color: '#990099' },
+    { mainId: 'lX', name: 'lX名', color: '#0000ff' },
+    { mainId: 'lY', name: 'lY名', color: '#aa00aa' },
+  ], '同站组站换乘＝其他自然线路（他省保留、组站减本线、lineId 升序）');
+  // lineOrder 自定义序（stationFocusOf 同 tie-break：列入者按序、未列入者 lineId 升序垫后）
+  const modelOrd = V.lineStopSections('mA', linesMap2, stops2, lg2, tree2, ['lY', 'lX']);
+  eq(modelOrd.sections[0].rows[1].transfers.map((t) => t.mainId), ['lY', 'lX', 'lP'],
+    'lineOrder 序换乘（未列入的 lP 排后）');
+  // junction 同组站（j1：mA/mB 同属 mA 组）→ 归一后全被减 → 空换乘
+  eq(sec0rows[2].transfers, [], 'junction 同组两线（主支线）→ 无换乘');
+  // 联络 junction 站（j2：mA＋lc）→ 联络线剔除、mA 本线 → 空换乘
+  eq(sec0rows[3].transfers, [], '联络线成员不进换乘（名称禁令）');
+  // arrow 行恒空；单线站（无组、只本线）空
+  eq(sec0rows[0].transfers, [], 'arrow 行换乘恒空');
+  eq(model.sections[1].rows[1].transfers, [], '单线站（支线B去向）无换乘不占位');
+  // lX 视角：出闸单元（gO：lX 子组＋lY 直属）→ 换乘 lY；同站组站（gS）→ 含 mA 组行
+  const rowsX = modelX.sections[0].rows;
+  eq(rowsX[0].transfers, [{ mainId: 'lY', name: 'lY名', color: '#aa00aa' }], '出闸单元成员站换乘＝整个单元线集减本线');
+  eq(rowsX[1].transfers, [
+    { mainId: 'lP', name: 'lP名', color: '#990099' },
+    { mainId: 'lY', name: 'lY名', color: '#aa00aa' },
+    { mainId: 'mA', name: 'A线组', color: '#ff0000' },
+  ], '对方线视角换乘含 mA 组行（组名优先、主线色）');
+  // 换乘面也守联络线名称禁令：全部 transfers 不含 lc/lc2 及其名
+  const allXfers = [];
+  for (const s of model.sections) for (const r of s.rows) allXfers.push(...(r.transfers || []));
+  ok(allXfers.every((t) => t.mainId !== 'lc' && t.mainId !== 'lc2' && String(t.name).indexOf('lc') < 0),
+    '换乘数据不含联络线（钉死规则）');
   // 防御：未知主线 / 无组信息（旧快照） / 空 stops / tree 缺省
   eq(V.lineStopSections('nope', linesMap2, stops2, lg2, tree2), null, '未知主线 id → null');
   const lgEmpty2 = V.buildLineGroups(linesMap2, []);

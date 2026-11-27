@@ -443,6 +443,24 @@
     .lp-mark-tail { width: 24px; height: 4px; border-radius: 2px; flex: none; }
     .lp-mark-txt { font-size: 12px; line-height: 1.3; white-space: nowrap; }
     .lp-inter .lp-mark { margin-left: 6px; }
+    /* 换乘信息（2026-11-27 用户需求）：站行末尾右侧对齐（margin-left:auto）「小色点＋
+       线名」，可点＝跳该线线路页（返回回原线路页）。次要信息弱一档＝12px 灰字（仍黑白灰
+       体系，主站名黑 14px 拉开层级）；色点＝线路标志色（黑白灰 UI 的彩色例外，与 lp-mark
+       尾线/节点描边同源）。真数据单站最多 6 条换乘（上海南站），一行放不下自然换行收紧：
+       .lp-row 已 flex-wrap，本区内部再 wrap、row-gap 2px 行距贴紧；直接可见不 hover 才显 */
+    .lp-xfer {
+      margin-left: auto;
+      display: inline-flex; flex-wrap: wrap; justify-content: flex-end;
+      gap: 2px 2px;
+    }
+    .lp-xfer-item {
+      display: inline-flex; align-items: center; gap: 3px;
+      border: 0; background: none; padding: 2px 3px; margin: 0;
+      font: inherit; cursor: pointer; border-radius: 4px;
+    }
+    .lp-xfer-item:hover { background: var(--hover); }
+    .lp-xfer-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+    .lp-xfer-name { font-size: 12px; line-height: 1.3; color: #555555; white-space: nowrap; }
 
     /* ---- 车站页（2026-11-27 点击车站）：顶条/标题区复用线路页（lp-head/lp-name），
        主体＝一行一自然线路（色块＋线名＋多名标注），行可点（点行＝高亮该线＋跳线路页） ---- */
