@@ -423,6 +423,35 @@ eq([...V.computeDimmedSet(mixTP, { phase: 'none', focus: null })], [],
 eq([...V.computeDimmedSet(mixTP, { focus: 'tp' })].includes('tp'), true,
   '聚焦他省线时其自身也在调光侧（setFocus 入口另有拦截，不产生此态）');
 
+// ---------- 深图态高亮 dim 通路（2026-11-27 用户裁定：卫星/用地两态改降透明度法） ----------
+// deepHighlightDimIds——深图态高亮时 dim 定义域扩展：除高亮豁免集外全部线 id 并入调光集
+//（→ line-opacity DIM_OPACITY 0.5，复用既有 dim case；高亮成员由渲染层 veilSkip＋focus-copy
+// 罩上重画全亮，胶水层职责，不在此测）。浅色态不调本函数（策略分流在胶水层 isDeepVeilBand）。
+console.log('deepHighlightDimIds / deepPhaseDimBit:');
+eq(V.deepHighlightDimIds(mixTP, null).sort(), ['la', 'lb', 'lc', 'tp'],
+  '分期态（无豁免集）→ 全部线并入调光（含他省，段级口径由 deepPhaseDimBit 另行覆写）');
+eq(V.deepHighlightDimIds(mixTP, ['la']).sort(), ['lb', 'lc', 'tp'],
+  '聚焦豁免集数组形态 → 豁免线收出、其余全收');
+eq(V.deepHighlightDimIds(mixTP, new Set(['la', 'lb'])).sort(), ['lc', 'tp'],
+  '豁免集 Set 形态同效');
+eq(V.deepHighlightDimIds([...mixTP.values()], new Set(['la'])).sort(), ['lb', 'lc', 'tp'],
+  'linesMap 数组形态兼容（对齐 computeDimmedSet 入参风格）');
+eq(V.deepHighlightDimIds(null, null), [], 'null linesMap 不崩 → 空集');
+eq(V.deepHighlightDimIds([null, { lineId: undefined }, { lineId: 'ok' }], null), ['ok'],
+  '脏线（null/无 lineId）跳过');
+eq(V.deepHighlightDimIds(mixTP, [null, 42, 'la']).sort(), ['lb', 'lc', 'tp'],
+  '豁免集脏项过滤后仍只豁免 la（数字/null 不炸不误豁）');
+// deepPhaseDimBit——深图态分期段级 dim 位：选中段 0（罩上重画全亮覆盖底线）、未选段 1
+//（0.5）；他省线不参与期次恒 1（2026-11-25 裁定照旧，整线各段恒调光）。
+eq(V.deepPhaseDimBit({ layer: '市区线' }, 'existing', new Set(['existing'])), 0, '本地线选中段 → 0（全亮）');
+eq(V.deepPhaseDimBit({ layer: '市区线' }, 'future', new Set(['existing'])), 1, '本地线未选段 → 1（0.5）');
+eq(V.deepPhaseDimBit({ layer: '市区线' }, 'existing', ['existing', 'approved', 'future']), 0, 'phases 数组形态兼容（全选态不触发深图分期路径，防御位）');
+eq(V.deepPhaseDimBit({ layer: '市区线' }, 'existing', new Set()), 1, '全不选分期态 → 未选段恒 1');
+eq(V.deepPhaseDimBit({ layer: '他省' }, 'existing', new Set(['existing'])), 1,
+  '他省线不参与期次 → 恒 1（罩上 lines-displayonly 层 dim case → 0.5，2026-11-25 裁定照旧）');
+eq(V.deepPhaseDimBit(null, 'existing', new Set(['existing'])), 0, 'null 线防御 → 按本地口径 0（lineLayerRank null 安全）');
+eq(V.deepPhaseDimBit({ layer: '市区线' }, 'existing', null), 1, 'phases null 防御 → 1');
+
 // ---------- visibleLabels（优先级：全局开关 ＞ 聚焦常显·其余隐藏 ＞ 调光隐藏 ＞ zoom 门槛） ----------
 console.log('visibleLabels:');
 const vlLabels = [

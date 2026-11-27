@@ -54,6 +54,18 @@
 // 即时定位、面板过渡时长归零，与「要看到动画」的意愿相反（真机反馈「光速划走/瞬移」），
 // essential:true＝MapLibre 语义下的必要动画、reduce 也不降级。唯二例外：首次加载
 // fitAll 保持即时（首屏不闪，duration 0）；退出聚焦/车站页返回/面板返回不动相机（既有裁定）。
+// 2026-11-27 深图态高亮策略（用户裁定）：浅色底图（高德/无字高德/OSM）白罩法照旧不变；
+// 深图类两态（卫星 shanghai_W／用地 planblock）改为「降透明度法」——高亮任何东西（聚焦
+// 单线/分期态/车站多线高亮）时白罩不动（底图遮罩 basemap-veil 恒常态档 0.32，VEIL_BANDS
+// 的 focus 档数值保留定义但深图态不取＝veilOpacityFor 按态短路；高亮白罩 focus-veil 恒 0
+// ＝syncFocusVeil 短路），高亮对比改用其他线路不透明度：非高亮线路（罩下那些）并入
+// S.dimmed（dim 定义域从「联络线/他省」扩展到「全部非高亮线」——V.deepHighlightDimIds，
+// 高亮成员照旧 veilSkip 豁免＋focus-copy 罩上重画全亮）→ line-opacity 0.5（DIM_OPACITY，
+// 复用既有 dim case 通路不另起炉灶）；分期态段级 dim（V.deepPhaseDimBit：选中段 0 罩上
+// 重画全亮、未选段 1，他省整线恒 1 照旧）。站名/标签联动沿用口径（updateLabels 分期态
+// dimmedSet 换传他省集，防 dim 扩展误隐期次匹配标签）；退出高亮恢复 1.0＋常态档白罩；
+// 底图切换时策略自动跟随（applyBasemapToMap 先重算 dim，切走无残留）。**浅色类三态行为
+// 逐位不变**（isDeepVeilBand 不命中时一切照旧路径）。
 // 实装路径对齐：数据 fetch＝net → build/net 依次回退（正式版原样）；省界底图＝仓库静态件
 // basemap/provinces-wgs84.json（相对路径）。
 // ——以下为原查看器头注（保留供对照）——
@@ -403,10 +415,15 @@
     S.dispBbox = new Map();
     const dc = S.dispCoord;
     const veilSkip = veilFocusSkipSet();
+    // 深图态分期段级调光（2026-11-27 裁定「未选期 0.5、选中段罩上重画全亮」的落点）：
+    // feature 是段级的，dim 位按 V.deepPhaseDimBit 逐段覆写（选中段 0——罩上重画层同宽
+    // 同色覆盖底线；未选段 1 → 0.5；他省线恒 1 照旧）。浅色态/非分期恒走线级 dim（逐位
+    // 不变）。线级全集由 recomputeDimmed ③ 兜底。
+    const deepSegDim = isDeepVeilBand() && S.phaseActive;
     const features = [];
     for (const line of S.linesMap.values()) {
       let bb = null;
-      const dim = S.dimmed.has(line.lineId) ? 1 : 0;
+      const lineDim = S.dimmed.has(line.lineId) ? 1 : 0;
       const province = lineOtherProvince(line) ? 1 : 0;   // 0/1 数字位（filter 显式 ==，勿用 '!'）
       const skip = S.fadeSet.has(line.lineId) || S.blendSet.has(line.lineId)
         || S.arrowSet.has(line.lineId)
@@ -425,7 +442,8 @@
           type: 'Feature',
           geometry: { type: 'LineString', coordinates: coords },
           properties: { lineId: line.lineId, name: line.name, color: line.color, segStatus: seg.segStatus, segIndex: seg.segIndex,
-            dim, dash: V.lineDashed(line), province,
+            dim: deepSegDim ? V.deepPhaseDimBit(line, seg.segStatus, S.phases) : lineDim,
+            dash: V.lineDashed(line), province,
             // 共线段偏移（2026-11-27 方案 A）：normalizeLines 透传（普通段 0）
             sharedOffset: Number.isFinite(seg.sharedOffset) ? seg.sharedOffset : 0 },
         });
@@ -989,6 +1007,9 @@
   // 聚焦态判定＝现有 focusOrStation()（聚焦/车站高亮任一）|| S.phaseActive（分期），
   // 不新造状态；换档路径 syncBasemapVeil（applyDimState＝汇聚点＋applyBasemapToMap＝
   // 底图切换补一档）。
+  // 2026-11-27 深图态高亮策略（用户裁定）：dark/darkSat 两档的 focus 数值**停用**（保留
+  // 定义、深图态不取）——深图类高亮时白罩不动（底图遮罩恒常态档），对比改用其他线路
+  // 不透明度（dim 通路扩展，见 recomputeDimmed 注）。
   const VEIL_BANDS = {
     light: { normal: 0.6, focus: 0.4 },
     pale: { normal: 0.35, focus: 0.30 },
@@ -1000,9 +1021,18 @@
     carto: 'pale',
     planblock: 'dark', shanghai_W: 'darkSat',
   };
-  // 取当态档位；off／未知态兜底取 light 档（veil 仅底图非 off 时可见，值不生效，纯防御）
+  // 深图类底图判定（dark/darkSat）：高亮策略按此分流——深图＝降透明度法、浅色＝白罩法
+  //（2026-11-27 用户裁定；off／未知态兜底 light 档＝白罩法，纯防御）。改动点集中引用此
+  // 一判：veilOpacityFor/syncFocusVeil/recomputeDimmed/renderLinesFC。
+  function isDeepVeilBand() {
+    const band = BASEMAP_VEIL_BAND[S.basemap];
+    return band === 'dark' || band === 'darkSat';
+  }
+  // 取当态档位；off／未知态兜底取 light 档（veil 仅底图非 off 时可见，值不生效，纯防御）。
+  // 深图态短路：focused 不生效、恒常态档（高亮时白罩不动，2026-11-27 裁定）。
   function veilOpacityFor(focused) {
     const band = VEIL_BANDS[BASEMAP_VEIL_BAND[S.basemap] || 'light'];
+    if (isDeepVeilBand()) return band.normal;
     return focused ? band.focus : band.normal;
   }
   // 遮罩层未建（底图从未开过）防御跳过——样式未就绪期由 dimPending/basemapPending 补应用
@@ -1124,7 +1154,8 @@
   // dispBbox 已是显示坐标（与渲染同帧），不特殊处理。
   function applyBasemapToMap() {
     if (S.basemap !== 'off') ensureBasemapLayers();
-    syncBasemapVeil();   // 遮罩档位随聚焦态与底图态（建层先落当态常态档，聚焦中开底图即刻换聚焦档）
+    recomputeDimmed();   // 2026-11-27 深图态高亮策略：底图切换时 dim 集随明暗类重算（深图⇄浅色策略跟随、切走无残留——下方重设 source 读 S.dimmed）
+    syncBasemapVeil();   // 遮罩档位随聚焦态与底图态（建层先落当态常态档，聚焦中开底图即刻换聚焦档；深图态恒常态档）
     const vis = (layerId, on) => {
       if (S.map.getLayer(layerId)) S.map.setLayoutProperty(layerId, 'visibility', on ? 'visible' : 'none');
     };
@@ -1160,11 +1191,21 @@
   }
 
   // ---------- 分期四档 / 聚焦 / 调光 / 全局站名开关 ----------
-  // 调光应用：重算 S.dimmed 与联络线渐变集 → 四个 source 全量重设（渲染特征重带 dim 位、
-  // fadeSet 线跳基础层）→ 渐变层重建 → 标签重排。与底图切换共用 render* 函数（互相独立、
-  // 叠加不冲突——坐标变换与 dim 位各管各的）。样式未就绪时只置 pending 标记（同底图四态
-  // 模式），on('load') 后补应用，点击不丢失。
-  function applyDimState() {
+  // 调光线集计算（applyDimState 与 applyBasemapToMap 共用——底图切换时深图⇄浅色策略
+  // 自动跟随、切走无残留，2026-11-27 深图态高亮策略）：
+  //   ① computeDimmedSet（浅色口径）——focus/phase 任一激活时他省线恒入集；分期旧单选
+  //      路径（S.phase 恒 'none'）现为空转；
+  //   ② 分期态他省线恒入集（2026-11-25 裁定，浅色/深图同口径——罩上 lines-displayonly
+  //      层 dim case → 0.5）；
+  //   ③ 深图态高亮 dim 扩展（2026-11-27 裁定）：深图类底图（dark/darkSat）且高亮激活
+  //      （聚焦/车站/分期任一）时，高亮豁免集（veilFocusSkipSet——聚焦/车站成员；分期态
+  //      ＝null 即无豁免）之外的**全部线**并入 S.dimmed → line-opacity 0.5（DIM_OPACITY，
+  //      复用既有 dim case）。高亮成员照旧 veilSkip 出基础层＋focus-copy 罩上重画全亮。
+  //      分期态的「未选期 0.5」是**段级** dim（renderLinesFC 按 V.deepPhaseDimBit 覆写
+  //      feature dim 位——严格按区段裁定），线级全集只是兜底；联络线（blend/arrow）走
+  //      各自动态层，feature dim 位同样吃 S.dimmed → 非高亮联络线 0.5。浅色类不进此
+  //      分支（③恒不触发），白罩法三态行为逐位不变。
+  function recomputeDimmed() {
     // 2026-11-22 主支线合并：调光组级（lineGroups 传入——期次/仅显示级以主线为准；
     // S.focus 恒为主线 id，见 toggleFocus 归一）。
     // 2026-11-22 白罩定案：聚焦不贡献 dim（focus 仅作 displayOnly 激活位），无 hlMode。
@@ -1178,9 +1219,21 @@
         lineGroups: S.lineGroups });
     if (S.phaseActive) {
       // 分期态他省线恒入调光集（2026-11-25 纠正裁定：照常显示、罩上恒调光 0.5——与聚焦态
-      // 他省线同口径）；本地线不进 dim（未选段由白罩压暗区分，不重复调光）
+      // 他省线同口径）；本地线不进 dim（浅色态未选段由白罩压暗区分，不重复调光）
       for (const line of S.linesMap.values()) if (V.lineLayerRank(line) === 'displayOnly') S.dimmed.add(line.lineId);
     }
+    // ③ 深图态高亮 dim 扩展（见上注；浅色类/非高亮态零变化）
+    if (isDeepVeilBand() && (focusOrStation() || S.phaseActive)) {
+      const skip = veilFocusSkipSet();
+      for (const id of V.deepHighlightDimIds(S.linesMap, skip || [])) S.dimmed.add(id);
+    }
+  }
+  // 调光应用：重算 S.dimmed 与联络线渐变集 → 四个 source 全量重设（渲染特征重带 dim 位、
+  // fadeSet 线跳基础层）→ 渐变层重建 → 标签重排。与底图切换共用 render* 函数（互相独立、
+  // 叠加不冲突——坐标变换与 dim 位各管各的）。样式未就绪时只置 pending 标记（同底图四态
+  // 模式），on('load') 后补应用，点击不丢失。
+  function applyDimState() {
+    recomputeDimmed();
     updateFadeSet();   // fadeSet 须在 renderLinesFC 之前就绪（基础层跳 feature 依赖它）
     if (!S.map || !(S.styleReady || S.map.isStyleLoaded())) { S.dimPending = true; return; }
     S.dimPending = false;
@@ -1355,10 +1408,14 @@
   const FOCUS_VEIL_OPACITY = 0.7;
   // demo 高亮渐变：白罩常驻层切换（0↔0.7 走建层时的 fill-opacity-transition 渐入渐出）。
   // 显示条件与旧全删全建实现一致＝聚焦态 ∨ 分期态；幂等，样式未就绪时由 pending 机制兜底。
+  // 2026-11-27 深图态高亮策略：深图类（dark/darkSat）白罩不出——高亮对比改用其他线路
+  // 不透明度（S.dimmed 扩展），focus-copy 罩上重画层照旧（全亮、不被常态 0.32 底图遮罩
+  // 压暗——层序本来就在白罩之上，白罩透明不影响）。层保留常驻透明（fill-opacity 恒 0），
+  // 切回浅色类自动恢复白罩法。
   function syncFocusVeil() {
     if (!S.map || !S.map.getLayer('focus-veil')) return;
     S.map.setPaintProperty('focus-veil', 'fill-opacity',
-      (focusOrStation() || S.phaseActive) ? FOCUS_VEIL_OPACITY : 0);
+      ((focusOrStation() || S.phaseActive) && !isDeepVeilBand()) ? FOCUS_VEIL_OPACITY : 0);
   }
   // 聚焦重画层：layout/paint 与基础线层一致、唯 line-opacity 恒 1——不挂 dim case
   //（2026-11-22 定案轮语义对齐裁定：聚焦线恒原色，对齐旧「聚焦豁免一切调光」语义；
@@ -2572,8 +2629,14 @@
     // 只按 zoom 门槛，见 visibleLabels 的 displayOnlyIds 放行）；混合单元按本地成员期次判
     const labels = S.phaseActive ? S.dispLabels.filter((label) => otherProvinceOnlyIds(label.lineIds)
       || phaseUnitMatches({ kind: label.group ? 'group' : 'stop', key: label.key, groupId: label.groupId, groupType: label.groupType })) : S.dispLabels;
+    // 分期态 dimmedSet 换传「他省集」（2026-11-27 深图态高亮策略：标签联动口径沿用）：
+    // 浅色态分期 S.dimmed 本就只有他省（等价替换）；深图态分期 S.dimmed 被 dim 扩展成
+    // 全量集，直传会把期次匹配标签经 labelShownUnderDim 误隐——分期态标签显隐已由上方
+    // 「期次匹配∨他省」预过滤承担，dim 集在此只作兜底（他省纯单元另有 displayOnlyIds
+    // 放行）。聚焦/车站态不看 dimmedSet（visibleLabels 优先级在前两分支 return），传
+    // S.dimmed 照旧；总览态 S.dimmed 为空。
     const items = V.visibleLabels(labels, map.getZoom(),
-      { hideAll: !S.namesOn, dimmedSet: S.dimmed, focus: S.focus, focusMembers, stationKey, phase: S.phase,
+      { hideAll: !S.namesOn, dimmedSet: S.phaseActive ? displayOnlyLineIds() : S.dimmed, focus: S.focus, focusMembers, stationKey, phase: S.phase,
         displayOnlyIds: S.phaseActive ? displayOnlyLineIds() : [] });
     const w = wrap.clientWidth, h = wrap.clientHeight, M = 60;   // 视口外裁剪边距
     // 站名文字随画布等比缩放（2026-11-22 用户指示「站名和站点也一样，以 z11 为界」）：

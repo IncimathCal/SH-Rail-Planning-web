@@ -1961,6 +1961,37 @@
     return dim;
   }
 
+  // ---------- 深图态高亮策略（2026-11-27 用户裁定：卫星/用地图两态改降透明度法） ----------
+  // 浅色底图（高德/无字高德/OSM）的白罩法不变；深图类（planblock/shanghai_W）高亮时白罩
+  // 不动（底图遮罩恒常态档、focus-veil 白罩不出），对比改用其他线路不透明度——非高亮线
+  // line-opacity 0.5（＝DIM_OPACITY，复用既有 dim 通路，不另起炉灶）。两个纯逻辑：
+  // ①deepHighlightDimIds——深图态高亮时 dim 定义域扩展：除「高亮豁免集」（聚焦/车站成员）
+  //   外全部线 id 并入调光集；skipIds 空/null＝无豁免（分期态）。输入兼容 Map/数组（对齐
+  //   computeDimmedSet），脏线（无 lineId）跳过。
+  function deepHighlightDimIds(linesMap, skipIds) {
+    const out = [];
+    const lines = linesMap instanceof Map ? [...linesMap.values()]
+      : (Array.isArray(linesMap) ? linesMap : []);
+    const skip = skipIds instanceof Set ? skipIds
+      : new Set(Array.isArray(skipIds) ? skipIds.map((m) => (m != null ? String(m) : '')).filter(Boolean) : []);
+    for (const line of lines) {
+      if (!line || line.lineId == null) continue;
+      const id = String(line.lineId);
+      if (!skip.has(id)) out.push(id);
+    }
+    return out;
+  }
+  // ②deepPhaseDimBit——深图态分期态的段级 dim 位（「严格按区段」裁定在深图态的落点）：
+  //   选中期段 0（罩上重画层全亮覆盖底线）、未选段 1（0.5）；他省线不参与期次（恒调光
+  //   2026-11-25 裁定照旧——整线各段恒 1，由线级 dim 兜底，此处显式返回防调用方漏判）。
+  //   phases 兼容 Set/数组。
+  function deepPhaseDimBit(line, segStatus, phases) {
+    if (lineLayerRank(line) === 'displayOnly') return 1;
+    const set = phases instanceof Set ? phases
+      : new Set(Array.isArray(phases) ? phases.filter((p) => p != null) : []);
+    return set.has(segStatus) ? 0 : 1;
+  }
+
   // 分期四档循环推进：'none' → 'existing' → 'approved' → 'future' → 'none'（非法输入回 'none'）
   function nextPhase(cur) {
     const i = PHASE_CYCLE.indexOf(cur);
@@ -2377,7 +2408,7 @@
     normalizeLines, lineBboxOf, stopList, buildStopView,
     parseNetIndex, buildGroupTree, logicalLineCount, groupRelations,
     planGroupPillChain, planarOf, lineSummaries, layerGroups, visibleListGroups,
-    linePhaseOf, lineLayerRank, lineDashed, computeDimmedSet, nextPhase, normalizePhaseSelection, phaseSelectionActive, phaseStatusSelected, phaseSegments, segmentProgressRanges, stopPhaseOf, connectorFadePlan, focusBboxOf,
+    linePhaseOf, lineLayerRank, lineDashed, computeDimmedSet, deepHighlightDimIds, deepPhaseDimBit, nextPhase, normalizePhaseSelection, phaseSelectionActive, phaseStatusSelected, phaseSegments, segmentProgressRanges, stopPhaseOf, connectorFadePlan, focusBboxOf,
     LINE_HIT_LAYER_IDS, LINE_HIT_LAYER_PREFIXES, isLineHitLayerId, lineClickAction,
     STOP_HIT_LAYER_IDS, isStopHitLayerId,
     stationMemberStops, stationLinesOf, stationFocusOf, focusBboxOfSet,
