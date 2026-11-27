@@ -7,6 +7,8 @@
     { "id": "l0001", "file": "lines/l0001.json", "name": "1号线", "stops": 5 },
     { "id": "l0002", "file": "lines/l0002.json", "name": "4号线", "stops": 3 },
     { "id": "l0003", "file": "lines/l0003.json", "name": "1号线支线", "stops": 3 },
+    { "id": "l0004", "file": "lines/l0004.json", "name": "共线甲线", "stops": 5 },
+    { "id": "l0005", "file": "lines/l0005.json", "name": "共线乙线", "stops": 5 },
     { "id": "l0090", "file": "lines/l0090.json", "name": "联络线（样例）", "stops": 0 }
   ],
   "archived": []

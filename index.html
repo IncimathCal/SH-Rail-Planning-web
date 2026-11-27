@@ -346,53 +346,6 @@
     }
     #btnKml:hover { border-color: #000; }
 
-    /* ---- 线路页车站列表（2026-11-27）：竖直线站序。视觉常量与地图侧同源等比（用户
-       裁定「参照我们自己这张图的线宽/站圆/换乘站样式」）：竖线宽 7px＝LINE_WIDTH_PX、
-       普通节点 11px（r5.5）描边 1.2、黑边节点描边 1.32、换乘大圈 15px（r7.5）、药丸
-       高 15 黑边 2.2——与 viewer.js 画布视觉参数注（z≥11 基准）一一对应。节点形态由
-       VIEWER_CORE.stopNodeGlyph（buildStopView 同规则）给出，颜色规则同地图：普通站
-       线色描边、出闸成员黑边小圈、同站大圈黑边、junction 大圈角色优先级色、药丸黑边。
-       黑白灰 UI 不破：彩色仅竖线/节点描边/接入渐变短线，文字恒黑 ---- */
-    .lp-stops { margin-top: 14px; }
-    .lp-sec { position: relative; }
-    .lp-rail {
-      position: absolute; left: 6px; width: 7px; top: 14px; bottom: 14px;
-      border-radius: 3.5px; background: var(--sec-color, #888888); z-index: 0;
-    }
-    .lp-rail-head::before, .lp-rail-tail::after {
-      content: ''; position: absolute; left: 50%; transform: translateX(-50%);
-      border-left: 6px solid transparent; border-right: 6px solid transparent;
-    }
-    .lp-rail-head::before { top: -10px; border-bottom: 9px solid var(--sec-color, #888888); }
-    .lp-rail-tail::after { bottom: -10px; border-top: 9px solid var(--sec-color, #888888); }
-    .lp-row {
-      position: relative; display: flex; align-items: center; flex-wrap: wrap;
-      min-height: 30px; padding-left: 27px; column-gap: 6px;
-    }
-    .lp-row-arrow { min-height: 24px; padding-left: 0; }
-    .lp-node {
-      position: absolute; left: 9.5px; top: 50%; transform: translate(-50%, -50%);
-      box-sizing: border-box; background: #ffffff; z-index: 1;
-    }
-    .lp-node-dot { width: 11px; height: 11px; border-radius: 50%; border: 1.2px solid #888888; }
-    .lp-node-dark { width: 11px; height: 11px; border-radius: 50%; border: 1.32px solid #000000; }
-    .lp-node-big { width: 15px; height: 15px; border-radius: 50%; border: 1.32px solid #000000; }
-    .lp-node-pill { width: 22px; height: 15px; border-radius: 7.5px; border: 2.2px solid #000000; }
-    .lp-station { color: #000; }
-    .lp-divider { border-top: 1px solid var(--panel-border); margin: 14px 2px; }
-    .lp-inter { position: relative; min-height: 24px; display: flex; align-items: center; }
-    /* 接入标注：直角短线统一向右渐变到透明（回避支线/联络实际方向未定义），色＝标注
-       所属线的标志色（往支线＝支线色 / 往主线＝主线色 / 联络＝对方线色） */
-    .lp-mark {
-      display: inline-flex; align-items: center; gap: 4px;
-      border: 0; background: none; padding: 3px 4px; margin: 0;
-      font: inherit; color: #000; cursor: pointer; border-radius: 4px;
-    }
-    .lp-mark:hover { background: var(--hover); }
-    .lp-mark-tail { width: 24px; height: 4px; border-radius: 2px; flex: none; }
-    .lp-mark-txt { font-size: 12px; line-height: 1.3; white-space: nowrap; }
-    .lp-inter .lp-mark { margin-left: 6px; }
-
     /* ---- 车站页（2026-11-27 点击车站）：顶条/标题区复用线路页（lp-head/lp-name），
        主体＝一行一自然线路（色块＋线名＋多名标注），行可点（点行＝高亮该线＋跳线路页） ---- */
     #viewStation { overflow: hidden; }

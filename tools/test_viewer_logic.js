@@ -95,6 +95,20 @@ eq(lm.get('la').bbox, [0, 0, 2, 0], 'la bbox');
 eq(lm.get('lb').bbox, [4, 4, 6, 6], 'lb bbox 跨段合并');
 eq([...V.normalizeLines(null).keys()], [], 'null 输入不崩返回空');
 eq([...V.normalizeLines(fc()).keys()], [], '空 FC 返回空');
+// 共线段双平行线偏移透传（2026-11-27 方案 A）：flatten 产段级可选属性 sharedOffset
+//（仅共线小段携带）——normalizeLines 透传有限数、缺省/非法值兜 0（渲染层 line-offset
+// 数据驱动消费；普通段恒 0＝行为与现状一致）。
+{
+  const lmSh = V.normalizeLines(fc(
+    lineFeat('ls', 0, 'existing', [[0, 0], [1, 0]], { sharedOffset: 1.2 }),
+    lineFeat('ls', 1, 'existing', [[1, 0], [2, 0]], { sharedOffset: -1.2 }),
+    lineFeat('ls', 2, 'existing', [[2, 0], [3, 0]]),                       // 无键（非共线段）
+    lineFeat('ls', 3, 'existing', [[3, 0], [4, 0]], { sharedOffset: 'x' }), // 非法值兜 0
+    lineFeat('ls', 4, 'existing', [[4, 0], [5, 0]], { sharedOffset: null }),
+  ));
+  eq(lmSh.get('ls').segments.map((s) => s.sharedOffset), [1.2, -1.2, 0, 0, 0],
+    'sharedOffset 透传：正负值原样、无键/非法/空兜 0');
+}
 
 // ---------- stopList ----------
 console.log('stopList:');
@@ -1909,164 +1923,6 @@ console.log('stationLinesOf / stationFocusOf:');
     [121.00, 31.00, 121.10, 31.05], '联络线缺 bbox → 跳过不炸');
   // 联络线只亮不列名回归：组内联络线成员不进 stationFocusOf 的任何文字面（lines 无 lc 条目）
   ok(st1.lines.every((l) => l.mainId !== 'lc' && l.name.indexOf('联络') < 0), '车站页数据不含联络线条目（钉死规则）');
-}
-
-// ---------- 线路页车站列表（2026-11-27：lineStopSections 站序分段 / 接入点 / 节点形态） ----------
-console.log('lineStopSections / stopNodeGlyph:');
-{
-  // stopFeatX：stopList 输入的扩展 helper（stopIndex / kind 可选——flatten 恒写 stopIndex、
-  // arrow 带 kind、block 已剔除，此处的可缺省即防御路径）
-  function stopFeatX(sid, name, lineId, t, lon, lat, opt) {
-    const p = { sid, name, lineId, lineName: lineId + '名', t,
-      groupId: (opt && opt.gid) || null, groupType: (opt && opt.gtype) || null };
-    if (opt && Number.isInteger(opt.idx)) p.stopIndex = opt.idx;
-    if (opt && opt.kind) p.kind = opt.kind;
-    return { type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] }, properties: p };
-  }
-  // 夹具几何（经度 121.x、纬度 31，1° 经 ≈95.4km、1° 纬 ≈111.3km）：
-  //   mA 主线＝(121.00,31)→(121.20,31) 东西直线；三站 t=.25/.5/.75＝lon 121.05/121.10/121.15，
-  //   两端 arrow 出省。
-  //   mB 支线＝junction 精确接入（j1：mB-s1↔mA-s2）；mC 支线＝无 junction 几何近似（接出点
-  //   121.125 恰在 A2/A3 正中，站距 ~4.8km → 行间）。
-  //   lc 联络线＝junction 精确（j2：lc-s1↔mA-s3）接 lX；lc2 联络线＝无站几何近似（head 在
-  //   A1 之前 121.025 → 行间 after0；tail 接 lX head）。
-  //   gS 同站 3 逻辑线（mA组/lX/lY）→ 药丸；gO 出闸组（直属 lY-s2＋同站子组 gO2 含 lX-s1）。
-  const linesFC2 = fc(
-    lineFeat('mA', 0, 'existing', [[121.00, 31.00], [121.20, 31.00]], { role: 'main', groupId: 'lgA', color: '#ff0000' }),
-    lineFeat('mB', 0, 'existing', [[121.10, 31.00], [121.10, 30.95]], { role: 'branch', groupId: 'lgA', color: '#00aa00' }),
-    lineFeat('mC', 0, 'existing', [[121.125, 31.00], [121.125, 30.96]], { role: 'branch', groupId: 'lgA', color: '#00bbcc' }),
-    lineFeat('lX', 0, 'existing', [[121.16, 30.99], [121.20, 30.95]], { role: 'standalone', color: '#0000ff' }),
-    lineFeat('lY', 0, 'existing', [[121.05, 31.005], [121.06, 31.01]], { role: 'standalone', color: '#aa00aa' }),
-    lineFeat('lc', 0, 'existing', [[121.15, 31.00], [121.16, 30.99]], { connects: ['mA', 'lX'] }),
-    lineFeat('lc2', 0, 'existing', [[121.025, 31.00], [121.025, 30.995], [121.16, 30.99]], { connects: ['mA', 'lX'] }),
-  );
-  const linesMap2 = V.normalizeLines(linesFC2);
-  const lg2 = V.buildLineGroups(linesMap2, [{ id: 'lgA', name: 'A线组', mainId: 'mA', members: ['mA', 'mB', 'mC'] }]);
-  const stopsFC2 = fc(
-    stopFeatX('mA-a0', '', 'mA', 0, 121.00, 31.00, { idx: 0, kind: 'arrow' }),
-    stopFeatX('mA-s1', '主A1', 'mA', 0.25, 121.05, 31.00, { idx: 1, gid: 'gS', gtype: 'same-station' }),
-    stopFeatX('mA-s2', '主A2', 'mA', 0.5, 121.10, 31.00, { idx: 2, gid: 'j1', gtype: 'junction' }),
-    stopFeatX('mA-s3', '主A3', 'mA', 0.75, 121.15, 31.00, { idx: 3, gid: 'j2', gtype: 'junction' }),
-    stopFeatX('mA-a1', '', 'mA', 1, 121.20, 31.00, { idx: 4, kind: 'arrow' }),
-    stopFeatX('mB-s1', 'B接轨', 'mB', 0, 121.10, 31.00, { idx: 0, gid: 'j1', gtype: 'junction' }),
-    stopFeatX('mB-s2', '支线B去向', 'mB', 1, 121.10, 30.95, { idx: 1 }),
-    stopFeatX('mC-s1', 'C接轨', 'mC', 0, 121.125, 31.00, { idx: 0 }),
-    stopFeatX('mC-s2', '支线C去向', 'mC', 1, 121.125, 30.96, { idx: 1 }),
-    stopFeatX('lX-s1', 'X一站', 'lX', 0, 121.16, 30.99, { idx: 0, gid: 'gO2', gtype: 'same-station' }),
-    stopFeatX('lX-s2', 'X二站', 'lX', 1, 121.20, 30.95, { idx: 1, gid: 'gS', gtype: 'same-station' }),
-    stopFeatX('lY-s1', 'Y一站', 'lY', 0, 121.05, 31.005, { idx: 0, gid: 'gS', gtype: 'same-station' }),
-    stopFeatX('lY-s2', 'Y二站', 'lY', 1, 121.06, 31.01, { idx: 1, gid: 'gO', gtype: 'out-of-station' }),
-    stopFeatX('lc-s1', '联络接轨', 'lc', 0, 121.15, 31.00, { idx: 0, gid: 'j2', gtype: 'junction' }),
-    stopFeatX('lc-s2', '联络中途', 'lc', 1, 121.16, 30.99, { idx: 1 }),
-  );
-  const stops2 = V.stopList(stopsFC2);
-  const sgTable = [
-    { id: 'j1', type: 'junction', stops: ['mB-s1', 'mA-s2'], groups: [] },
-    { id: 'j2', type: 'junction', stops: ['lc-s1', 'mA-s3'], groups: [] },
-    { id: 'gS', type: 'same-station', stops: ['mA-s1', 'lX-s2', 'lY-s1'], groups: [] },
-    { id: 'gO', type: 'out-of-station', stops: ['lY-s2'], groups: ['gO2'] },
-    { id: 'gO2', type: 'same-station', stops: ['lX-s1'], groups: [] },
-  ];
-  const tree2 = V.buildGroupTree(sgTable, stops2);
-  const model = V.lineStopSections('mA', linesMap2, stops2, lg2, tree2);
-  ok(!!model, '主线模型非空');
-  eq(model.mainId, 'mA', '主线 id 归一');
-  eq(model.sections.map((s) => s.lineId), ['mA', 'mB', 'mC'], '分段＝主线＋两条支线（members 声明序）');
-  eq(model.sections.map((s) => s.isMain), [true, false, false], '段主/支标记');
-  // 主线段站序：arrow 行保留、stopIndex 升序、arrow 行名恒空
-  const sec0rows = model.sections[0].rows;
-  eq(sec0rows.map((r) => r.kind), ['arrow', 'stop', 'stop', 'stop', 'arrow'], '主线站序含两端 arrow 行');
-  eq(sec0rows.map((r) => r.name), ['', '主A1', '主A2', '主A3', ''], 'arrow 行不写站名');
-  // 节点形态（stopNodeGlyph＝buildStopView 同规则）：3 逻辑线同站组→pill；junction→big
-  // ＋角色优先级色（main 胜 branch/connector）；arrow 行无节点
-  eq(sec0rows.map((r) => r.glyph && r.glyph.kind), [null, 'pill', 'big', 'big', null], '节点形态：pill/junction big/arrow 无节点');
-  eq(sec0rows[2].glyph.stroke, '#ff0000', 'junction 大圈描边＝角色优先级色（main 的线色）');
-  eq(sec0rows[3].glyph.stroke, '#ff0000', '联络 junction 大圈描边同样取 main 线色（connector 让位）');
-  // 接入标注：mB junction 精确（A2 行「往支线B去向」＝支线非接入端末端站名）
-  const m0 = model.sections[0].marks;
-  const branchMark = m0.find((k) => k.type === 'branch' && k.at.row === 2);
-  ok(!!branchMark, 'mB 支线 junction 接入标在主A2 行');
-  eq(branchMark.label, '往支线B去向', '支线标注＝往〈支线去向（末端站名）〉');
-  eq(branchMark.color, '#00aa00', '往支线标注色＝支线自身色');
-  eq(branchMark.targetSectionIdx, 1, '滚动目标＝支线段 1');
-  ok(!branchMark.approx, 'junction 接入非近似');
-  // mC 无 junction → 几何近似：接出点 121.125 在 A2/A3 之间 → 行间 after 2
-  const branchInter = m0.find((k) => k.type === 'branch' && k.at.after === 2);
-  ok(!!branchInter, 'mC 支线几何近似接入落在 A2/A3 行间');
-  eq(branchInter.label, '往支线C去向', '近似接入标注同口径');
-  ok(branchInter.approx, '几何接入带 approx 标记（待数据支持）');
-  // 联络线：lc junction 精确（A3 行）＋ lc2 几何近似（A1 之前行间 after0）
-  const connJ = m0.find((k) => k.type === 'conn' && k.at.row === 3);
-  ok(!!connJ, 'lc 联络线 junction 接入标在主A3 行');
-  eq(connJ.label, '联络lX名', '联络标注＝联络〈对方自然线路名〉（lX 无组 → 线名）');
-  eq(connJ.color, '#0000ff', '联络标注色＝对方主线色');
-  eq(connJ.targetMainId, 'lX', '联络跳转目标＝对方主线 id');
-  const connG = m0.find((k) => k.type === 'conn' && k.at.after === 0);
-  ok(!!connG, 'lc2 联络线几何近似接入落在 A1 之前行间（after0）');
-  ok(connG.approx, 'lc2 接入近似');
-  eq(m0.length, 4, '主线段 mark 总数＝2 支线＋2 联络（无重复）');
-  // 支线段：接入端「往主线」＋滚动回主线接入位置
-  const m1 = model.sections[1].marks;
-  eq(m1.length, 1, 'mB 段 mark 数');
-  eq(m1[0].type, 'toMain', 'mB 段标记类型');
-  eq(m1[0].at.row, 0, 'mB 接入端标记挂 head 行（接轨站为首站）');
-  eq(m1[0].label, '往主线', '标注文字');
-  eq(m1[0].color, '#ff0000', '往主线标注色＝主线色');
-  eq(m1[0].targetSectionIdx, 0, '滚动目标段＝主线段');
-  eq(m1[0].targetAt, { row: 2 }, '滚动目标位置＝主A2 行');
-  const m2 = model.sections[2].marks;
-  eq(m2[0].at.row, 0, 'mC 接入端标记挂 head 行');
-  eq(m2[0].targetAt, { after: 2 }, '几何接入的目标位置＝行间 after2');
-  // 支线 id 归一：传支线 id 一样出整组模型
-  const modelFromBranch = V.lineStopSections('mB', linesMap2, stops2, lg2, tree2);
-  eq(modelFromBranch.mainId, 'mA', '支线 id 传入 → 归一到主线模型');
-  // 对方线视角（lX）：lc/lc2 都接 lX（几何：lc tail 恰落 lX-s1 站上 → 精确行；lc2 tail 同点）
-  const modelX = V.lineStopSections('lX', linesMap2, stops2, lg2, tree2);
-  eq(modelX.sections.length, 1, 'lX 单线一段');
-  const mx = modelX.sections[0].marks;
-  ok(mx.every((k) => k.type === 'conn' && k.label === '联络A线组' && k.color === '#ff0000'), 'lX 视角联络标注＝联络〈A线组名〉＋组主线色（组名优先）');
-  ok(mx.some((k) => k.at.row === 0), 'lc/lc2 的 lX 端接入 snap 到 X一站（行 0）');
-  // 出闸/子组节点形态
-  const glyphY2 = V.stopNodeGlyph(stops2.find((s) => s.sid === 'lY-s2'), tree2, linesMap2, lg2);
-  eq(glyphY2, { kind: 'dark', stroke: '#000000' }, '出闸直属站 → 黑边小圈');
-  const glyphX1 = V.stopNodeGlyph(stops2.find((s) => s.sid === 'lX-s1'), tree2, linesMap2, lg2);
-  eq(glyphX1.kind, 'big', '出闸子组同站站 → 大圈（子组自身类型）');
-  const glyphB2 = V.stopNodeGlyph(stops2.find((s) => s.sid === 'mB-s2'), tree2, linesMap2, lg2);
-  eq(glyphB2, { kind: 'dot', stroke: null }, '无组站 → 白心小圈（描边渲染层退段色）');
-  // 联络线自身名称/站名零出现（钉死规则：技术线路名称禁令）
-  const dump = JSON.stringify(model) + JSON.stringify(modelX);
-  ok(dump.indexOf('联络接轨') < 0 && dump.indexOf('联络中途') < 0, '联络线站名不进模型');
-  ok(dump.indexOf('"lc"') < 0 && dump.indexOf('"lc2"') < 0, '联络线 lineId 不进模型');
-  // 防御：未知主线 / 无组信息（旧快照） / 空 stops / tree 缺省
-  eq(V.lineStopSections('nope', linesMap2, stops2, lg2, tree2), null, '未知主线 id → null');
-  const lgEmpty2 = V.buildLineGroups(linesMap2, []);
-  const modelNoGrp = V.lineStopSections('mA', linesMap2, stops2, lgEmpty2, tree2);
-  eq(modelNoGrp.sections.length, 1, '无组信息 → 单主线段（支线不进列表，旧行为）');
-  ok(modelNoGrp.sections[0].marks.some((k) => k.type === 'conn'), '无组信息时联络接入照算（connects 不依赖组）');
-  const modelNoStops = V.lineStopSections('mA', linesMap2, [], lg2, tree2);
-  eq(modelNoStops.sections.map((s) => s.rows.length), [0, 0, 0], '空站表 → 各段零行不炸');
-  const modelNoTree = V.lineStopSections('mA', linesMap2, stops2, lg2, null);
-  eq(modelNoTree.sections[0].rows[1].glyph, { kind: 'dot', stroke: null }, 'tree 缺省 → 节点退普通小圈');
-  // 站序：stopIndex 优先于 t（防矛盾数据）；缺失 stopIndex 退 t
-  const stopsOrd = V.stopList(fc(
-    stopFeatX('z-b', '乙', 'lz', 0.1, 121.0, 31.0, { idx: 3 }),
-    stopFeatX('z-a', '甲', 'lz', 0.9, 121.1, 31.0, { idx: 1 }),
-  ));
-  eq(V.stopsOfLineOrdered('lz', stopsOrd).map((s) => s.sid), ['z-a', 'z-b'], 'stopIndex 升序（与 t 矛盾时以 stopIndex 为准）');
-  const stopsT = V.stopList(fc(
-    stopFeatX('z-b', '乙', 'lz', 0.1, 121.0, 31.0),
-    stopFeatX('z-a', '甲', 'lz', 0.9, 121.1, 31.0),
-  ));
-  eq(V.stopsOfLineOrdered('lz', stopsT).map((s) => s.sid), ['z-b', 'z-a'], '无 stopIndex → 退 t 升序');
-  // 几何工具手算对照
-  const geo = V.nearestOnLineGeom(121.10, 31.01, linesMap2.get('mA'));
-  ok(Math.abs(geo.dist - 1113.2) < 2, 'nearestOnLineGeom 距离＝纬差 0.01°≈1113m（平面近似）');
-  ok(Math.abs(geo.s - 0.5 * 0.2 * Math.cos(31 * Math.PI / 180) * 111320) < 5, '弧长 s＝中点（121.10 恰在线正中）');
-  eq(V.lineEndpointsOf({ segments: [{ coords: [[1, 2], [3, 4]] }] }), { head: [1, 2], tail: [3, 4] }, '端点＝拼接折线首尾');
-  eq(V.lineEndpointsOf({ segments: [] }), { head: null, tail: null }, '空线无端点（防御）');
-  // 去向标注：全 arrow 支线退支线自身名（l0069 出省支线形态）；arrow 行不算具名站
-  eq(V.branchDestLabel([{ kind: 'arrow' }, { kind: 'stop', name: '尾站' }], 'head', '支线名'), '尾站', 'head 接入 → 去向取尾端具名站');
-  eq(V.branchDestLabel([{ kind: 'arrow', name: '' }], 'head', '示范区出省支线'), '示范区出省支线', '无具名站 → 退支线自身名（不造名）');
 }
 
 console.log(fails ? `\nFAIL - ${fails} assertion(s)` : '\nPASS - viewer logic OK');

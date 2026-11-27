@@ -1,0 +1,28 @@
+{
+  "schema": "fmt/line@2",
+  "id": "l0004",
+  "name": "共线甲线",
+  "groupId": null,
+  "role": "standalone",
+  "color": "#33AA33",
+  "loop": false,
+  "path": "M 0 100 L 100 100 L 400 100 L 400 400",
+  "connects": [],
+  "stops": [
+    { "id": "l0004-s01", "name": "样例西站", "t": 0.0, "geo": null },
+    { "id": "l0004-s02", "name": "共线西站", "t": 0.143, "geo": null },
+    { "id": "l0004-s03", "name": "共线中站", "t": 0.357, "geo": null },
+    { "id": "l0004-s04", "name": "共线东站", "t": 0.571, "geo": null },
+    { "id": "l0004-s05", "name": "样例南站", "t": 0.999, "geo": null }
+  ],
+  "sections": [
+    { "name": "", "status": "existing" }
+  ],
+  "segments": [0, 0, 0, 0],
+  "status": null,
+  "sharedTracks": [
+    { "peer": "l0005", "stops": ["l0004-s02", "l0004-s04"] }
+  ],
+  "info": { "note": "样例数据（fixtures）：与 l0005 共线甲线样例在 s02~s04（段 1、2）共线共轨（同向绘制）；sharedTracks 双侧标注——flatten 产 sharedOffset=+1.2（本线 id 字典序小）" },
+  "meta": { "created": "2026-11-27", "updated": "2026-11-27", "archived": false, "aliases": [], "sourceLayer": "共线甲线" }
+}

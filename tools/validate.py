@@ -219,6 +219,12 @@ def main():
     lines = {}         # line id -> data
     all_stop_ids = {}  # stop id -> line id
     stop_kinds = {}    # stop id -> kind（普通站为 None）
+    # sharedTracks（2026-11-27 方案 A：共线共轨标注，如 3/4 号线虹桥路~宝山路）：
+    # 线文件顶层可选字段 [{peer: 对方线 id, stops: [本线起站 id, 本线止站 id]}]，双侧各自标注。
+    # 结构校验在逐线循环内（下方）；跨线对称性（A 标 B 则 B 标 A 且范围一致）须全表
+    # 收集后查——见「线路 ↔ 组/联络 引用交叉检查」段的 sharedTracks 对称检查。
+    # 收集口径：peer 格式合法且非自身的声明（结构有错也收，对称段自会防御跳过）。
+    shared_decls = {}   # line id -> [(peer, stops)]（文件声明序）
 
     # ---------- 线路文件 ----------
     for lf in line_files:
@@ -324,6 +330,45 @@ def main():
         # 规则 2：sections / segments / status（v1.5 分段一等实体；@1 兼容 WARN）
         check_segmentation(d, fname, stops, loop)
 
+        # sharedTracks（2026-11-27 方案 A：共线共轨标注）结构校验——可选、数组、
+        # 每项 peer 是合法线 id 格式（≠自身、同 peer 至多一条）、stops 恰 2 个且
+        # 都是**本线**站 id 且两站不同。跨线对称性（peer 存在＋双侧范围一致）在
+        # 全表收集后的交叉检查段查（此处只见本线）。connector 线禁用（联络线＝
+        # 技术线路，双线渲染不适用；其线身走渐变层、不进共线双线体系）。
+        shared = d.get("sharedTracks")
+        if shared is not None:
+            if role == "connector":
+                err(fname, "connector lines must not declare sharedTracks")
+            if not isinstance(shared, list):
+                err(fname, "sharedTracks must be a list")
+                shared = []
+            seen_peers = set()
+            for k, sh in enumerate(shared):
+                if not isinstance(sh, dict):
+                    err(fname, f"sharedTracks[{k}] must be an object")
+                    continue
+                peer = sh.get("peer")
+                if not isinstance(peer, str) or not RE_LINE_ID.match(peer):
+                    err(fname, f"sharedTracks[{k}]: bad peer line id: {peer!r}")
+                elif peer == lid:
+                    err(fname, f"sharedTracks[{k}]: peer must not be the line itself")
+                elif peer in seen_peers:
+                    err(fname, f"sharedTracks[{k}]: duplicate sharedTracks entry for peer {peer}")
+                else:
+                    seen_peers.add(peer)
+                    shared_decls.setdefault(lid, []).append((peer, sh.get("stops")))
+                sids = sh.get("stops")
+                if not isinstance(sids, list) or len(sids) != 2:
+                    err(fname, f"sharedTracks[{k}]: stops must be a list of exactly 2 stop ids")
+                else:
+                    for sid in sids:
+                        if not isinstance(sid, str) or not RE_STOP_ID.match(sid):
+                            err(fname, f"sharedTracks[{k}]: bad stop id: {sid!r}")
+                        elif all_stop_ids.get(sid) != lid:
+                            err(fname, f"sharedTracks[{k}]: stop {sid} does not belong to line {lid}")
+                    if isinstance(sids[0], str) and sids[0] == sids[1]:
+                        err(fname, f"sharedTracks[{k}]: stops must be two distinct stop ids")
+
         # meta
         meta = d.get("meta")
         if not isinstance(meta, dict) or not isinstance(meta.get("archived"), bool):
@@ -332,6 +377,9 @@ def main():
     # ---------- groups.json ----------
     groups_path = target / "groups.json"
     line_group_ids = set()
+    # groups.json 缺失时下面 else 不跑，这两个表兜底为空（sharedTracks 对称检查引用）
+    seen_stop = {}   # stop id -> 直属组 id
+    parent_of = {}   # 子组 id -> 父组 id（最外层归并用）
     if not groups_path.is_file():
         err("groups.json", "file not found")
     else:
@@ -454,6 +502,62 @@ def main():
         for c in d.get("connects") or []:
             if c not in lines:
                 err(f"lines/{lid}.json", f"connects target not found: {c!r}")
+
+    # ---------- sharedTracks 跨线对称检查（2026-11-27 方案 A） ----------
+    # A 标 B ⇒ B 必须标 A 且范围一致。范围一致性口径＝**共线范围站序列比对**：
+    # 把 A 声明范围（含两端站，沿站序 stops[0] → stops[1]；环线 i>j 跨环绕段走
+    # 站序前进弧，非环线反向声明视作同一闭区间）内每站映射到其所属 stationGroup
+    # 的**最外层**组 id（沿 parent_of 上溯；无组＝该站自身不可跨线归并），B 侧同；
+    # 两侧序列相等或互为反转（行进方向相反）＝范围一致。站序列一致 ⇔ 端点一致
+    #（同一线内范围由两端唯一确定），环线互补弧靠序列长度/内容区分。任一站未
+    # 编组（无法跨线归并）则该对范围比对降级为存在性检查、不报错——编组完备性
+    # 由用户数据侧保证，validate 不强求；**绝不按站名归并**（用户明令）。
+    def shared_node_seq(lid_, sids):
+        """声明范围站 id 序列 → 最外层组 id 序列；结构坏/定位失败/含未编组站返回 None。"""
+        if not isinstance(sids, list) or len(sids) != 2:
+            return None
+        ldata = lines.get(lid_) or {}
+        lstops = ldata.get("stops") or []
+        idx_of = {st.get("id"): k for k, st in enumerate(lstops) if isinstance(st, dict)}
+        i, j = idx_of.get(sids[0]), idx_of.get(sids[1])
+        if i is None or j is None or i == j:
+            return None
+        n = len(lstops)
+        if ldata.get("loop"):
+            order = list(range(i, j + 1)) if i < j else list(range(i, n)) + list(range(0, j + 1))
+        else:
+            a, b = (i, j) if i < j else (j, i)
+            order = list(range(a, b + 1))
+        seq = []
+        for k in order:
+            g = seen_stop.get(lstops[k].get("id"))
+            if g is None:
+                return None
+            top = g
+            seen = set()
+            while top in parent_of and top not in seen:
+                seen.add(top)
+                top = parent_of[top]
+            seq.append(top)
+        return seq
+
+    for lid, decls in shared_decls.items():
+        for peer, sids in decls:
+            if peer not in lines:
+                err(f"lines/{lid}.json", f"sharedTracks peer not found: {peer!r}")
+                continue
+            back = [b for b in shared_decls.get(peer, []) if b[0] == lid]
+            if not back:
+                err(f"lines/{lid}.json",
+                    f"sharedTracks peer {peer} does not declare {lid} back (must be bilateral)")
+                continue
+            seq_a = shared_node_seq(lid, sids)
+            seq_b = shared_node_seq(peer, back[0][1])
+            if seq_a is not None and seq_b is not None \
+                    and seq_a != seq_b and seq_a != seq_b[::-1]:
+                err(f"lines/{lid}.json",
+                    f"sharedTracks range mismatch with {peer}: {lid} covers "
+                    f"{' -> '.join(seq_a)}, {peer} covers {' -> '.join(seq_b)}")
 
     # ---------- manifest.json ----------
     mf_path = target / "manifest.json"

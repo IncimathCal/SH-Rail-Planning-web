@@ -413,7 +413,9 @@
           type: 'Feature',
           geometry: { type: 'LineString', coordinates: coords },
           properties: { lineId: line.lineId, name: line.name, color: line.color, segStatus: seg.segStatus, segIndex: seg.segIndex,
-            dim, dash: V.lineDashed(line), province },
+            dim, dash: V.lineDashed(line), province,
+            // 共线段偏移（2026-11-27 方案 A）：normalizeLines 透传（普通段 0）
+            sharedOffset: Number.isFinite(seg.sharedOffset) ? seg.sharedOffset : 0 },
         });
       }
       S.dispBbox.set(line.lineId, bb);
@@ -563,6 +565,14 @@
   // 「几何起点居实段中间」无从实现，退路＝从 dash 边界起始（每条通道起点首现整段实段）。
   const CORRIDOR_DASHARRAY = [2, 2];
   const CORRIDOR_OPACITY = 0.6;
+  // 共线段双平行线（2026-11-27 方案 A）：flatten 产出的段级可选属性 sharedOffset
+  //（像素，仅共线范围内的小段携带，符号由 flatten 按「peer/本线 id 字典序＋两侧几何
+  // 方向」确定性给出）。一切画线身的层统一挂数据驱动 line-offset＝['coalesce',
+  // ['get','sharedOffset'], 0]——普通段无该属性 → coalesce 回 0，渲染行为与现状逐位
+  // 一致（line-offset 0＝不偏移）。⚠ MapLibre 两条既有教训均不触：line-offset 是
+  // paint 属性（不是 line-cap/line-join 的 layout 坑）；恒定像素、不与 zoom 插值复合
+  //（数据驱动×zoom 复合真机不连续求值的坑）。数据驱动 paint 表达式对 line-offset
+  // 合法（feature 属性读取）。
   function lineLayerDef() {
     return {
       id: 'lines', type: 'line', source: 'lines',
@@ -574,6 +584,7 @@
         // 2026-11-22 双击精确命中：线宽基准常量收敛到 V.LINE_WIDTH_PX（与 V.lineWidthAt
         // 同一数值源，防两处漂移——胶水层命中阈值按它算）
         'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX), V.LINE_WIDTH_PX),
+        'line-offset': ['coalesce', ['get', 'sharedOffset'], 0],
       },
     };
   }
@@ -591,6 +602,7 @@
         'line-dasharray': CORRIDOR_DASHARRAY.slice(),
         'line-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY * CORRIDOR_OPACITY, CORRIDOR_OPACITY],
         'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX), V.LINE_WIDTH_PX),
+        'line-offset': ['coalesce', ['get', 'sharedOffset'], 0],   // 共线段偏移（见 lineLayerDef 注）
       },
     };
   }
@@ -1184,6 +1196,7 @@
       layout: { 'line-cap': 'round', 'line-join': 'round' },
       paint: {
         'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX), V.LINE_WIDTH_PX),
+        'line-offset': ['coalesce', ['get', 'sharedOffset'], 0],   // 共线段偏移（见 lineLayerDef 注；整线 feature 无段级属性 → 恒 0，分期拆段 feature 带）
       },
     };
   }
@@ -1217,7 +1230,8 @@
       const selected = V.phaseStatusSelected(seg.segStatus, S.phases);
       feats.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: item.coords },
         properties: { lineId: line.lineId, segIndex: seg.segIndex, segStatus: seg.segStatus,
-          dim: selected ? 0 : (S.dimmed.has(line.lineId) ? 1 : 0) } });
+          dim: selected ? 0 : (S.dimmed.has(line.lineId) ? 1 : 0),
+          sharedOffset: Number.isFinite(seg.sharedOffset) ? seg.sharedOffset : 0 } });   // 共线段偏移（见 lineLayerDef 注）
       const def = Object.assign({}, baseDef, {
         id: layerPrefix + line.lineId + '-' + seg.segIndex,
         filter: ['all', ['==', ['get', 'lineId'], line.lineId], ['==', ['get', 'segIndex'], seg.segIndex]],
@@ -1311,6 +1325,7 @@
         'line-color': ['get', 'color'],
         'line-opacity': ['case', ['==', ['get', 'dim'], 1], V.DIM_OPACITY, 1],
         'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX), V.LINE_WIDTH_PX),
+        'line-offset': ['coalesce', ['get', 'sharedOffset'], 0],   // 共线段偏移（见 lineLayerDef 注）
       },
     };
   }
@@ -1360,7 +1375,8 @@
         features.push({
           type: 'Feature',
           geometry: { type: 'LineString', coordinates: coords },
-          properties: { lineId: line.lineId, name: line.name, color: line.color, segStatus: seg.segStatus, segIndex: seg.segIndex, dash: V.lineDashed(line) },
+          properties: { lineId: line.lineId, name: line.name, color: line.color, segStatus: seg.segStatus, segIndex: seg.segIndex, dash: V.lineDashed(line),
+            sharedOffset: Number.isFinite(seg.sharedOffset) ? seg.sharedOffset : 0 },   // 共线段偏移（见 lineLayerDef 注）
         });
       }
     }
@@ -1879,119 +1895,6 @@
       tip.textContent = '无信息';
       body.appendChild(tip);
     }
-    // 车站列表（2026-11-27）：信息（或「无信息」提示）下方——竖直线站序样式，主线段
-    // ＋分割线＋每条支线一段；arrow 出省端画线端箭头不写站名；接入标注（往支线去向/
-    // 往主线/联络对方线）＝V.lineStopSections 模型。lineinfo 有无与本列表无耦合。
-    const stopModel = V.lineStopSections(lineId, S.linesMap, S.stops, S.lineGroups, S.groupTree);
-    if (stopModel) body.appendChild(buildStopSection(stopModel));
-  }
-
-  // ---------- 线路页车站列表渲染（2026-11-27：竖直线站序；视觉常量与地图侧同源） ----------
-  // 样式基准（2026-11-27 用户澄清）：参照本图地图侧的线宽/站圈/组圈视觉体系等比适配——
-  // 竖线宽 7px＝LINE_WIDTH_PX、普通节点直径 11（r5.5）描边 1.2、黑边节点描边 1.32、
-  // 换乘大圈直径 15（r7.5）、药丸高 15 黑边 2.2（pills 层 19.4/15 的列表等价），数值与
-  // viewer.js 画布视觉参数注释一一对应，CSS 侧不再另立一套。节点形态由模型 glyph 给出
-  //（stopNodeGlyph＝buildStopView 同规则）；黑白灰 UI 约束不破——彩色仅竖线/节点描边
-  // /接入渐变短线的线路标志色，站名与标注文字恒黑。
-  // 接入标注行为：branch（主线行「往〈支线去向〉」）＝滚动到支线段；toMain（支线接入
-  // 端「往主线」）＝滚动回主线接入位置；conn（「联络〈对方自然线路名〉」＋对方线色）＝
-  // 与列表点击线路同款跳转（setFocus 聚焦＋相机＋面板线路页）。直角短线统一向右（回避
-  // 支线/联络方向未定义），渐变到透明。
-  function markElOfStopList(mk) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'lp-mark lp-mark-' + mk.type;
-    const tail = document.createElement('span');
-    tail.className = 'lp-mark-tail';
-    tail.style.background = 'linear-gradient(90deg, ' + (mk.color || '#888888') + ', rgba(0,0,0,0))';
-    const txt = document.createElement('span');
-    txt.className = 'lp-mark-txt';
-    txt.textContent = mk.label;
-    b.append(tail, txt);
-    b.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      handleStopListMark(mk);
-    });
-    return b;
-  }
-  function handleStopListMark(mk) {
-    if (mk.type === 'conn' && mk.targetMainId) {
-      setFocus(mk.targetMainId);               // 与列表点击线路同款：聚焦＋相机让位
-      openLinePage(mk.targetMainId, 'list');   // 面板线路页（来源＝列表口径）
-      return;
-    }
-    let target = null;
-    if (mk.type === 'branch') {
-      target = document.getElementById('lpsec-' + mk.targetSectionIdx);
-    } else if (mk.type === 'toMain') {
-      const ta = mk.targetAt;
-      if (ta && ta.row != null) target = document.getElementById('lprow-' + mk.targetSectionIdx + '-' + ta.row);
-      else if (ta && ta.after != null) target = document.getElementById('lpinter-' + mk.targetSectionIdx + '-' + ta.after);
-      if (!target) target = document.getElementById('lpsec-' + mk.targetSectionIdx);
-    }
-    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-  function buildStopSection(model) {
-    const wrap = document.createElement('div');
-    wrap.className = 'lp-stops';
-    model.sections.forEach((sec, si) => {
-      if (si > 0) {   // 支线分割线（用户描述：主线站全部写完后「断一下」）
-        const dv = document.createElement('div');
-        dv.className = 'lp-divider';
-        wrap.appendChild(dv);
-      }
-      const rowMarks = new Map(), interMarks = new Map();
-      for (const mk of sec.marks || []) {
-        if (mk.at.row != null) {
-          if (!rowMarks.has(mk.at.row)) rowMarks.set(mk.at.row, []);
-          rowMarks.get(mk.at.row).push(mk);
-        } else if (mk.at.after != null) {
-          if (!interMarks.has(mk.at.after)) interMarks.set(mk.at.after, []);
-          interMarks.get(mk.at.after).push(mk);
-        }
-      }
-      const secEl = document.createElement('div');
-      secEl.className = 'lp-sec';
-      secEl.id = 'lpsec-' + si;
-      secEl.style.setProperty('--sec-color', sec.color || '#888888');
-      const rail = document.createElement('div');
-      const headArrow = sec.rows.length && sec.rows[0].kind === 'arrow';
-      const tailArrow = sec.rows.length && sec.rows[sec.rows.length - 1].kind === 'arrow';
-      rail.className = 'lp-rail' + (headArrow ? ' lp-rail-head' : '') + (tailArrow ? ' lp-rail-tail' : '');
-      secEl.appendChild(rail);
-      sec.rows.forEach((row, ri) => {
-        const inter = interMarks.get(ri - 1);   // at.after=ri-1：画在上一行与本行之间
-        if (inter) {
-          const iv = document.createElement('div');
-          iv.className = 'lp-inter';
-          iv.id = 'lpinter-' + si + '-' + (ri - 1);
-          for (const mk of inter) iv.appendChild(markElOfStopList(mk));
-          secEl.appendChild(iv);
-        }
-        if (row.kind === 'arrow') {   // 出省端：只画线端箭头（rail 端三角），不写站名
-          const ar = document.createElement('div');
-          ar.className = 'lp-row lp-row-arrow';
-          secEl.appendChild(ar);
-          return;
-        }
-        const r = document.createElement('div');
-        r.className = 'lp-row';
-        r.id = 'lprow-' + si + '-' + ri;
-        const g = row.glyph || { kind: 'dot', stroke: null };
-        const node = document.createElement('span');
-        node.className = 'lp-node lp-node-' + g.kind;
-        node.style.borderColor = g.stroke || sec.color || '#888888';
-        r.appendChild(node);
-        const nm = document.createElement('span');
-        nm.className = 'lp-station';
-        nm.textContent = row.name || V.stopDisplayName('');
-        r.appendChild(nm);
-        for (const mk of rowMarks.get(ri) || []) r.appendChild(markElOfStopList(mk));
-        secEl.appendChild(r);
-      });
-      wrap.appendChild(secEl);
-    });
-    return wrap;
   }
 
   // ---------- 车站页（2026-11-27 点击车站：flyTo＋多线高亮＋面板车站页；两入口一行为） ----------

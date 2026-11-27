@@ -9,8 +9,11 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
   <out>/lines.geojson  线路×分段，每 feature 一条 LineString
                         properties: lineId / name / aliases / color / role /
                         layer / loop / connects / groupId / segIndex /
-                        segStatus / sectionName
+                        segStatus / sectionName / sharedOffset
                         （sectionName＝所属分段名，空名段省略该键；
+                        sharedOffset＝共线段双平行线偏移像素（2026-11-27 方案 A：
+                        线文件顶层可选 sharedTracks 声明，仅共线范围内的小段写该键，
+                        查看器 line-offset 数据驱动消费；非破坏性可选字段，不升版）；
                         layer＝线路 meta.layer，中文值合法，查看器左栏
                         类别过滤用；connects＝联络线接轨对象线 id 列表，
                         仅 role:"connector" 线携带、其余线为空数组——
@@ -119,6 +122,12 @@ from ge_convert import load_calibration  # noqa: E402
 
 # 经纬度输出小数位（7 位 ≈ 1 cm，远高于标定精度）
 LONLAT_DECIMALS = 7
+
+# 共线段双平行线偏移（2026-11-27 方案 A：sharedTracks 共线共轨标注，如 3/4 号线
+# 虹桥路~宝山路）——任务书定值 1.2 像素：共线两线各向己侧偏 1.2，双线中心距恒
+# 2.4px（基准线宽 7px，观感目验后可调此一处常量）。line-offset 单位＝像素、
+# 正方向＝各自行进方向的右手侧（MapLibre 语义），符号决策见 compute_shared_offsets。
+SHARED_TRACK_OFFSET_PX = 1.2
 
 
 # ------------------------------------------------------------- 折线裁取 --
@@ -237,9 +246,118 @@ def load_groups(data_dir):
     return group_color, stop_group, line_groups, station_groups
 
 
+# ------------------------------------------------------------- 共线段 --
+
+def shared_track_decls(line):
+    """线文件 sharedTracks 声明 → [(peer, [段索引列表], [起站id, 止站id])]。
+
+    范围语义＝stops[0] 沿**站序前进方向**到 stops[1] 途经的站间小段（两端边界
+    小段含在内＝起止站所在小段均属共线）：
+      - 非环线：两站下标闭区间（方向不敏感——标反等价，同一段范围）；
+      - 环线：i>j 时跨环绕段走「另一侧弧」（范围＝站序前进弧；标反即取补弧，
+        数据侧须按本线站序给起止——validate 已要求双侧范围一致）。
+    结构坏（peer/stops 不合法、站定位失败、范围空）的声明跳过并警告——validate
+    是门禁，此处只防御不重复报错。
+    """
+    lid = line.get("id")
+    stops = line.get("stops") or []
+    loop = bool(line.get("loop"))
+    n = len(stops)
+    idx_of = {st.get("id"): k for k, st in enumerate(stops)
+              if isinstance(st, dict) and isinstance(st.get("id"), str)}
+    out = []
+    for sh in line.get("sharedTracks") or []:
+        if not isinstance(sh, dict):
+            continue
+        peer, sids = sh.get("peer"), sh.get("stops")
+        if not isinstance(peer, str) or not isinstance(sids, list) or len(sids) != 2 \
+                or not all(isinstance(s, str) for s in sids):
+            continue
+        i, j = idx_of.get(sids[0]), idx_of.get(sids[1])
+        if i is None or j is None or i == j:
+            print(f"警告：{lid} 的 sharedTracks(peer={peer}) 站定位失败或范围空，跳过")
+            continue
+        if loop:
+            segs = list(range(i, j)) if i < j else list(range(i, n)) + list(range(0, j))
+        else:
+            a, b = (i, j) if i < j else (j, i)
+            segs = list(range(a, b))
+        out.append((peer, segs, list(sids)))
+    return out
+
+
+def _decl_net_displacement(line, arc, sids):
+    """共线范围段 feature 坐标走向的净位移向量（画板系）。
+
+    line-offset 的正方向＝feature 坐标序（＝站序前进）的右手侧，dot 比对要的
+    就是两侧共线段坐标走向的相对关系：
+      - 环线：范围沿站序 stops[0]→stops[1]（含环绕弧）；环绕净位移＝
+        [P(1)−P(t1)]＋[P(t2)−P(0)]，闭合 path 压平后 P(1)≈P(0)，数值上＝
+        P(t2)−P(t1)——与非环绕同式，直接取声明两端点差；
+      - 非环线：标反声明按闭区间重排（shared_track_decls 同口径），走向恒
+        t 小→t 大，与声明顺序无关。
+    t 非法返回 None。
+    """
+    stops = line.get("stops") or []
+    idx_of = {st.get("id"): k for k, st in enumerate(stops)
+              if isinstance(st, dict) and isinstance(st.get("id"), str)}
+    if len(sids) != 2:
+        return None
+    i, j = idx_of.get(sids[0]), idx_of.get(sids[1])
+    if i is None or j is None:
+        return None
+    t1, t2 = stops[i].get("t"), stops[j].get("t")
+    if not all(isinstance(t, (int, float)) and not isinstance(t, bool) for t in (t1, t2)):
+        return None
+    if not line.get("loop") and t1 > t2:
+        t1, t2 = t2, t1   # 非环线标反＝闭区间重排，坐标走向恒 t 小→t 大
+    x1, y1 = arc.point_at(t1)
+    x2, y2 = arc.point_at(t2)
+    return (x2 - x1, y2 - y1)
+
+
+def compute_shared_offsets(line, arc, arc_by_id, loaded_by_id):
+    """本线共线段偏移表 {段索引: sharedOffset 像素}（无声明返回空表）。
+
+    确定性偏移（任务书口径）：peer 线 id 与本线 id 按字典序比对——本线 id 小取
+    +SHARED_TRACK_OFFSET_PX、大取 −。**几何方向修正**：两线 path 各自独立录入，
+    共线段行进方向可能相反——line-offset 的正方向是「各自行进方向的右手」，
+    反向绘制时 ±号会塌到同一几何侧（两线重合、双线失效）。修正：本线为 id 大侧
+    时，取两侧共线范围折线净位移向量的点积——同向（dot>0）取 −（各让一侧）、
+    反向（dot<0）取 +（两线右手侧恰为几何两侧）；id 小侧恒 +。两侧独立计算、
+    无需协调，结果一致保证分离（净位移对 C 形弯道只取整体走向，极端回头形共线
+    段中段可能瞬间同侧，端点仍分离，可接受）。同段被多条声明覆盖（三线共轨）
+    保留首条并警告。
+    """
+    lid = line.get("id")
+    decls = shared_track_decls(line)
+    if not decls:
+        return {}
+    off = {}
+    for peer, segs, sids in decls:
+        sign = 1 if lid < peer else -1
+        if lid > peer:
+            pl = loaded_by_id.get(peer) or {}
+            pdecl = next((d for d in shared_track_decls(pl) if d[0] == lid), None)
+            pa = _decl_net_displacement(line, arc, sids)
+            pb = (_decl_net_displacement(pl, arc_by_id.get(peer), pdecl[2])
+                  if pdecl and arc_by_id.get(peer) is not None else None)
+            if pa and pb:
+                if pa[0] * pb[0] + pa[1] * pb[1] < 0:
+                    sign = 1
+        val = SHARED_TRACK_OFFSET_PX * sign
+        for si in segs:
+            if si in off:
+                print(f"警告：{lid} 段 {si} 被多条 sharedTracks 声明覆盖（三线共轨？），保留首条偏移")
+                continue
+            off[si] = val
+    return off
+
+
 # ------------------------------------------------------------- 单线展开 --
 
-def flatten_line(line, ap, tps, group_color, stop_group, conn_target_index=None):
+def flatten_line(line, ap, tps, group_color, stop_group, conn_target_index=None,
+                 shared_offsets=None):
     """单条线路 → (分段 LineString feature 列表, 设站 Point feature 列表)。
 
     conn_target_index＝主流程预建的全局索引 {lid: {"pts": 画板加密坐标列表,
@@ -319,6 +437,10 @@ def flatten_line(line, ap, tps, group_color, stop_group, conn_target_index=None)
         props = dict(base_props)
         props["segIndex"] = i
         props["segStatus"] = status
+        # 共线段偏移（2026-11-27 方案 A）：仅共线范围内的小段写 sharedOffset 键
+        #（非共线段无该键——查看器 line-offset 表达式 coalesce 回 0，行为不变）
+        if shared_offsets and i in shared_offsets:
+            props["sharedOffset"] = shared_offsets[i]
         # 分段名：空字符串/缺失省略该键（查看器信息面板按需读取）
         if sec and sec.get("name"):
             props["sectionName"] = sec["name"]
@@ -487,10 +609,19 @@ def main():
             or "#555555",
         }
 
+    # 共线段偏移索引（2026-11-27 方案 A）：每线 {段索引: sharedOffset}。需全线 arc
+    # 已解析（peer 侧几何方向修正比对点积用），故在两遍循环之间统一预计算。
+    loaded_by_id = {line.get("id"): line for _, line in loaded}
+    shared_offsets_by_id = {
+        lid: compute_shared_offsets(line, arc_by_id[lid], arc_by_id, loaded_by_id)
+        for lid, line in loaded_by_id.items()
+    }
+
     for lf, line in loaded:
         arc = arc_by_id[line.get("id")]
         lf_, sf_ = flatten_line(line, arc, tps, group_color, stop_group,
-                                conn_target_index)
+                                conn_target_index,
+                                shared_offsets_by_id.get(line.get("id")))
         line_feats += lf_
         stop_feats += sf_
         emitted_order.append(line.get("id"))
