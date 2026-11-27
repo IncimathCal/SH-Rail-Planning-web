@@ -183,6 +183,16 @@
 // 不填充，低调灰常量 1px；纯地理参照，不参与分期/聚焦/调光。坐标逐点过 S.dispCoord
 //（renderProvincesFC）——高德底图态下界线与线路数据同一显示变换通道，与瓦片同基准；
 // OSM／无底图态 dispCoord＝恒等即 WGS84 直出。
+// 2026-11-27 区级行政区划界线底图（用户需求「上海境内的区界（16 区）常驻，样式与省界
+// 一样（细灰线）但用虚线，只要上海境内」）：与省界层同色同宽（#a8a8a8 / 1px）＋
+// line-dasharray [4,3]（虚线；无 zoom 限制，与省界层同为常驻全档）。数据 basemap/
+// districts-wgs84.json 由 tools/districts_basemap.py 生成——OSM 区级 relation（admin_level
+// 实测＝6）经共边提取净化（区际共边＋区外缘，剔省界重叠与 OSM 假环；崇明以 18 乡镇联合
+// 替代假包络；外缘＝三岛岸线等省界大包络不含的线——上海市界 relation 是含三岛水域的
+// 大包络，区界外缘与省界并不完全重叠，此为本数据实际形态），来源/口径/许可见脚本头注。
+// 与省界层同模式加载（loadDistricts 异步读仓库静态件，失败仅 console.warn 不阻断），
+// renderDistrictsFC 过 S.dispCoord（高德态同通道重投影）；层序＝provinces 之上（虚线
+// 空隙处若与省界叠合露出下方实线，视觉仍为实线省界）。
 // 2026-11-23 遮罩分档（用户裁定「对于carto无字来讲，这个遮罩太厚了。仅carto正常情况改为35，
 // 高亮情况下改为30」）：底图白色遮罩按底图态分档——carto 态常态 35%/聚焦 30%（Positron 本就浅，
 // 60% 下几乎只剩水系轮廓），OSM／高德态维持 60%/40% 不变（用户点名仅 carto，字面执行）；
@@ -256,6 +266,9 @@
     // 2026-11-23 省级界线底图：仓库静态件原始 FC（WGS84 权威拷贝，loadProvinces 读
     // basemap/provinces-wgs84.json 回填；渲染特征经 renderProvincesFC 过 S.dispCoord）
     provincesFC: null,
+    // 2026-11-27 区级行政区划界线底图：同省界模式（loadDistricts 读 basemap/
+    // districts-wgs84.json 回填；renderDistrictsFC 过 S.dispCoord）
+    districtsFC: null,
     // 2026-11-22 用户需求 3：联络线渐变高亮——fadeSet＝当前聚焦的绑定联络线 lineId 集
     //（基础层跳 feature，防半透明底线垫在渐变尾端底下透出）；fadeConnPlan＝
     // connectorFadePlan 缓存（rebuildConnLayers 复用，避免重复几何判定）；
@@ -819,6 +832,10 @@
           // basemap/provinces-wgs84.json 后 setData（fetch 先于样式就绪时由 map 'load'
           // 处理器补应用，见 applyProvincesToMap）。
           provinces: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+          // 区级行政区划界线底图 source（2026-11-27）：同省界模式（loadDistricts 异步读
+          // basemap/districts-wgs84.json 后 setData；fetch 先于样式就绪时由 map 'load'
+          // 处理器补应用，见 applyDistrictsToMap）。
+          districts: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
           // 白罩高亮 source（2026-11-22 用户需求 3）：focus-veil＝全世界矩形 Polygon
           //（数据常量——任何平移不出界；层动态建删，非聚焦态不建）；focus-copy＝聚焦
           // 重画层 source（初始空 FC，veil＋聚焦时填聚焦组成员特征）。层均不进初始 layers。
@@ -842,6 +859,16 @@
             id: 'provinces', type: 'line', source: 'provinces',
             layout: { 'line-join': 'round' },
             paint: { 'line-color': '#a8a8a8', 'line-width': 1 },
+          },
+          // 区级行政区划界线层（2026-11-27）：省界层之上（虚线空隙叠合省界处露实线，视觉
+          // 仍为实线省界）、线路之下。同色同宽、仅加 line-dasharray [4,3]（4px 实/3px 空，
+          // 1px 线宽下比预控通道 [2,2] 略疏——过密在 1px 下退化成点线）；色宽纹全常量，
+          // 不搞数据驱动×zoom 复合（血泪教训同省界层注）。无 minzoom/maxzoom＝与省界层
+          // 同为常驻全档。
+          {
+            id: 'districts', type: 'line', source: 'districts',
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': '#a8a8a8', 'line-width': 1, 'line-dasharray': [4, 3] },
           },
           ...LINE_LAYER_IDS.map(lineLayerDef),
           corridorLineLayerDef('lines-dash', 'lines'),   // 预控通道虚线（同 source 紧挨实线层——药丸之下罩下区，2026-11-23）
@@ -902,6 +929,8 @@
       // 省界底图：fetch 先于样式就绪完成时由此补 setData（applyProvincesToMap 幂等，
       // S.provincesFC 未回填时是空 FC 重设，无副作用）
       applyProvincesToMap();
+      // 区界底图同理（applyDistrictsToMap 幂等，S.districtsFC 未回填时是空 FC 重设）
+      applyDistrictsToMap();
       // 常驻 blend 层首次建立（联络线双端渐变不依赖聚焦——两条 pending 路径各自
       // 已调过 rebuildConnLayers，此处幂等重跑一次兜底，全删全建无副作用）
       rebuildConnLayers();
@@ -958,6 +987,47 @@
     }).catch((e) => {
       // 装饰性底图缺了不阻断启动（线网本体照常）；显式告警（MapLibre 运行时错误不上控制台）
       console.warn('提示：省界底图加载失败（不影响线网显示）：' + (e && e.message ? e.message : e));
+    });
+  }
+
+  // ---------- 区级行政区划界线底图（常驻虚线灰线层，2026-11-27 用户需求） ----------
+  // 与省界底图完全同模式（数据/加载/显示变换通道三同）：仓库静态件 basemap/districts-wgs84.json
+  //（WGS84）——tools/districts_basemap.py 生成（OSM 区级 relation 共边提取净化＋60m DP 简化；
+  // 崇明以 18 乡镇联合替代假包络、异地假环按上海包络 bbox 滤除、与省界重叠段已剔——上海市界
+  // relation 是含三岛水域的大包络，区界「外缘」（三岛岸线/宝山北缘水界/海岸线）与省界并不
+  // 重叠故保留；来源与许可口径见该脚本头注）。层序＝provinces 之上、线路之下；同色同宽
+  // ＋ dasharray [4,3]；纯地理参照，不参与分期/聚焦/调光。坐标逐点过 S.dispCoord——高德
+  // 底图态下与线路数据同一显示变换通道；OSM／CARTO／无底图态恒等即 WGS84 直出。
+  function renderDistrictsFC() {
+    const fc = S.districtsFC;
+    if (!fc || !Array.isArray(fc.features)) return { type: 'FeatureCollection', features: [] };
+    const dc = S.dispCoord;
+    const mapC = (c) => (Array.isArray(c[0]) ? c.map(mapC) : dc(c[0], c[1]));
+    return {
+      type: 'FeatureCollection',
+      features: fc.features.map((f) => ({
+        type: 'Feature',
+        properties: f.properties || {},
+        geometry: { type: f.geometry.type, coordinates: mapC(f.geometry.coordinates) },
+      })),
+    };
+  }
+  // setData 补应用：与省界同双路（fetch 回填＋底图切换重投影），样式未就绪时直接返回——
+  // map 'load' 处理器会再调一次兜底（同 applyProvincesToMap 的补应用模式）。
+  function applyDistrictsToMap() {
+    if (!S.map || !(S.styleReady || S.map.isStyleLoaded())) return;
+    if (S.map.getSource('districts')) S.map.getSource('districts').setData(renderDistrictsFC());
+  }
+  function loadDistricts() {
+    fetchJSON('basemap/districts-wgs84.json').then((fc) => {
+      if (!fc || fc.type !== 'FeatureCollection' || !Array.isArray(fc.features)) {
+        throw new Error('结构不符（须为 FeatureCollection）');
+      }
+      S.districtsFC = fc;
+      applyDistrictsToMap();
+    }).catch((e) => {
+      // 装饰性底图缺了不阻断启动（线网本体照常）；显式告警（MapLibre 运行时错误不上控制台）
+      console.warn('提示：区界底图加载失败（不影响线网显示）：' + (e && e.message ? e.message : e));
     });
   }
 
@@ -1207,6 +1277,7 @@
     if (S.map.getSource('stops')) S.map.getSource('stops').setData(renderStopsFC());
     if (S.map.getSource('pills')) S.map.getSource('pills').setData(renderPillsFC());
     applyProvincesToMap();   // 省界与线路数据同一显示变换通道：gaode 态下坐标随 dispCoord 重投影
+    applyDistrictsToMap();   // 区界同通道重投影（2026-11-27）
     rebuildConnLayers();   // 渐变/重画特征坐标必须同帧过 S.dispCoord（2026-11-22 用户需求 3）
     scheduleLabels();
   }
@@ -2974,6 +3045,7 @@
 
     buildMap();
     loadProvinces();   // 省界底图（仓库静态件，异步回填，不阻塞线网启动）
+    loadDistricts();   // 区界底图（2026-11-27，同省界模式，异步回填不阻塞）
     buildLineList();
     wireUI();
     hideCenter();

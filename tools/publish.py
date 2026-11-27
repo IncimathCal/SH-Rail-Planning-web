@@ -96,7 +96,7 @@ def main():
     for js in sorted(TOOLS.parent.glob("src/viewer*.js")):
         cp(js.relative_to(ROOT).as_posix())
     cp("assets/vendor")
-    cp("basemap")   # 省级界线底图静态件（查看器运行时按相对路径只读此仓库内文件）
+    cp("basemap")   # 界线底图静态件整目录（省界 provinces-wgs84.json＋区界 districts-wgs84.json；查看器运行时按相对路径只读此仓库内文件）
     cp("assets/fonts")   # UI 字体子集（2026-11-23 浅色改版随 @font-face 进发布）
     # 新 UI 素材（2026-11-26）：logo.svg＝favicon＋初始页 logo＋右上角 logo 三处引用；
     # 两张二维码卡（公众号纯图片、B 站链接新窗口打开）
