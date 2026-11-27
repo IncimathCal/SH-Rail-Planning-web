@@ -10,7 +10,16 @@
 // 不受动态层重建影响——per-layer 委托版真机单击无反应，弃），行为与列表点击完全同款
 //（setFocus＋fitBounds＋面板线路页，来源恒 'list'）；分期态一律无效；联络线/他省线无
 // 操作；轻提示浮卡整套删除（DOM/rAF 时钟/防抖/CSS）；cursor 悬停本地线身变 pointer
-//（mousemove＋rAF 合帧，变化才写）；③7869eb1 随轻提示顺带修的两独立 bug 的等效防泄漏
+//（mousemove＋rAF 合帧，变化才写）。
+// 2026-11-27 点击车站（用户裁定，推翻旧「点车站不触发面板」）：两入口（搜索结果点站＋
+// 地图单击站圈/药丸，站圈优先于线身）一行为——flyTo 站坐标 zoom13＋波纹、白罩＋罩上
+// 重画经过该站的全部自然线路（多线高亮内核＝veilFocusSkipSet/renderFocusCopyFC/
+// updateFadeSet/updateLabels 泛化为集合；联络线只亮不列名＝conn-fade 渐变参与高亮）、
+// 面板车站页（站名＋一行一自然线路＋一站多名逐行标注该线叫法）。同日修正裁定：车站页
+// 线路行可点（高亮该线＋跳线路页，来源 'station'、逐级返回链）；他省线参与（进高亮集＋
+// 列表行，渲染走聚焦态他省既有口径）；联络线守「技术线路名称不得出现在任何地方」钉死
+// 规则不列名。分期态点车站＝解除分期进车站高亮；返回按进入来源回视图（search/line/
+// list）并取消高亮。③7869eb1 随轻提示顺带修的两独立 bug 的等效防泄漏
 // 承载：不再注册任何 per-layer 委托监听（监听累积从结构上消灭——全局 click/mousemove/
 // mouseout 各恰一次）；不引入 setTimeout 链（hover 查询走 rAF 合帧，同 scheduleLabels）。
 // 相对实装前查看器：地图画法/高亮语义/调光/白罩分档/分期语义（含 2026-11-25 他省纠正）
@@ -178,6 +187,11 @@
     phases: new Set(['existing', 'approved', 'future']), // 三档分期多选，初始全选＝总览不启用分期
     phaseActive: false,
     focus: null,                  // 聚焦线路 lineId（null＝未聚焦；双击左栏行切换、Esc 退出）
+    // 2026-11-27 点击车站：车站页上下文（V.stationFocusOf 产物）。存在≠激活——激活渲染
+    //（多线白罩高亮）仅在 S.focus==null 时（车站页↔线路页链中 S.station 保留供返回、
+    // 高亮让位给线路聚焦）。S.ui.stationFrom＝进入来源（search/line/list）、
+    // stationResumeFocus＝进入前的聚焦线（from='line' 返回时恢复、不跳相机）。
+    station: null,
     namesOn: true,                // 全局站名开关（false＝一切站名不显示，优先级最高）
     dimmed: new Set(),            // 调光线集（computeDimmedSet 按 phase/focus 叠加算出）
     dimPending: false,            // 样式未就绪时切分期/聚焦的补应用标记（目标态恒存 S.phase/S.focus）
@@ -219,7 +233,9 @@
       tab: '市区线',               // 主界面当前选项卡（市区线/市域线/预控通道；他省与联络线不进列表）
       searching: false,           // 搜索态：结果占据整个面板主体（顶条与署名行保留）
       linePageId: null,           // 线路页当前线路（主线 id；setFocus 同源）
-      linePageFrom: 'list',       // 二轮②：线路页进入来源（'list'|'search'）——搜索来源返回保留词与结果
+      linePageFrom: 'list',       // 线路页进入来源（'list'|'search'|'station'）——搜索来源返回保留词与结果；车站来源返回回车站页（2026-11-27 逐级返回链）
+      stationFrom: 'list',        // 车站页进入来源（'list'|'search'|'line'）
+      stationResumeFocus: null,   // 进车站页前的聚焦线（from='line' 返回时恢复，不跳相机）
     },
     phaseCycle: 'all',            // 「显示线路」循环档：all→existing→approved→future→all（映射 S.phases/S.phaseActive）
   };
@@ -327,7 +343,11 @@
   //      渐隐示意出省，2026-11-22 用户改版）；
   //   ④ 聚焦时的聚焦组成员——focus-copy 重画层接管（画在白罩之上，维持原色不被罩
   //      压白——白罩定案后聚焦高亮唯一形态）。
+  // 2026-11-27 点击车站：高亮成员集泛化——车站态（S.station 激活）＝车站各自然线路的
+  // 组成员并集（stationFocusOf.memberIds），线路态照旧聚焦组成员。调用方（renderLinesFC
+  // 的 veilSkip / memberMatchExpr / renderFocusCopyFC / 标签常显）一律经此取集。
   function veilFocusSkipSet() {
+    if (S.station != null && S.focus == null) return new Set(S.station.memberIds || []);
     if (S.focus == null) return null;
     const grp = S.lineGroups.ofLine.get(S.focus);
     return new Set(grp ? grp.members : [S.focus]);
@@ -616,10 +636,10 @@
       },
     };
   }
-  // 站圈/药丸层交互（demo 新 UI 裁定）：点车站不触发任何面板、hover 不出提示——全部交互
-  // 撤除（原 bindPinLayerInteraction/openStopPanel/showStopTip 退役；不可点即不暗示可点，
-  // 不设 pointer 光标）。函数保留空实现占位，rebuildConnLayers 的旧调用点防御直通。
-  function bindPinLayerInteraction(id) { /* demo：无交互 */ }
+  // 站圈/药丸层交互（2026-11-27 改版）：点车站＝完整车站行为（flyTo＋多线高亮＋面板
+  // 车站页）——入口收在全局 onMapClick（站圈优先于线身，见 stationPinOf）；本函数保留
+  // 空实现占位（rebuildConnLayers 的旧调用点防御直通，per-layer 委托已全部退役）。
+  function bindPinLayerInteraction(id) { /* 全局 click 查询式接管，见 onMapClick */ }
 
   // ---------- 地图单击线路＝聚焦高亮（2026-11-27 用户裁定，取代 2026-11-26 轻提示） ----------
   // 单击本地自然线身＝与列表点击完全同款：setFocus（白罩＋罩上重画＋相机 fitBounds 带
@@ -644,13 +664,14 @@
   // 的结构等效保留：不再向 map 注册任何 per-layer 委托监听（监听累积无从发生——全局
   // click/mousemove/mouseout 各恰一次，不随层重建增减）；不引入 setTimeout 链（hover
   // 查询走 rAF 合帧，同 scheduleLabels 模式，隐藏页 rAF 停摆行为与页面一致）。
-  function clickableMainAt(point) {
+  function renderedFeaturesAt(point) {
     if (!S.map || !point) return null;
-    let feats;
     try {
-      feats = S.map.queryRenderedFeatures(point);   // 全层查询后按线身层过滤（见上注）
+      return S.map.queryRenderedFeatures(point);   // 全层查询后按层过滤（见上注）
     } catch (e) { return null; }
-    for (const f of feats) {
+  }
+  function clickableMainOf(feats) {
+    for (const f of Array.isArray(feats) ? feats : []) {
       const layerId = f && f.layer ? f.layer.id : '';
       if (!V.isLineHitLayerId(layerId)) continue;
       const line = S.linesMap.get(String((f.properties || {}).lineId || ''));
@@ -659,9 +680,33 @@
     }
     return null;
   }
+  function clickableMainAt(point) { return clickableMainOf(renderedFeaturesAt(point)); }
+  // ---------- 地图单击车站（2026-11-27 用户裁定：点车站＝flyTo＋多线高亮＋面板车站页） ----------
+  // 站圈/药丸符号命中（V.isStopHitLayerId）：站圈优先于线身（用户裁定「点击点同时命中
+  // 站圈与线身时站圈优先」——显式先扫站圈层再扫线身层）。可点判定＝stationLinesOf 非空
+  //（纯联络线站无自然线路→无操作；他省站可点——2026-11-27 修正裁定他省线参与）。
+  // 分期态点车站同样有效（点击后解除分期进车站高亮——与列表点线路解除分期语义一致，
+  // 保守口径报告备查）；splash 态不触发（初始页流程完整性，面板无来源视图可回）。
+  function stationPinOf(feats) {
+    for (const f of Array.isArray(feats) ? feats : []) {
+      const layerId = f && f.layer ? f.layer.id : '';
+      if (!V.isStopHitLayerId(layerId)) continue;
+      const key = String((f.properties || {}).key || '');
+      const pin = S.pinByKey.get(key);
+      if (!pin) continue;
+      if (!V.stationLinesOf(pin, S.linesMap, S.lineGroups, S.groupTree).length) continue;
+      return pin;
+    }
+    return null;
+  }
   function onMapClick(e) {
-    if (S.phaseActive) return;               // 分期态：单击一律无效（用户明令）
-    const main = clickableMainAt(e && e.point);
+    const feats = renderedFeaturesAt(e && e.point);
+    if (S.ui.view !== 'splash') {
+      const pin = stationPinOf(feats);
+      if (pin) { enterStationByPin(pin); return; }   // 站圈优先：命中即进车站页
+    }
+    if (S.phaseActive) return;               // 分期态：点线路一律无效（用户明令；点车站已在前面上车）
+    const main = clickableMainOf(feats);
     if (main == null) return;
     setFocus(main);                          // 与列表点击同款（内含 fitBounds 相机跳转）
     openLinePage(main, 'list');              // 来源＝列表：返回回线路列表，不视为搜索来源
@@ -674,7 +719,15 @@
   function updateHoverCursor() {
     const map = S.map;
     if (!map) return;
-    const on = !S.phaseActive && hoverPoint != null && clickableMainAt(hoverPoint) != null;
+    let on = false;
+    if (hoverPoint != null && S.ui.view !== 'splash') {
+      const feats = renderedFeaturesAt(hoverPoint);
+      if (feats) {
+        // 站圈可点即 pointer（分期态车站仍可点）；线身沿用非分期态判定
+        if (stationPinOf(feats)) on = true;
+        else on = !S.phaseActive && clickableMainOf(feats) != null;
+      }
+    }
     if (on === hoverPointerOn) return;   // 态变化才写 cursor（不逐帧 setStyle）
     hoverPointerOn = on;
     map.getCanvas().style.cursor = on ? 'pointer' : '';
@@ -890,9 +943,12 @@
   }
   // 遮罩层未建（底图从未开过）防御跳过——样式未就绪期由 dimPending/basemapPending 补应用
   // 机制兜底（load 后两路径都会重进 applyDimState/applyBasemapToMap）。
+  // 2026-11-27：聚焦/车站高亮任一激活＝调光场合激活位（白罩显示、底图遮罩换薄档、
+  // computeDimmedSet 他省恒调光）——集中此一判，勿散落各处
+  function focusOrStation() { return S.focus != null || S.station != null; }
   function syncBasemapVeil() {
     if (!S.map || !S.map.getLayer('basemap-veil')) return;
-    S.map.setPaintProperty('basemap-veil', 'fill-opacity', veilOpacityFor(S.focus != null || S.phaseActive));
+    S.map.setPaintProperty('basemap-veil', 'fill-opacity', veilOpacityFor(focusOrStation() || S.phaseActive));
   }
   // demo 新 UI：署名移进左侧面板最底部一行（#attrRow）＋收起态窄条竖排小字（#panelTabAttr）；
   // 底图三态循环（高德→无字高德→OSM）按钮文案同步。carto 文案保留在 BASEMAP_ATTR_ZH 备用。
@@ -1015,8 +1071,13 @@
     // 2026-11-22 主支线合并：调光组级（lineGroups 传入——期次/仅显示级以主线为准；
     // S.focus 恒为主线 id，见 toggleFocus 归一）。
     // 2026-11-22 白罩定案：聚焦不贡献 dim（focus 仅作 displayOnly 激活位），无 hlMode。
+    // 2026-11-27 车站高亮：computeDimmedSet 的 focus 位只用作「调光场合激活」判定（他省
+    // 恒调光），不看具体 id——车站态传任一高亮主线 id 即可（lines 至少一条，空集不进车站态）。
     S.dimmed = V.computeDimmedSet(S.linesMap,
-      { phase: S.phase, focus: S.focus, lineGroups: S.lineGroups });
+      { phase: S.phase,
+        focus: S.focus != null ? S.focus
+          : (S.station != null && S.station.lines && S.station.lines.length ? S.station.lines[0] : null),
+        lineGroups: S.lineGroups });
     if (S.phaseActive) {
       // 分期态他省线恒入调光集（2026-11-25 纠正裁定：照常显示、罩上恒调光 0.5——与聚焦态
       // 他省线同口径）；本地线不进 dim（未选段由白罩压暗区分，不重复调光）
@@ -1051,8 +1112,29 @@
   // 层上点不到就算了，可接受，与既有裁定一致）。
   // fadeSet 重算（纯数据，不碰地图）：必须在任何 renderLinesFC 之前执行——基础线层
   // 跳 feature 依赖它。plan 缓存进 S.fadeConnPlan 供 rebuildConnLayers 复用。
+  // 2026-11-27 点击车站：fade 计划泛化——车站态对每条高亮自然线路各跑 connectorFadePlan、
+  // 按 lineId 去重合并（先到先得：同一条联络线两端各接一条高亮线时，取首个命中的高亮线
+  // 定渐变方向与基色——保守假设，报告备查）；每条目自带 color＝该高亮线的色（单线路径
+  // 同补，渲染层统一吃 it.color）。联络线「只亮不列名」（修正裁定）：不进车站页、地图上
+  // 以 conn-fade 渐变参与高亮。
   function updateFadeSet() {
-    const plan = S.focus != null ? V.connectorFadePlan(S.linesMap, S.focus) : [];
+    const plan = [];
+    if (S.station != null && S.focus == null) {
+      const seen = new Set();
+      for (const mainId of S.station.lines || []) {
+        const color = (S.linesMap.get(mainId) || {}).color;
+        for (const it of V.connectorFadePlan(S.linesMap, mainId)) {
+          if (seen.has(it.lineId)) continue;
+          seen.add(it.lineId);
+          plan.push({ lineId: it.lineId, attachEnd: it.attachEnd, color });
+        }
+      }
+    } else if (S.focus != null) {
+      const color = (S.linesMap.get(S.focus) || {}).color;
+      for (const it of V.connectorFadePlan(S.linesMap, S.focus)) {
+        plan.push({ lineId: it.lineId, attachEnd: it.attachEnd, color });
+      }
+    }
     S.fadeConnPlan = plan;
     S.fadeSet = new Set(plan.map((it) => it.lineId));
   }
@@ -1173,7 +1255,7 @@
   function syncFocusVeil() {
     if (!S.map || !S.map.getLayer('focus-veil')) return;
     S.map.setPaintProperty('focus-veil', 'fill-opacity',
-      (S.focus != null || S.phaseActive) ? FOCUS_VEIL_OPACITY : 0);
+      (focusOrStation() || S.phaseActive) ? FOCUS_VEIL_OPACITY : 0);
   }
   // 聚焦重画层：layout/paint 与基础线层一致、唯 line-opacity 恒 1——不挂 dim case
   //（2026-11-22 定案轮语义对齐裁定：聚焦线恒原色，对齐旧「聚焦豁免一切调光」语义；
@@ -1234,8 +1316,9 @@
   // 带 dash 位（2026-11-23：预控通道被聚焦时罩上重画保持虚线身份，实/虚两层收——
   // focusCopyLayerDef/focusCopyDashLayerDef）。坐标过 S.dispCoord（底图切换 gaode 同帧）。
   function renderFocusCopyFC() {
-    const grp = S.focus != null ? S.lineGroups.ofLine.get(S.focus) : null;
-    const members = S.phaseActive ? [...S.linesMap.keys()] : (grp ? grp.members : [S.focus]);
+    const members = S.phaseActive ? [...S.linesMap.keys()]
+      : (S.station != null && S.focus == null ? S.station.memberIds
+        : (S.focus != null ? (S.lineGroups.ofLine.get(S.focus) || { members: [S.focus] }).members : []));
     const dc = S.dispCoord;
     const features = [];
     for (const lid of members) {
@@ -1372,9 +1455,10 @@
       map.addLayer(def);
       S.connLayerIds.push(def.id);
     };
-    // 聚焦参与判定表达式（聚焦时才非 null）：罩下五层追加 ['!', expr]、罩上复制层用
-    // expr 本体（构造与合法性注释见 memberMatchExpr）
-    const memberExpr = S.focus != null ? memberMatchExpr([...veilFocusSkipSet()]) : null;
+    // 聚焦参与判定表达式（线路聚焦∨车站高亮时才非 null）：罩下五层追加 ['!', expr]、
+    // 罩上复制层用 expr 本体（构造与合法性注释见 memberMatchExpr）
+    const focusSkip = veilFocusSkipSet();
+    const memberExpr = focusSkip != null ? memberMatchExpr([...focusSkip]) : null;
     // 分期态罩上符号收「期次匹配站 ∨ 他省单元」（他省站上罩不被白罩压暗、phaseMatch 恒 0
     // 不亮——2026-11-25 纠正裁定）；罩下五层对称排除两者，防双层叠画
     const phaseExpr = S.phaseActive ? ['==', ['get', 'phaseMatch'], 1] : null;
@@ -1418,8 +1502,9 @@
         addLow(baseDef);
       }
     }
-    // ② 聚焦重画层（仅聚焦——白罩定案后唯一高亮形态；白罩本身已是常驻层，见 syncFocusVeil）
-    if (S.focus != null || S.phaseActive) {
+    // ② 聚焦重画层（线路聚焦∨车站高亮∨分期——白罩定案后唯一高亮形态；白罩本身已是常驻层，
+    //    见 syncFocusVeil）
+    if (S.focus != null || S.station != null || S.phaseActive) {
       const copySrc = map.getSource('focus-copy');
       if (copySrc) copySrc.setData(renderFocusCopyFC());
       addTop(focusCopyLayerDef());
@@ -1429,6 +1514,7 @@
       if (S.phaseActive) addTop(displayOnlyLineLayerDef());
     }
     // ③ fade 形态联络线层（聚焦绑定：聚焦线色→透明；罩上＝渐变高亮不被罩压白；非聚焦无此层）
+    //    2026-11-27 车站多线：基色逐条取 it.color（updateFadeSet 按「该联络线命中的高亮线」着色）
     const focusColor = (S.linesMap.get(S.focus) || {}).color;
     for (const it of S.fadeConnPlan || []) {
       const line = S.linesMap.get(it.lineId);
@@ -1440,7 +1526,7 @@
         geometry: { type: 'LineString', coordinates: coords },
         properties: { lineId: line.lineId, dim: 0 },   // 高亮态不挂 dim
       });
-      addTop(connFadeLayerDef('conn-fade-' + line.lineId, line.lineId, focusColor));
+      addTop(connFadeLayerDef('conn-fade-' + line.lineId, line.lineId, it.color || focusColor));
     }
     // ④ arrow 渐隐层（出省端末段 1km；常驻不依赖聚焦）：**该线为聚焦组成员时**才加罩上
     //    （渐隐段是聚焦线的一部分，不被罩压白；2026-11-22 修复：原「只要存在聚焦就上罩」
@@ -1451,7 +1537,7 @@
     const arrowFocusIds = new Set(
       S.focus != null
         ? (S.lineGroups.ofLine.get(S.focus) || { members: [S.focus] }).members.map(String)
-        : []);
+        : (S.station != null && S.focus == null ? (S.station.memberIds || []).map(String) : []));
     for (const it of S.arrowPlan || []) {
       const line = S.linesMap.get(it.lineId);
       if (!line) continue;
@@ -1679,20 +1765,24 @@
     }
   }
 
-  // ---------- 视图切换（初始界面 / 主界面 / 线路页） ----------
+  // ---------- 视图切换（初始界面 / 主界面 / 线路页 / 车站页） ----------
   function showView(view) {
     S.ui.view = view;
     $('viewSplash').hidden = view !== 'splash';
     $('viewMain').hidden = view !== 'main';
     $('viewLine').hidden = view !== 'line';
+    $('viewStation').hidden = view !== 'station';
   }
 
   // ---------- 线路页（demo 新 UI：lineinfo 或「无信息」；最下方 KML 下载） ----------
   // 二轮②：from＝进入来源（'list' 列表 / 'search' 搜索结果）——搜索来源返回时保留搜索词
   // 与结果（返回按钮回到 main 视图后搜索态 DOM 原样即恢复），列表来源维持回列表。
+  // 2026-11-27 增 'station'：从车站页线路行进入——返回回车站页（逐级返回链）；非车站来源
+  // 进入时清 S.station（跳出车站链，防聚焦清除后车站高亮残留）。
   function openLinePage(lineId, from) {
     S.ui.linePageId = lineId;
-    S.ui.linePageFrom = from === 'search' ? 'search' : 'list';
+    S.ui.linePageFrom = from === 'search' ? 'search' : (from === 'station' ? 'station' : 'list');
+    if (from !== 'station') S.station = null;
     showView('line');
     const body = $('lineBody');
     body.textContent = '';
@@ -1722,6 +1812,100 @@
       tip.textContent = '无信息';
       body.appendChild(tip);
     }
+  }
+
+  // ---------- 车站页（2026-11-27 点击车站：flyTo＋多线高亮＋面板车站页；两入口一行为） ----------
+  // 行为三件套：①相机 flyTo 站坐标 zoom13（沿用搜索定位，含相机让位 offset）＋波纹叠加；
+  // ②多线高亮＝白罩＋罩上重画经过该站的全部自然线路（veilFocusSkipSet/renderFocusCopyFC
+  // 泛化为集合，相机让位 padding 沿用；高亮内核取景 bbox＝focusBboxOfSet〔core 纯函数，
+  // 含联络线延伸段并入，当前相机走 flyTo 到站、bbox 为内核能力备查〕）；③面板车站页
+  //（站名＋一行一自然线路；一站多名时每行附该线叫法；行可点——2026-11-27 修正裁定：
+  // 点行＝高亮该线＋面板跳线路页，来源 'station'、逐级返回）。
+  // 他省线参与（修正裁定）：进高亮集（渲染走聚焦态他省既有口径——罩上显示/恒调光、不进
+  // 期次高亮）＋列表显示行＋行可点。联络线只亮不列名（钉死规则）：不进车站页任何文字，
+  // 地图上按 connects∩高亮成员走 conn-fade 渐变（updateFadeSet 多线版）。
+  // 来源记忆：进入时记面板当时视图（search/line/list）；返回回那个视图、地图高亮同时取消
+  //（from='line' 恢复进入前聚焦线，不跳相机）。已在车站页换点他站不覆盖来源（链条保持）。
+  function enterStationByPin(pin) {
+    const st = V.stationFocusOf(pin, S.linesMap, S.lineGroups, S.groupTree, S.lineOrder);
+    if (!st || !S.map) return false;
+    if (S.ui.view !== 'station') {
+      S.ui.stationFrom = S.ui.view === 'line' ? 'line' : (S.ui.searching ? 'search' : 'list');
+      S.ui.stationResumeFocus = S.focus;   // from='line' 返回时恢复（不跳相机）
+    }
+    S.focus = null;       // 切换为车站高亮（「聚焦某线时点车站：切换为车站高亮」）
+    S.station = st;
+    resetPhaseSelection();   // 分期态点车站＝解除分期（按钮回「全部」，与列表点线路语义一致）
+    syncFocusRows();
+    applyDimState();
+    openStationPage(st);
+    scheduleHover();      // cursor 重判（车站态/分期解除）
+    // 相机：flyTo 站坐标 zoom13＋相机让位一次性 offset（不碰 flyTo 的 padding 选项——
+    // 它写持久 transform.padding 会污染后续 fitBounds 几何，见 cameraPadding 注）＋波纹
+    const pad = cameraPadding();
+    S.map.flyTo({
+      center: S.dispCoord(st.lon, st.lat), zoom: 13, duration: 800,
+      offset: [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2],
+    });
+    playStopFx(st.lon, st.lat);
+    return true;
+  }
+  function openStationPage(st) {
+    showView('station');
+    const body = $('stationBody');
+    body.textContent = '';
+    const head = document.createElement('div');
+    head.className = 'lp-head';
+    const nm = document.createElement('div');
+    nm.className = 'lp-name';
+    nm.textContent = V.stopDisplayName(st.name);
+    head.appendChild(nm);
+    body.appendChild(head);
+    const list = document.createElement('div');
+    list.className = 'st-lines';
+    for (const ln of st.lines) {
+      const item = document.createElement('div');
+      item.className = 'st-line';
+      const sw = document.createElement('span');
+      sw.className = 'line-swatch'; sw.style.background = ln.color;
+      const nameEl = document.createElement('span');
+      nameEl.className = 'st-line-name';
+      nameEl.textContent = ln.name || ln.mainId;
+      item.append(sw, nameEl);
+      // 一站多名（multiName）才逐行标注该线叫法；该线多个叫法（同线多成员站）全列出
+      if (st.multiName && ln.calls.length) {
+        const call = document.createElement('span');
+        call.className = 'st-line-call';
+        call.textContent = '（' + ln.calls.map(V.stopDisplayName).join('、') + '）';
+        item.appendChild(call);
+      }
+      // 行可点（2026-11-27 修正裁定）：高亮该线＋跳线路页（含相机 fitBounds，与列表点击
+      // 同款）；来源 'station'——线路页返回回车站页（逐级返回链）
+      item.addEventListener('click', () => {
+        setFocus(ln.mainId);
+        openLinePage(ln.mainId, 'station');
+      });
+      list.appendChild(item);
+    }
+    body.appendChild(list);
+  }
+  // 车站页返回：按记录的来源回那个视图（地图高亮同时取消）；from='line' 恢复进入前聚焦线
+  //（手动置 S.focus＋applyDimState，不走 setFocus——其 fitFocusLine 会跳相机，违背
+  //「退出/恢复聚焦不动相机」既有精神）
+  function exitStationPage() {
+    const from = S.ui.stationFrom;
+    const resume = S.ui.stationResumeFocus;
+    S.station = null;
+    S.ui.stationResumeFocus = null;
+    if (from === 'line' && resume != null) {
+      S.focus = resume;
+      syncFocusRows();
+      applyDimState();
+      showView('line');
+      return;
+    }
+    applyDimState();   // 取消多线高亮（S.focus 已 null、分期已 all）
+    showView('main');  // search 来源：搜索词与结果 DOM 保留，回 main 即恢复搜索态
   }
 
   // ---------- 信息行渲染（demo：站点面板退役，infoRow 仅供 lineinfo 字段区复用） ----------
@@ -1918,10 +2102,10 @@
     } else {
       const lb = ent.ref;
       if (!lb || !S.map) return;
-      // 跳转＋zoom 13＋短暂 focus 动画（扩散圆环）；不触发任何面板，搜索结果保留。
-      // 2026-11-27 相机让位：offset＝虚拟视口中心相对真实视口中心的像素偏移（一次性，
-      // 车站点落在扣除面板后的可视区正中；不用 flyTo 的 padding 选项——它写持久
-      // transform.padding 会污染后续 fitBounds 几何，见 cameraPadding 注）
+      // 2026-11-27 点击车站改版：完整行为（flyTo zoom13＋波纹＋多线高亮＋面板车站页），
+      // 搜索结果保留（返回回搜索态）。纯联络线站（无自然线路）退旧行为：仅 flyTo＋波纹。
+      const pin = S.pinByKey.get(lb.key);
+      if (pin && enterStationByPin(pin)) return;
       const pad = cameraPadding();
       S.map.flyTo({
         center: S.dispCoord(lb.lon, lb.lat), zoom: 13, duration: 800,
@@ -2073,7 +2257,11 @@
     // 2026-11-22 真机反馈轮——聚焦时非聚焦线站名一律隐藏）。focusMembers＝聚焦组成员
     // 集（主支线合并：支线站的站名也是聚焦线站名，须常显；无组退 [S.focus]）
     let focusMembers = null;
-    if (S.focus != null) {
+    if (S.station != null && S.focus == null) {
+      // 车站高亮：经过该站的全部自然线组成员站名常显（2026-11-27）
+      focusMembers = S.station.memberIds && S.station.memberIds.length ? S.station.memberIds : null;
+    }
+    if (focusMembers == null && S.focus != null) {
       const grp = S.lineGroups.ofLine.get(S.focus);
       focusMembers = grp && Array.isArray(grp.members) && grp.members.length ? grp.members : [S.focus];
     }
@@ -2151,10 +2339,24 @@
       }
       // 二轮⑬：返回初始界面时清除地图聚焦与分期（循环按钮复位「全部」，不恢复旧分期选择）
       clearFocus();
+      S.station = null;   // 车站链防御性收口（btnBackSplash 仅 main 态可见，此时理论已清）
       if (S.phaseCycle !== 'all') resetPhaseSelection();
       showView('splash');
     });
-    $('btnLineBack').addEventListener('click', () => { clearFocus(); showView('main'); });
+    // 线路页返回：'station' 来源回车站页（逐级返回链——列表→车站页→线路页逐级返回；
+    // 车站页上下文 S.station 保留，clearFocus 退出线路聚焦不动相机，高亮回到车站多线）；
+    // 其余来源回 main（搜索来源自动恢复搜索态）
+    $('btnLineBack').addEventListener('click', () => {
+      if (S.ui.linePageFrom === 'station' && S.station != null) {
+        clearFocus();
+        showView('station');
+        return;
+      }
+      clearFocus();
+      showView('main');
+    });
+    // 车站页返回：按记录来源回视图（exitStationPage），地图高亮同时取消
+    $('btnStationBack').addEventListener('click', () => { exitStationPage(); });
     $('btnKml').addEventListener('click', () => {
       if (S.ui.linePageId != null) exportLine(S.ui.linePageId, 'kml');   // 仅 KML，不提供 GeoJSON
     });
@@ -2180,11 +2382,16 @@
     $('panelTab').addEventListener('click', () => setLinePanelCollapsed(false));
     //（二轮⑦：玻璃档位定稿 0.45＋blur20——#glassCtl 对比控件与 data-glass 机制已删，
     //   样式固化在 index.html .glass 规则）
-    // Esc：线路页→返回列表并取消高亮；主界面→退出聚焦（分期不恢复旧选择，停在「全部」）
+    // Esc：车站页→按来源返回（取消高亮）；线路页→'station' 来源回车站页，其余回列表并
+    // 取消高亮；主界面→退出聚焦（分期不恢复旧选择，停在「全部」）
     document.addEventListener('keydown', (ev) => {
       if (ev.key !== 'Escape') return;
       if (ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA')) return;
-      if (S.ui.view === 'line') { clearFocus(); showView('main'); }
+      if (S.ui.view === 'station') { exitStationPage(); }
+      else if (S.ui.view === 'line') {
+        if (S.ui.linePageFrom === 'station' && S.station != null) { clearFocus(); showView('station'); }
+        else { clearFocus(); showView('main'); }
+      }
       else clearFocus();
     });
     wireSearch();

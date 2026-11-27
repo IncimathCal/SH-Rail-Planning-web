@@ -49,6 +49,10 @@
 // { fields, bodyHtml, links }；轻量 md→HTML 白名单标签、一切文本先转义再标记替换、
 // 链接 URL 只放行 http/https/相对路径，见该节注）。同日放宽节绑定＝「线组 id 或线 id」
 //（lineInfoEntryOf 解析：有组线组节优先、查不到落线自身 id——没建组的单线同样能写介绍）。
+// 2026-11-27 增：点击车站内核（isStopHitLayerId 站圈/药丸命中层判定；stationLinesOf/
+// stationFocusOf 站·组→自然线路集合与车站页数据——联络线剔除〔只亮不列名〕、他省线
+// 保留〔修正裁定〕、主支线算一条、lineOrder 排序、一站多名 calls 收集；focusBboxOfSet
+// 多线取景 bbox〔各高亮线组员并集 ∪ 绑定联络线，focusBboxOf 同源口径〕）。
 
 (function (G) {
   'use strict';
@@ -1334,6 +1338,192 @@
     return 'focus';
   }
 
+  // ---------- 地图单击车站（2026-11-27 用户裁定：点车站＝flyTo＋多线高亮＋面板车站页） ----------
+  // 站圈/药丸渲染层 id 名单（基础五层＋罩上复制 -focus 变体）：点车站的命中层（「点击点
+  // 同时命中站圈与线身时站圈优先」——胶水层先扫本名单再扫线身层）。白罩/线身/省界/底图
+  // 不在内（线身层见 LINE_HIT_LAYER_IDS）。
+  const STOP_HIT_LAYER_IDS = ['stops', 'stops-dark', 'stops-big', 'pills-outer', 'pills-inner',
+    'stops-focus', 'stops-dark-focus', 'stops-big-focus', 'pills-outer-focus', 'pills-inner-focus'];
+  function isStopHitLayerId(layerId) {
+    return typeof layerId === 'string' && STOP_HIT_LAYER_IDS.indexOf(layerId) >= 0;
+  }
+  // 车站交互内核（2026-11-27 实装＋同日修正裁定：他省线参与、联络线只亮不列名）。
+  // 成员站口径（统一，一个规则覆盖一切 pin 形态）：pin 带组（kind==='group' 或 groupId
+  // 非空）→ **最外层组**的全部叶站（tree.leafStops(tree.rootOf(gid))——同站组/junction/
+  // 嵌套组/出闸单元（含其直属站与各子组叶站）全覆盖：点组符号与点出闸单元的任何成员圈
+  // 都是「整个换乘单元的线路集合」）；无组单站 → 本站（按 sid 从站表取，arrow 非站除外）。
+  // 自然线路口径：每成员站的本线归一到主线（lineGroups——主支线算一条）；**联络线剔除**
+  //（layer 命中 HIDDEN_LIST_LAYERS 或 connects 非空——「技术线路名称不得出现在任何地方」
+  // 钉死规则，车站页不列名；其地图高亮由渲染层按 connects∩高亮成员另行走 conn-fade 渐变，
+  // 不进本集合）；**他省线保留**（2026-11-27 修正裁定：进高亮集＋车站页列表行，渲染走
+  // 聚焦态他省既有口径——罩上显示/恒调光、不进期次高亮）。孤站（lineId 不在 linesMap）
+  // 按普通线保留（防御：站表与线表不同步时不丢站）。
+  // 排序：lineOrder 自定义序优先、未列入者按 lineId 升序（与 layerGroups 同 tie-break）。
+  function stationMemberStops(pin, tree) {
+    if (!pin) return [];
+    const key = pin.key != null ? String(pin.key) : '';
+    const gid = (pin.groupId != null && pin.groupId !== '') ? String(pin.groupId) : null;
+    const gidFromKey = key.indexOf('g:') === 0 ? key.slice(2) : null;
+    const group = gid || gidFromKey;
+    if (group && tree && typeof tree.group === 'function' && tree.group(group)
+      && typeof tree.leafStops === 'function' && typeof tree.rootOf === 'function') {
+      const leaf = tree.leafStops(tree.rootOf(group) || group);   // 最外层组的全部叶站
+      if (leaf.length) return leaf;
+    }
+    if (gidFromKey) return [];   // 组 key 无 sid 可退（无叶站的组不出图形，防御空集）
+    // 无组单站：从 pin 自身合成（name/lineId 即本站本线——站表不必在场）
+    return [{ sid: key, name: typeof pin.name === 'string' ? pin.name : '',
+      lineId: pin.lineId != null ? String(pin.lineId) : '' }];
+  }
+  // stationLinesOf(pin, linesMap, lineGroups, tree) → 主线 id 数组（lineOrder 序不在本函数——
+  // 排序是面板呈现口径，见 stationFocusOf；本函数返回 linesMap 迭代序的去重主线集，
+  // 供点击判定/hover 等只关心「有没有、有哪几条」的场合）。空数组＝该站无自然线路
+  //（纯联络线站/脏数据）→ 不可点。
+  function stationLinesOf(pin, linesMap, lineGroups, tree) {
+    const lg = lineGroups && lineGroups.ofLine instanceof Map ? lineGroups : null;
+    const lookup = linesMap instanceof Map ? linesMap : null;
+    const mainOf = (lid) => {
+      if (lg) {
+        const m = lg.mainOf.get(lid);
+        if (m != null) return m;
+        const g = lg.ofLine.get(lid);
+        if (g) return g.mainId;
+      }
+      return lid;
+    };
+    const isTechnical = (lid) => {
+      const l = lookup ? lookup.get(lid) : null;
+      if (!l) return false;   // 孤站线不在 linesMap：按普通线保留（防御，不丢站）
+      const conn = Array.isArray(l.connects) ? l.connects : [];
+      return HIDDEN_LIST_LAYERS.indexOf(l.layer) >= 0 || conn.length > 0;
+    };
+    const out = [];
+    const seen = new Set();
+    for (const s of stationMemberStops(pin, tree)) {
+      const lid = s && s.lineId != null ? String(s.lineId) : '';
+      if (!lid || isTechnical(lid)) continue;
+      const mid = String(mainOf(lid));
+      if (!mid || seen.has(mid)) continue;
+      seen.add(mid);
+      out.push(mid);
+    }
+    return out;
+  }
+  // stationFocusOf(pin, linesMap, lineGroups, tree, lineOrder) → null | 车站页上下文：
+  //   { key, name, lon, lat,
+  //     lines: [{ mainId, name, color, members: [成员线 id…], calls: [该线对此站的叫法…] }]
+  //        ——一行一自然线路（含他省线；联络线不出现），name/color 取主线（组名优先），
+  //        calls＝该线组成员站的站名去重（一站多名时面板逐行标注，「全列出」），
+  //     memberIds: [全部高亮线组成员并集]——渲染层 veilSkip/focus-copy/标签常显共用，
+  //     multiName: 全部行的 calls 并集 >1 个不同名（单名站不标注） }
+  // name＝pin.name（组 pin＝首个非空叶站名、单站＝本站名；空名由显示层 stopDisplayName 兜底）；
+  // lon/lat＝pin 坐标（组 pin 已是成员均值）。lineOrder 排序＋tie-break 与 stationLinesOf 注同源。
+  function stationFocusOf(pin, linesMap, lineGroups, tree, lineOrder) {
+    const lg = lineGroups && lineGroups.ofLine instanceof Map ? lineGroups : null;
+    const lookup = linesMap instanceof Map ? linesMap : null;
+    const mainOf = (lid) => {
+      if (lg) {
+        const m = lg.mainOf.get(lid);
+        if (m != null) return m;
+        const g = lg.ofLine.get(lid);
+        if (g) return g.mainId;
+      }
+      return lid;
+    };
+    const isTechnical = (lid) => {
+      const l = lookup ? lookup.get(lid) : null;
+      if (!l) return false;
+      const conn = Array.isArray(l.connects) ? l.connects : [];
+      return HIDDEN_LIST_LAYERS.indexOf(l.layer) >= 0 || conn.length > 0;
+    };
+    const byMain = new Map();   // mainId → { stops: [], lineIds: Set }
+    for (const s of stationMemberStops(pin, tree)) {
+      const lid = s && s.lineId != null ? String(s.lineId) : '';
+      if (!lid || isTechnical(lid)) continue;
+      const mid = String(mainOf(lid));
+      let e = byMain.get(mid);
+      if (!e) { e = { stops: [], lineIds: new Set() }; byMain.set(mid, e); }
+      e.stops.push(s);
+      e.lineIds.add(lid);
+    }
+    if (!byMain.size) return null;
+    const rank = new Map();
+    if (Array.isArray(lineOrder)) {
+      lineOrder.forEach((id, i) => { const k = String(id); if (!rank.has(k)) rank.set(k, i); });
+    }
+    const ids = [...byMain.keys()].sort((a, b) => {
+      const ra = rank.has(a) ? rank.get(a) : Infinity, rb = rank.has(b) ? rank.get(b) : Infinity;
+      return ra !== rb ? ra - rb : (a < b ? -1 : a > b ? 1 : 0);
+    });
+    const lines = ids.map((mid) => {
+      const e = byMain.get(mid);
+      const grp = lg ? lg.ofLine.get(mid) : null;
+      const line = lookup ? lookup.get(mid) : null;
+      const members = grp && Array.isArray(grp.members) && grp.members.length ? grp.members.slice() : [mid];
+      const calls = [];
+      for (const s of e.stops) {
+        if (typeof s.name === 'string' && s.name && calls.indexOf(s.name) < 0) calls.push(s.name);
+      }
+      return {
+        mainId: mid,
+        name: grp ? (grp.name || (line && line.name) || mid) : ((line && line.name) || mid),
+        color: line ? line.color : DEFAULT_LINE_COLOR,
+        members: members.map(String),
+        calls,
+      };
+    });
+    const allNames = new Set();
+    for (const l of lines) for (const c of l.calls) allNames.add(c);
+    const memberIds = [];
+    const seenIds = new Set();
+    for (const l of lines) {
+      for (const x of l.members) {
+        if (!seenIds.has(x)) { seenIds.add(x); memberIds.push(x); }
+      }
+    }
+    return {
+      key: pin.key != null ? String(pin.key) : '',
+      name: typeof pin.name === 'string' ? pin.name : '',
+      lon: num(pin && pin.lon), lat: num(pin && pin.lat),
+      lines, memberIds,
+      multiName: allNames.size > 1,
+    };
+  }
+  // 多线（车站高亮）取景 bbox（2026-11-27）：各高亮线（组员并集）渲染 bbox 联合 ∪ 绑定
+  // 联络线（fadeConnPlan）渲染 bbox——focusBboxOf 的集合版，联络线并入口径完全同源
+  //（病灶①教训见 focusBboxOf 注）。当前相机动作＝flyTo 车站点（任务书行为 1），本函数为
+  // 车站高亮内核的 bbox 能力（后续取景/验证用），单测覆盖。
+  function focusBboxOfSet(dispBbox, lineGroups, focusIds, fadeConnPlan) {
+    const lg = lineGroups && lineGroups.ofLine instanceof Map ? lineGroups : null;
+    const seen = new Set();
+    const ids = [];
+    for (const raw of Array.isArray(focusIds) ? focusIds : []) {
+      const id = raw != null ? String(raw) : '';
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);   // 主线自身（组员循环的去重基准，勿并入其内）
+      const grp = lg ? lg.ofLine.get(id) : null;
+      const members = grp && Array.isArray(grp.members) && grp.members.length ? grp.members : [id];
+      for (const m of members) {
+        const k = String(m);
+        if (!seen.has(k)) { seen.add(k); ids.push(k); }
+      }
+    }
+    const into = (bb, id) => {
+      const b = dispBbox instanceof Map && id != null ? dispBbox.get(id) : null;
+      if (!b) return bb;
+      if (!bb) return [b[0], b[1], b[2], b[3]];
+      return [Math.min(bb[0], b[0]), Math.min(bb[1], b[1]), Math.max(bb[2], b[2]), Math.max(bb[3], b[3])];
+    };
+    let bb = null;
+    for (const id of ids) bb = into(bb, id);
+    for (const it of fadeConnPlan || []) {
+      if (it && it.lineId != null) bb = into(bb, it.lineId);
+    }
+    return bb;
+  }
+
+
   // 调光线集：state＝{ phase: 'none'|'existing'|'approved'|'future', focus: lineId|null,
   //                   lineGroups: buildLineGroups 产物（可选，缺省＝逐线旧行为） }。
   // 2026-11-22 白罩定案（用户确认遮罩 70%、删全部对比开关与旧调光路径）：聚焦不再贡献
@@ -1787,6 +1977,8 @@
     planGroupPillChain, planarOf, lineSummaries, layerGroups, visibleListGroups,
     linePhaseOf, lineLayerRank, lineDashed, computeDimmedSet, nextPhase, normalizePhaseSelection, phaseSelectionActive, phaseStatusSelected, phaseSegments, segmentProgressRanges, stopPhaseOf, connectorFadePlan, focusBboxOf,
     LINE_HIT_LAYER_IDS, LINE_HIT_LAYER_PREFIXES, isLineHitLayerId, lineClickAction,
+    STOP_HIT_LAYER_IDS, isStopHitLayerId,
+    stationMemberStops, stationLinesOf, stationFocusOf, focusBboxOfSet,
     connectorBlendPlan, arrowFadePlan, arrowFadeGradient, ARROW_FADE_M,
     zoomInterp, scaledSize, LINE_WIDTH_PX, DBLCLICK_TOL_PX, lineWidthAt,
     pointToScreenPolylineDist,

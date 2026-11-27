@@ -1758,5 +1758,145 @@ console.log('focusBboxOf:');
   eq(V.focusBboxOf(bb3, lg, 'l11', [{ attachEnd: 0 }]), [121.1, 31.0, 121.5, 31.2], 'fadeConnPlan 脏条目（无 lineId）→ 跳过');
 }
 
+// ---------- 点击车站（2026-11-27：站圈命中层 / 站·组→自然线路集合 / 车站页数据 / 多线 bbox） ----------
+console.log('isStopHitLayerId:');
+// 站圈/药丸层：基础五层＋罩上复制 -focus 变体（点车站命中层，站圈优先于线身）
+for (const id of ['stops', 'stops-dark', 'stops-big', 'pills-outer', 'pills-inner',
+  'stops-focus', 'stops-dark-focus', 'stops-big-focus', 'pills-outer-focus', 'pills-inner-focus']) {
+  ok(V.isStopHitLayerId(id), `站圈层 ${id} 判真`);
+}
+for (const id of ['lines', 'lines-dash', 'lines-displayonly', 'focus-copy', 'focus-copy-dash',
+  'conn-blend-l1', 'conn-fade-l1', 'arrow-fade-l1', 'provinces', 'focus-veil', 'basemap-veil', 'bg', '']) {
+  ok(!V.isStopHitLayerId(id), `非站圈层 ${id || '(空)'} 判假`);
+}
+ok(!V.isStopHitLayerId(undefined) && !V.isStopHitLayerId(null) && !V.isStopHitLayerId(123), '非字符串输入判假（防御）');
+
+console.log('stationLinesOf / stationFocusOf:');
+{
+  // 夹具：l1＋l1b 建线组（主支线算一条）；lc 带 connects、lc2 类别名（联络线两种形态）；
+  // lp 他省线；g1 同站组（3 自然线＋1 联络线成员→联络线剔除）；g4 出闸组（直属站×2＋
+  // 同站子组 g5）；g6 同站组（本地＋他省→他省参与）；s9 单线站；s10 纯联络线站
+  const linesFC = fc(
+    lineFeat('l1', 0, 'existing', [[121.00, 31.00], [121.10, 31.00]], { role: 'main', groupId: 'lg1' }),
+    lineFeat('l1b', 0, 'existing', [[121.05, 31.00], [121.06, 31.05]], { role: 'branch', groupId: 'lg1' }),
+    lineFeat('l2', 0, 'existing', [[121.20, 31.10], [121.11, 31.01]]),
+    lineFeat('l3', 0, 'future', [[121.30, 31.20], [121.12, 31.02]]),
+    lineFeat('l4', 0, 'future', [[121.40, 31.00], [121.15, 31.05]]),
+    lineFeat('l5', 0, 'future', [[121.50, 31.30], [121.16, 31.06]]),
+    lineFeat('l6', 0, 'future', [[121.60, 31.40], [121.16, 31.06]]),
+    lineFeat('l7', 0, 'future', [[121.70, 31.50], [121.17, 31.07]]),
+    lineFeat('lp', 0, 'future', [[121.80, 31.60], [121.18, 31.08]], { layer: '他省' }),
+    lineFeat('lc', 0, 'existing', [[121.11, 31.01], [121.20, 31.10]], { connects: ['l1', 'l2'] }),
+    lineFeat('lc2', 0, 'existing', [[121.00, 31.00], [121.30, 31.20]], { layer: '联络线' }),
+  );
+  const linesMap = V.normalizeLines(linesFC);
+  // l1 的 groupId 两方向并集：组记录 members 含 l1b、l1 自身也指 lg1（现实两种形态并存）
+  const lg = V.buildLineGroups(linesMap, [{ id: 'lg1', name: '1 号线组', mainId: 'l1', members: ['l1', 'l1b'] }]);
+  const stopsFC = fc(
+    stopFeat('s1', '同名站', 'l1', '1号线', 0.5, 121.100, 31.000, 'g1', 'same-station'),
+    stopFeat('s1b', '同名站', 'l1b', '1号线支', 0.5, 121.1001, 31.0001, 'g1', 'same-station'),
+    stopFeat('s2', '同名站', 'l2', '2号线', 0.4, 121.1002, 31.0002, 'g1', 'same-station'),
+    stopFeat('s3', '同名站', 'l3', '3号线', 0.6, 121.1003, 31.0003, 'g1', 'same-station'),
+    stopFeat('s10b', '同名站', 'lc', '联络', 0.5, 121.1004, 31.0004, 'g1', 'same-station'),   // 组内联络线成员→剔除
+    stopFeat('s20', '东站', 'l2', '2号线', 0.1, 121.200, 31.100, 'g4', 'out-of-station'),
+    stopFeat('s21', '西站', 'l4', '4号线', 0.9, 121.150, 31.050, 'g4', 'out-of-station'),
+    stopFeat('s22', '南站', 'l5', '5号线', 0.5, 121.160, 31.060, 'g5', 'same-station'),
+    stopFeat('s23', '南站', 'l6', '6号线', 0.5, 121.1601, 31.0601, 'g5', 'same-station'),
+    stopFeat('s30', '跨界站', 'l3', '3号线', 0.2, 121.120, 31.020, 'g6', 'same-station'),
+    stopFeat('s31', '跨界站', 'lp', '他省线', 0.2, 121.1201, 31.0201, 'g6', 'same-station'),
+    stopFeat('s9', '单线站', 'l7', '7号线', 0.5, 121.170, 31.070, null, null),
+    stopFeat('s10', '联络站', 'lc', '联络', 0.5, 121.150, 31.060, null, null),   // 纯联络线站
+  );
+  const stops = V.stopList(stopsFC);
+  const stationGroups = [
+    { id: 'g1', type: 'same-station' },
+    { id: 'g4', type: 'out-of-station', groups: ['g5'] },
+    { id: 'g5', type: 'same-station' },
+    { id: 'g6', type: 'same-station' },
+    { id: 'g7', type: 'same-station' },   // 无站组（防御）
+  ];
+  const tree = V.buildGroupTree(stationGroups, stops);
+  const view = V.buildStopView(stops, { linesMap, lineGroups: lg, tree });
+  const pinByKey = new Map(view.pins.map((p) => [p.key, p]));
+  for (const pill of view.pills || []) if (pill.pin) pinByKey.set(pill.pin.key, pill.pin);
+
+  // 同站组 pin（4 成员站、3 自然线）：主支线算一条、联络线成员剔除
+  const p1 = pinByKey.get('g:g1');
+  ok(!!p1, 'g1 出组 pin（3 逻辑线≥3 → 药丸 pin 挂 pinByKey）');
+  eq(V.stationLinesOf(p1, linesMap, lg, tree).sort(), ['l1', 'l2', 'l3'], '组 pin 线集：主支线归并＋联络线剔除');
+  // 出闸成员站 pin：整个出闸单元（直属站×2＋子组 g5 两线）
+  const p20 = pinByKey.get('s20');
+  ok(!!p20, '出闸直属站 pin 存在');
+  eq(V.stationLinesOf(p20, linesMap, lg, tree).sort(), ['l2', 'l4', 'l5', 'l6'], '出闸成员站→最外层组全部叶站的线集');
+  // 子组 pin（出闸单元内的同站子组 g5）：同样整个出闸单元
+  eq(V.stationLinesOf(pinByKey.get('g:g5'), linesMap, lg, tree).sort(), ['l2', 'l4', 'l5', 'l6'], '出闸子组符号→整个出闸单元线集（统一口径）');
+  // 他省线参与（修正裁定）：g6 本地＋他省同组
+  eq(V.stationLinesOf(pinByKey.get('g:g6'), linesMap, lg, tree).sort(), ['l3', 'lp'], '他省线进线集（修正裁定：参与）');
+  // 单线站
+  eq(V.stationLinesOf(pinByKey.get('s9'), linesMap, lg, tree), ['l7'], '单线站 → 本线一条');
+  // 纯联络线站 → 空集（不可点）
+  eq(V.stationLinesOf(pinByKey.get('s10'), linesMap, lg, tree), [], '纯联络线站 → 空（不可点）');
+  // 类别名联络线（layer 命中 HIDDEN_LIST_LAYERS）同样剔除
+  const pLc2 = { key: 'x-lc2', kind: 'stop', name: '联络站2', lineId: 'lc2' };
+  eq(V.stationLinesOf(pLc2, linesMap, lg, tree), [], '类别名联络线（layer=联络线）→ 空');
+  // 孤站（lineId 不在 linesMap）：按普通线保留（防御不丢站）
+  eq(V.stationLinesOf({ key: 's-ghost', kind: 'stop', name: '鬼站', lineId: 'ghost' }, linesMap, lg, tree), ['ghost'], '孤站线不在 linesMap → 按普通线保留');
+  // 无站组手工 pin → 空；空/坏输入防御
+  eq(V.stationLinesOf({ key: 'g:g7', kind: 'group', groupId: 'g7' }, linesMap, lg, tree), [], '无站组 → 空');
+  eq(V.stationLinesOf(null, linesMap, lg, tree), [], 'null pin → 空（防御）');
+  eq(V.stationLinesOf({ key: 's9', kind: 'stop', lineId: 'l7' }, null, null, null), ['l7'], 'linesMap/lineGroups/tree 缺省 → 逐线旧行为');
+
+  // stationFocusOf：面板数据（排序 lineOrder 优先、多名标注、memberIds 组员并集）
+  const lineOrder = ['l3', 'l2', 'l1', 'l4', 'l5', 'l6', 'l7', 'lp'];
+  const st1 = V.stationFocusOf(p1, linesMap, lg, tree, lineOrder);
+  ok(!!st1, '组 pin stationFocusOf 非空');
+  eq(st1.lines.map((l) => l.mainId), ['l3', 'l2', 'l1'], 'lineOrder 自定义序（l1 组行以主线 id 参与排序）');
+  eq(st1.lines.map((l) => l.name), ['l3名', 'l2名', '1 号线组'], '行名＝组名优先（l1 显示线组名）');
+  eq(st1.lines.map((l) => l.color), [linesMap.get('l3').color, linesMap.get('l2').color, linesMap.get('l1').color], '行色＝主线色');
+  eq(st1.lines[2].members, ['l1', 'l1b'], '行 members＝线组成员（渲染高亮用）');
+  eq(st1.memberIds, ['l3', 'l2', 'l1', 'l1b'], 'memberIds＝各线组成员并集（l1b 计入）');
+  eq(st1.multiName, false, '同名站（全部叫法一个名）→ 不标注');
+  eq(st1.lines.map((l) => l.calls), [['同名站'], ['同名站'], ['同名站']], 'calls＝成员站名去重（单名站也收，标注开关在 multiName）');
+  eq(st1.name, '同名站', '站名＝pin.name（首个非空叶站名）');
+  eq([st1.lon, st1.lat], [p1.lon, p1.lat], '坐标透传 pin（组均值）');
+
+  // 出闸单元（一站多名）：multiName=true、各行 calls 各取其成员站名
+  const st20 = V.stationFocusOf(pinByKey.get('s20'), linesMap, lg, tree, null);
+  ok(!!st20, '出闸成员站 stationFocusOf 非空');
+  eq(st20.lines.map((l) => l.mainId).sort(), ['l2', 'l4', 'l5', 'l6'], '出闸单元四条自然线');
+  eq(st20.multiName, true, '一站多名（东站/西站/南站）→ 标注开启');
+  const callsOf = {};
+  for (const l of st20.lines) callsOf[l.mainId] = l.calls;
+  eq(callsOf['l2'], ['东站'], 'l2 叫法＝其成员站名');
+  eq(callsOf['l4'], ['西站'], 'l4 叫法');
+  eq(callsOf['l5'], ['南站'], 'l5（与 l6 同名子组）叫法＝子组成员站名');
+  // 无 lineOrder：tie-break lineId 升序
+  eq(st20.lines.map((l) => l.mainId), ['l2', 'l4', 'l5', 'l6'], '无 lineOrder → lineId 升序');
+  // 纯联络线站 → null（搜索入口退旧行为的判定）
+  eq(V.stationFocusOf(pinByKey.get('s10'), linesMap, lg, tree, null), null, '纯联络线站 → null');
+  eq(V.stationFocusOf(null, linesMap, lg, tree, null), null, 'null pin → null（防御）');
+  // 他省行也在面板数据（可点行的数据基础）
+  const st6 = V.stationFocusOf(pinByKey.get('g:g6'), linesMap, lg, tree, null);
+  eq(st6.lines.map((l) => l.mainId), ['l3', 'lp'], '他省线行列在车站页（修正裁定）');
+
+  // focusBboxOfSet：各高亮线（组员并集）bbox 联合 ∪ 绑定联络线 bbox
+  const bb = new Map([
+    ['l1', [121.00, 31.00, 121.10, 31.00]],
+    ['l1b', [121.05, 31.00, 121.06, 31.05]],
+    ['l2', [121.11, 31.01, 121.20, 31.10]],
+    ['l3', [121.12, 31.02, 121.30, 31.20]],
+    ['lcx', [121.00, 30.90, 121.05, 31.00]],   // 绑定联络线（南延出线本体）
+  ]);
+  eq(V.focusBboxOfSet(bb, lg, ['l1', 'l2'], [{ lineId: 'lcx', attachEnd: 0 }]),
+    [121.00, 30.90, 121.20, 31.10], '多线 bbox＝组员并集（含支线 l1b）∪ 绑定联络线');
+  eq(V.focusBboxOfSet(bb, lg, ['l1', 'l1'], []), [121.00, 31.00, 121.10, 31.05], '重复 id 去重（防御）');
+  eq(V.focusBboxOfSet(bb, lg, [], []), null, '空集合 → null');
+  eq(V.focusBboxOfSet(bb, null, ['l1'], []), [121.00, 31.00, 121.10, 31.00], 'lineGroups 缺省 → 退逐线（无组员扩展）');
+  eq(V.focusBboxOfSet(bb, lg, ['l1'], [{ lineId: 'missing', attachEnd: 0 }]),
+    [121.00, 31.00, 121.10, 31.05], '联络线缺 bbox → 跳过不炸');
+  // 联络线只亮不列名回归：组内联络线成员不进 stationFocusOf 的任何文字面（lines 无 lc 条目）
+  ok(st1.lines.every((l) => l.mainId !== 'lc' && l.name.indexOf('联络') < 0), '车站页数据不含联络线条目（钉死规则）');
+}
+
 console.log(fails ? `\nFAIL - ${fails} assertion(s)` : '\nPASS - viewer logic OK');
 process.exit(fails ? 1 : 0);
