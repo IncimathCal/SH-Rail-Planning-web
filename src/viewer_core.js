@@ -1753,6 +1753,30 @@
     return [{ sid: key, name: typeof pin.name === 'string' ? pin.name : '',
       lineId: pin.lineId != null ? String(pin.lineId) : '' }];
   }
+  // stopPinKeyOf(stop, tree) → 该站绘制单元的 pin key（2026-11-27 线路页站行点进车站页：
+  // lineStopSections 的 row 只有 sid，需反查 pin 再走 enterStationByPin 同款行为）。
+  // 口径与 buildStopView 的 emitUnit 出图完全一致：无组/组不在树 → 站 sid（单站 pin）；
+  // 自最外层组沿祖先链向下模拟 emitUnit 递归——首个非出闸单元（same-station/junction，
+  // 药丸与带子组单元整体一个符号、子组不独立出图）＝组 pin 'g:<组号>'；出闸单元只对
+  // 直属站出单站 pin（sid），子组继续下钻。返回 null＝无 sid 防御（调用方静默不动作）。
+  // 与渲染层 pinByKey 联用取回完整 pin。
+  function stopPinKeyOf(stop, tree) {
+    const sid = stop && stop.sid != null ? String(stop.sid) : null;
+    if (!sid) return null;
+    const gid = stop && stop.groupId != null && stop.groupId !== '' ? String(stop.groupId) : null;
+    if (!gid || !tree || typeof tree.group !== 'function' || !tree.group(gid)
+        || typeof tree.typeOf !== 'function' || typeof tree.parentOf !== 'function') return sid;
+    const chain = [];   // 直属组 → … → 最外层组（parentOf 到顶即 root；环防御不重复入链）
+    for (let p = gid; p != null && chain.indexOf(p) < 0; p = tree.parentOf(p)) chain.push(p);
+    chain.reverse();
+    let cur = chain[0];
+    for (let i = 0; i < chain.length; i++) {
+      if (tree.typeOf(cur) !== 'out-of-station') return 'g:' + cur;   // 整体绘制单元
+      if (cur === gid) return sid;   // 出闸单元直属站＝单站圈
+      cur = chain[i + 1];            // 站在子组内：下钻一层
+    }
+    return sid;
+  }
   // stationLinesOf(pin, linesMap, lineGroups, tree) → 主线 id 数组（lineOrder 序不在本函数——
   // 排序是面板呈现口径，见 stationFocusOf；本函数返回 linesMap 迭代序的去重主线集，
   // 供点击判定/hover 等只关心「有没有、有哪几条」的场合）。空数组＝该站无自然线路
@@ -2357,6 +2381,7 @@
     LINE_HIT_LAYER_IDS, LINE_HIT_LAYER_PREFIXES, isLineHitLayerId, lineClickAction,
     STOP_HIT_LAYER_IDS, isStopHitLayerId,
     stationMemberStops, stationLinesOf, stationFocusOf, focusBboxOfSet,
+    stopPinKeyOf,
     connectorBlendPlan, arrowFadePlan, arrowFadeGradient, ARROW_FADE_M,
     zoomInterp, scaledSize, LINE_WIDTH_PX, DBLCLICK_TOL_PX, lineWidthAt,
     pointToScreenPolylineDist,

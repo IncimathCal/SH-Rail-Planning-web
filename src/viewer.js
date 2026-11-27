@@ -1970,7 +1970,15 @@
     // ＋分割线＋每条支线一段；arrow 出省端画线端箭头不写站名；接入标注（往支线去向/
     // 往主线/联络对方线）＝V.lineStopSections 模型。lineinfo 有无与本列表无耦合。
     const stopModel = V.lineStopSections(lineId, S.linesMap, S.stops, S.lineGroups, S.groupTree);
-    if (stopModel) body.appendChild(buildStopSection(stopModel));
+    if (stopModel) {
+      // 信息区与车站列表之间的分割线（2026-11-27 用户需求）：lineinfo／「无信息」态
+      //（名称＋色块＋虚线提示框）与下方列表目前无缝——复用 .lp-divider（支线分割同款
+      // 灰色语言，与整体黑白灰一致）。
+      const dv = document.createElement('div');
+      dv.className = 'lp-divider';
+      body.appendChild(dv);
+      body.appendChild(buildStopSection(stopModel));
+    }
   }
 
   // ---------- 线路页车站列表渲染（2026-11-27：竖直线站序；视觉常量与地图侧同源） ----------
@@ -2074,6 +2082,19 @@
         nm.textContent = row.name || V.stopDisplayName('');
         r.appendChild(nm);
         for (const mk of rowMarks.get(ri) || []) r.appendChild(markElOfStopList(mk));
+        // 站行可点（2026-11-27 用户需求）：与地图点该站同款行为——sid 反查绘制单元 pin
+        //（stopPinKeyOf，口径＝emitUnit 出图）后走 enterStationByPin（flyTo 到站 zoom13＋
+        // 波纹＋多线高亮＋面板车站页）。来源记忆按「点进去时面板是什么页面」：当前在线路
+        // 页 → stationFrom='line'，返回回线路页（恢复聚焦、不动相机），与现行「线路页状态
+        // 下点站」路径同语义（返回向滑动一致）。行内标注（lp-mark）click 已 stopPropagation，
+        // 不误触本行跳转；pin 查不到（脏数据）静默不动作。
+        r.addEventListener('click', () => {
+          const stop = S.stops.find((s) => s.sid === row.sid);
+          if (!stop) return;
+          const key = V.stopPinKeyOf(stop, S.groupTree);
+          const pin = key != null ? S.pinByKey.get(key) : null;
+          if (pin) enterStationByPin(pin);
+        });
         secEl.appendChild(r);
       });
       wrap.appendChild(secEl);

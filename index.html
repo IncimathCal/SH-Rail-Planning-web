@@ -407,6 +407,10 @@
     .lp-node-big { width: 15px; height: 15px; border-radius: 50%; border: 1.32px solid #000000; }
     .lp-node-pill { width: 22px; height: 15px; border-radius: 7.5px; border: 2.2px solid #000000; }
     .lp-station { color: #000; }
+    /* 站行可点（2026-11-27 用户需求）：与地图点站同款跳转进车站页——arrow 出省端行
+       （无站）不参与；hover 与车站页线路行同款语言（灰底、黑白灰不破） */
+    .lp-row:not(.lp-row-arrow) { cursor: pointer; }
+    .lp-row:not(.lp-row-arrow):hover { background: var(--hover); }
     .lp-divider { border-top: 1px solid var(--panel-border); margin: 14px 2px; }
     .lp-inter { position: relative; min-height: 24px; display: flex; align-items: center; }
     /* 接入标注：直角短线统一向右渐变到透明（回避支线/联络实际方向未定义），色＝标注
@@ -448,7 +452,10 @@
     .lineinfo-body p:last-child { margin-bottom: 0; }
     .lineinfo-body ul { margin: 0 0 8px; padding-left: 18px; }
     .lineinfo-body li { margin: 2px 0; }
-    .lineinfo a { color: #000; text-decoration: underline; }
+    /* lineinfo 链接色（2026-11-27 用户显式裁定）：Wikipedia 链接深蓝 #3366CC——全 UI
+       黑白灰钉死规则的唯一超链接例外（仅 lineinfo 内容里的 <a>，下划线保持）；其他
+       UI 元素仍黑白灰不动 */
+    .lineinfo a { color: #3366CC; text-decoration: underline; }
     .lineinfo-links { margin: 8px 0 0; padding: 0; list-style: none; }
     .lineinfo-links li { margin: 2px 0; word-break: break-all; }
 

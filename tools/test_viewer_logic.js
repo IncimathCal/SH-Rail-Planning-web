@@ -2081,6 +2081,55 @@ console.log('lineStopSections / stopNodeGlyph:');
   // 去向标注：全 arrow 支线退支线自身名（l0069 出省支线形态）；arrow 行不算具名站
   eq(V.branchDestLabel([{ kind: 'arrow' }, { kind: 'stop', name: '尾站' }], 'head', '支线名'), '尾站', 'head 接入 → 去向取尾端具名站');
   eq(V.branchDestLabel([{ kind: 'arrow', name: '' }], 'head', '示范区出省支线'), '示范区出省支线', '无具名站 → 退支线自身名（不造名）');
+
+  // stopPinKeyOf：站 → 绘制单元 pin key（2026-11-27 线路页站行点进车站页的反查；
+  // 口径＝buildStopView 的 emitUnit 出图：同站/junction 单元→组 pin、出闸直属站→单站
+  // pin、出闸内子组→子组自身单元、无组→sid）
+  eq(V.stopPinKeyOf(stops2.find((s) => s.sid === 'mA-s1'), tree2), 'g:gS', '同站组（3 逻辑线药丸）→ 组 pin key');
+  eq(V.stopPinKeyOf(stops2.find((s) => s.sid === 'mA-s2'), tree2), 'g:j1', 'junction 组站 → 组 pin key');
+  eq(V.stopPinKeyOf(stops2.find((s) => s.sid === 'mB-s2'), tree2), 'mB-s2', '无组站 → 站 sid');
+  eq(V.stopPinKeyOf(stops2.find((s) => s.sid === 'lY-s2'), tree2), 'lY-s2', '出闸直属站 → 单站 pin key');
+  eq(V.stopPinKeyOf(stops2.find((s) => s.sid === 'lX-s1'), tree2), 'g:gO2', '出闸内同站子组站 → 子组 pin key');
+  eq(V.stopPinKeyOf(stops2.find((s) => s.sid === 'lc-s1'), tree2), 'g:j2', '联络 junction 站同样反查（可点判定在胶水层）');
+  // 交叉验证：mA 组全部模型站行的反查 key 都落在真实出图 key 集（pins ∪ 药丸 pin）
+  const view2 = V.buildStopView(stops2, { linesMap: linesMap2, lineGroups: lg2, tree: tree2 });
+  const keys2 = new Set(view2.pins.map((p) => p.key));
+  for (const pill of view2.pills || []) keys2.add(pill.pin.key);
+  for (const sec of model.sections) {
+    for (const row of sec.rows) {
+      if (row.kind === 'arrow') continue;
+      const stop = stops2.find((s) => s.sid === row.sid);
+      ok(keys2.has(V.stopPinKeyOf(stop, tree2)), '站行反查 pin key 与出图一致：' + row.sid);
+    }
+  }
+  // 嵌套非出闸：外层同站带子组 → 整体一个绘制单元（药丸），子组不独立出图
+  {
+    const stNst = V.stopList(fc(
+      stopFeatX('nA-s1', '外1', 'mA', 0, 121.0, 31.0, { idx: 0, gid: 'nInner', gtype: 'same-station' }),
+      stopFeatX('nB-s1', '内1', 'mB', 0, 121.001, 31.001, { idx: 0, gid: 'nInner2', gtype: 'same-station' }),
+      stopFeatX('mA-s0', '外0', 'mA', 0.5, 121.01, 31.0, { idx: 1, gid: 'nOuter', gtype: 'same-station' }),
+    ));
+    const treeNst = V.buildGroupTree([
+      { id: 'nOuter', type: 'same-station', stops: ['mA-s0'], groups: ['nInner'] },
+      { id: 'nInner', type: 'same-station', stops: ['nA-s1'], groups: ['nInner2'] },
+      { id: 'nInner2', type: 'same-station', stops: ['nB-s1'], groups: [] },
+    ], stNst);
+    eq(V.stopPinKeyOf(stNst.find((s) => s.sid === 'nB-s1'), treeNst), 'g:nOuter', '非出闸嵌套 → 最外层单元（子组不独立出图）');
+    // 出闸嵌套：外层出闸 > 内层出闸 > 直属站 → 各自单站 pin
+    const stOst = V.stopList(fc(
+      stopFeatX('oA-s1', '直1', 'mA', 0, 121.0, 31.0, { idx: 0, gid: 'oOut', gtype: 'out-of-station' }),
+      stopFeatX('oB-s1', '内1', 'mB', 0, 121.001, 31.001, { idx: 0, gid: 'oIn', gtype: 'out-of-station' }),
+    ));
+    const treeOst = V.buildGroupTree([
+      { id: 'oOut', type: 'out-of-station', stops: ['oA-s1'], groups: ['oIn'] },
+      { id: 'oIn', type: 'out-of-station', stops: ['oB-s1'], groups: [] },
+    ], stOst);
+    eq(V.stopPinKeyOf(stOst.find((s) => s.sid === 'oB-s1'), treeOst), 'oB-s1', '出闸嵌套直属站 → 单站 pin key');
+    // 防御：null 站 / 无 tree / 组不在树
+    eq(V.stopPinKeyOf(null, treeNst), null, 'null 站 → null（调用方静默）');
+    eq(V.stopPinKeyOf({ sid: 'x1' }, null), 'x1', '无 tree → 站 sid');
+    eq(V.stopPinKeyOf({ sid: 'x1', groupId: 'ghost' }, treeNst), 'x1', '组不在树 → 退站 sid');
+  }
 }
 
 console.log(fails ? `\nFAIL - ${fails} assertion(s)` : '\nPASS - viewer logic OK');
