@@ -49,8 +49,10 @@
 // ②相机一律平滑：聚焦跳转 fitFocusLine 由 fitBounds 改 flyTo（cameraForBounds 按
 // cameraPadding 解目标位——padding 只作解算输入、flyTo 不传 padding 选项，守「flyTo 的
 // padding 写持久 transform 污染后续 fitBounds」既有裁定；duration 900）；车站交互
-// enterStationByPin 与纯联络线站退路的 flyTo 补 essential:false。全部动画调用
-// essential:false（用户系统「减少动态」偏好时退化为即时定位）。唯二例外：首次加载
+// enterStationByPin 与纯联络线站退路的 flyTo 同款。全部动画调用 essential:true——
+// 2026-11-27 拆除「减少动态」降级：用户系统关闭动画效果时 reduce 分支把 flyTo 退化成
+// 即时定位、面板过渡时长归零，与「要看到动画」的意愿相反（真机反馈「光速划走/瞬移」），
+// essential:true＝MapLibre 语义下的必要动画、reduce 也不降级。唯二例外：首次加载
 // fitAll 保持即时（首屏不闪，duration 0）；退出聚焦/车站页返回/面板返回不动相机（既有裁定）。
 // 实装路径对齐：数据 fetch＝net → build/net 依次回退（正式版原样）；省界底图＝仓库静态件
 // basemap/provinces-wgs84.json（相对路径）。
@@ -1755,7 +1757,8 @@
     // 曲线观感更平滑；duration 600→900 与车站定位 800 同档。⚠ padding 只作解算输入，
     // flyTo 不传 padding 选项——它写持久 transform.padding 会污染后续 fitBounds 几何
     //（见 cameraPadding 注，与搜索车站 flyTo 用一次性 offset 同一裁定的两种实现）。
-    // essential:false＝「减少动态」系统偏好下退化为即时定位；cameraForBounds 异常防御
+    // essential:true＝必要动画、「减少动态」系统偏好下也不降级（2026-11-27 拆除降级）；
+    // cameraForBounds 异常防御
     // 回落旧 fitBounds 动画（同为平滑，行为不降级）。
     let cam = null;
     try {
@@ -1763,7 +1766,7 @@
         { padding: cameraPadding(), maxZoom: 13 });
     } catch (e) { cam = null; }
     if (cam && cam.center && Number.isFinite(cam.zoom)) {
-      S.map.flyTo({ center: cam.center, zoom: cam.zoom, duration: 900, maxZoom: 13, essential: false });
+      S.map.flyTo({ center: cam.center, zoom: cam.zoom, duration: 900, maxZoom: 13, essential: true });
     } else {
       S.map.fitBounds([[bb[0], bb[1]], [bb[2], bb[3]]],
         { padding: cameraPadding(), duration: 600, maxZoom: 13 });
@@ -2106,10 +2109,10 @@
     scheduleHover();      // cursor 重判（车站态/分期解除）
     // 相机：flyTo 站坐标 zoom13＋相机让位一次性 offset（不碰 flyTo 的 padding 选项——
     // 它写持久 transform.padding 会污染后续 fitBounds 几何，见 cameraPadding 注）＋波纹
-    //（2026-11-27 动效：补 essential:false——「减少动态」系统偏好下退化为即时定位）
+    //（2026-11-27 动效拆除降级：essential:true——「减少动态」系统偏好下也不再即时定位）
     const pad = cameraPadding();
     S.map.flyTo({
-      center: S.dispCoord(st.lon, st.lat), zoom: 13, duration: 800, essential: false,
+      center: S.dispCoord(st.lon, st.lat), zoom: 13, duration: 800, essential: true,
       offset: [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2],
     });
     playStopFx(st.lon, st.lat);
@@ -2375,7 +2378,7 @@
       if (pin && enterStationByPin(pin)) return;
       const pad = cameraPadding();
       S.map.flyTo({
-        center: S.dispCoord(lb.lon, lb.lat), zoom: 13, duration: 800, essential: false,
+        center: S.dispCoord(lb.lon, lb.lat), zoom: 13, duration: 800, essential: true,
         offset: [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2],
       });
       playStopFx(lb.lon, lb.lat);

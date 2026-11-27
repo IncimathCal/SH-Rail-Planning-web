@@ -39,9 +39,8 @@
       --slide-ease: cubic-bezier(.3, .1, .3, 1);
       --swap-dur: 240ms;
     }
-    @media (prefers-reduced-motion: reduce) {
-      :root { --slide-dur: 0.01ms; --swap-dur: 0.01ms; }
-    }
+    /* 2026-11-27：prefers-reduced-motion 归零分支已拆——用户明令要看到动画（系统
+       「减少动态」偏好下降级与其意愿相反），滑动/交叉滑动时长恒为标准值。 */
     @font-face {
       font-family: "SHMetro Web";
       src: url("assets/fonts/subset-regular.woff2") format("woff2");
