@@ -305,13 +305,144 @@
     return true;
   }
   /** 落盘用的线路对象（node 单测覆盖）：联络线不带 color 落盘——兜底，正常路径下内存里早已清除
-   *  （stripConnectorColor），此处保证任何来路的联络线都不把它写进文件。需要剔除时返回剔除后的
+   *  （stripConnectorColor），此处保证任何来路的联络线都不把它写进文件。同理剔除**空数组**的
+   *  sharedTracks（2026-11-28：编辑器删除共线声明清空后不留空键落盘）。需要剔除时返回剔除后的
    *  浅拷贝（不改写内存），否则原样返回同一对象。 */
   function lineForSave(line) {
-    if (!line || line.role !== 'connector' || !Object.prototype.hasOwnProperty.call(line, 'color')) return line;
+    if (!line) return line;
+    const dropColor = line.role === 'connector' && Object.prototype.hasOwnProperty.call(line, 'color');
+    const dropShared = Array.isArray(line.sharedTracks) && line.sharedTracks.length === 0;
+    if (!dropColor && !dropShared) return line;
     const out = Object.assign({}, line);
-    delete out.color;
+    if (dropColor) delete out.color;
+    if (dropShared) delete out.sharedTracks;
     return out;
+  }
+
+  // ---------- 共线段 sharedTracks（2026-11-28 编辑器录入；schema 2026-11-27 方案 A） ----------
+  // 线文件顶层可选 [{peer: 对方线 id, stops: [本线起站 id, 本线止站 id]}]，双侧各自标注。
+  // 范围语义（与 tools/flatten.py shared_track_decls 一致）：stops[0] 沿**站序前进方向**到
+  // stops[1]——非环线标反＝同一闭区间（数据等价）；环线 i>j 走跨环绕弧（方向有语义）。
+  // 以下三个纯逻辑与 tools/validate.py 的 sharedTracks 校验同口径（node 单测覆盖）。
+
+  /** 声明两站 → 落盘规范序：非环线按站序 i<j 重排（闭区间等价，输出恒整洁）；
+   *  环线保留所选方向（i<j 直走弧、i>j 跨环绕弧）。两站相同或不在本线 → null（调用方拒绝）。 */
+  function normalizeSharedStops(line, sidA, sidB) {
+    const stops = (line && line.stops) || [];
+    if (typeof sidA !== 'string' || typeof sidB !== 'string' || sidA === sidB) return null;
+    const idx = new Map(stops.map((st, k) => [st && st.id, k]));
+    const i = idx.get(sidA), j = idx.get(sidB);
+    if (i == null || j == null) return null;
+    if (!line.loop && i > j) return [sidB, sidA];   // 非环线标反＝闭区间重排
+    return [sidA, sidB];
+  }
+
+  /** 共线范围站序列（validate shared_node_seq 的 JS 同口径移植；对称检查/镜像生成共用）。
+   *  声明范围（含两端站，沿站序前进弧；环线 i>j 跨环绕）内每站映射到所属 stationGroup 的
+   *  **最外层**组 id（沿父链上溯；无组＝该站不可跨线归并）→ 返回顶层组 id 序列。
+   *  结构坏 / 站定位失败 / 范围含未编组站 → null（＝validate 的「降级存在性检查」信号，
+   *  调用方不得据此报错——编组完备性由数据侧保证；**绝不按站名归并**（用户明令））。 */
+  function sharedRangeGroupSeq(line, sids, stationGroups) {
+    const stops = (line && line.stops) || [];
+    if (!Array.isArray(sids) || sids.length !== 2) return null;
+    const idx = new Map(stops.map((st, k) => [st && st.id, k]));
+    const i = idx.get(sids[0]), j = idx.get(sids[1]);
+    if (i == null || j == null || i === j) return null;
+    const n = stops.length;
+    let order;
+    if (line.loop) {
+      order = [];
+      for (let k = i; k !== j; k = (k + 1) % n) order.push(k);   // 站序前进弧（含环绕）
+      order.push(j);
+    } else {
+      const a = Math.min(i, j), b = Math.max(i, j);
+      order = [];
+      for (let k = a; k <= b; k++) order.push(k);
+    }
+    // 站 → 直属组（一站至多一组是 schema 约束；破损数据按先到者胜，与 groupTree 多父先到者胜一致）
+    const list = Array.isArray(stationGroups) ? stationGroups : [];
+    const owner = new Map();
+    for (const g of list) {
+      if (!g || typeof g.id !== 'string') continue;
+      for (const sid of Array.isArray(g.stops) ? g.stops : []) {
+        if (typeof sid === 'string' && !owner.has(sid)) owner.set(sid, g.id);
+      }
+    }
+    const tree = groupTree(list);
+    const seq = [];
+    for (const k of order) {
+      const sid = stops[k] && stops[k].id;
+      let top = owner.get(sid);
+      if (top == null) return null;   // 未编组：降级信号
+      const seen = new Set();
+      while (tree.parentOf.has(top) && !seen.has(top)) { seen.add(top); top = tree.parentOf.get(top); }
+      seq.push(top);
+    }
+    return seq;
+  }
+
+  /** 对称声明生成（「一键在对方线生成对称声明」内核，node 单测覆盖）：本线对 peerId 的声明 →
+   *  对方线上的对应起止站。映射＝端点站经最外层组归一（A 起站的顶层组在 B 线上的站）；
+   *  方向＝B 侧范围站序列与本线相等或互为反转者（非环线恒按站序规范，环线据此定弧向）。
+   *  linesById＝Map(线 id → 线对象)；stationGroups＝组数组。
+   *  返回 {ok:true, stops:[b1,b2]} 或 {ok:false, reason, msg}——reason ∈
+   *  nodecl（本线无此声明）/ nopeer（对方线不存在）/ ungrouped（端点未编组，无法跨线归并）/
+   *  nostop（对方线找不到对应站）/ ambiguous（对方线对应站 ≥2，无法自动选定）/
+   *  mismatch（两线范围站序列不一致，生成也会被 validate 拒）。 */
+  function sharedMirrorStops(lineA, peerId, linesById, stationGroups) {
+    const decl = (lineA.sharedTracks || []).find((d) => d && d.peer === peerId);
+    if (!decl || !Array.isArray(decl.stops)) return { ok: false, reason: 'nodecl', msg: '本线没有对该线的共线声明' };
+    const lineB = linesById.get(peerId);
+    if (!lineB) return { ok: false, reason: 'nopeer', msg: `线 ${peerId} 不存在` };
+    const seqA = sharedRangeGroupSeq(lineA, decl.stops, stationGroups);
+    if (!seqA) return { ok: false, reason: 'ungrouped', msg: '声明端点站未全部编组，无法跨线归并——请先完成换乘编组，或在对方线手动声明' };
+    // 端点顶层组＝seqA 首末（范围含两端站）
+    const top1 = seqA[0], top2 = seqA[seqA.length - 1];
+    // B 线上顶层组归一后的候选站（先建 B 侧站 → 顶层组表，同 sharedRangeGroupSeq 口径）
+    const list = Array.isArray(stationGroups) ? stationGroups : [];
+    const tree = groupTree(list);
+    const owner = new Map();
+    for (const g of list) {
+      if (!g || typeof g.id !== 'string') continue;
+      for (const sid of Array.isArray(g.stops) ? g.stops : []) {
+        if (typeof sid === 'string' && !owner.has(sid)) owner.set(sid, g.id);
+      }
+    }
+    const topOfB = (sid) => {
+      let top = owner.get(sid);
+      if (top == null) return null;
+      const seen = new Set();
+      while (tree.parentOf.has(top) && !seen.has(top)) { seen.add(top); top = tree.parentOf.get(top); }
+      return top;
+    };
+    const cands = (top) => (lineB.stops || []).filter((st) => topOfB(st && st.id) === top).map((st) => st.id);
+    const c1 = cands(top1), c2 = cands(top2);
+    if (!c1.length || !c2.length) {
+      return { ok: false, reason: 'nostop', msg: `对方线 ${peerId} 上找不到与${!c1.length ? '起' : '止'}站对应的车站（换乘组缺成员站）` };
+    }
+    if (c1.length > 1 || c2.length > 1) {
+      return { ok: false, reason: 'ambiguous', msg: `对方线 ${peerId} 上对应站候选多于一个（${(c1.length > 1 ? c1 : c2).join('、')}），请手动在对方线声明` };
+    }
+    const b1 = c1[0], b2 = c2[0];
+    // 方向候选：非环线按站序规范（闭区间等价，单方向）；环线两个方向都试（弧向有语义）。
+    // 每个候选做范围站序列比对（validate 对称检查同口径：相等或互为反转＝范围一致）；
+    // 序列算不出（B 侧范围含未编组站＝降级信号）的候选先记住、继续试其余方向——**能校验且
+    // 匹配者优先于降级候选**（环线补弧常含未编组站，见降级就收会选错半圈）；全部候选都
+    // 无法校验时才降级采用首个（validate 同口径不误报）
+    const pairs = lineB.loop ? [[b1, b2], [b2, b1]] : [normalizeSharedStops(lineB, b1, b2)];
+    let degraded = null;
+    for (const pair of pairs) {
+      if (!pair) break;
+      const seqB = sharedRangeGroupSeq(lineB, pair, stationGroups);
+      if (!seqB) { if (!degraded) degraded = pair; continue; }
+      const same = seqB.length === seqA.length && seqB.every((g, k) => g === seqA[k]);
+      const rev = seqB.length === seqA.length
+        && seqB.every((g, k) => g === seqA[seqA.length - 1 - k]);
+      if (same || rev) return { ok: true, stops: pair };
+    }
+    if (degraded) return { ok: true, stops: degraded };
+    return { ok: false, reason: 'mismatch',
+      msg: `两线共线范围站序列不一致（${lineB.loop ? '环线弧向' : '区间'}不匹配），请手动在对方线 ${peerId} 声明` };
   }
 
   /** 保存前客户端自检（与 validate.py 规则对应的子集） */
@@ -334,6 +465,28 @@
     if ((l.role === 'main' || l.role === 'branch') && !l.groupId) issues.push('main/branch 必须有线组');
     if (l.role === 'connector' && (!l.connects || l.connects.length < 2)) issues.push('connector 需 connects ≥ 2');
     if (l.role !== 'connector' && l.connects && l.connects.length) issues.push('非 connector 的 connects 应为空');
+    // 共线段单线结构（2026-11-28；与 validate 逐线段同口径——跨线对称须全表，保存后由 validate 把关）
+    if (Array.isArray(l.sharedTracks) && l.sharedTracks.length) {
+      if (l.role === 'connector') issues.push('联络线不得声明共线段');
+      const seenPeer = new Set();
+      l.sharedTracks.forEach((d, k) => {
+        const peer = d && d.peer;
+        if (typeof peer !== 'string' || !/^l\d{4}$/.test(peer)) issues.push(`共线声明 ${k + 1}：对方线 id 非法`);
+        else if (peer === l.id) issues.push(`共线声明 ${k + 1}：不得与自身共线`);
+        else if (seenPeer.has(peer)) issues.push(`共线声明 ${k + 1}：与 ${peer} 重复声明（同 peer 至多一条）`);
+        else seenPeer.add(peer);
+        const sids = d && d.stops;
+        if (!Array.isArray(sids) || sids.length !== 2) issues.push(`共线声明 ${k + 1}：起止站须为两个站`);
+        else {
+          if (sids[0] === sids[1]) issues.push(`共线声明 ${k + 1}：起止站相同`);
+          for (const sid of sids) {
+            if (typeof sid !== 'string' || !l.stops.some((st) => st.id === sid)) {
+              issues.push(`共线声明 ${k + 1}：站 ${sid} 不属本线`);
+            }
+          }
+        }
+      });
+    }
     return issues;
   }
 
@@ -1394,6 +1547,7 @@
     pruneSections, migrateLineToV2, planSectionSplit, applySectionMerge, sectionSpanOf, sectionIssuesOf,
     canPlaceArrow, planGroupPillChain, nextStopKind, unitIsPill,
     nextStopSeq, fixStatusField, lineIssues, planBulkFill, stripConnectorColor, lineForSave,
+    normalizeSharedStops, sharedRangeGroupSeq, sharedMirrorStops,
     planStopImport, applyStopImport, suggestForStop, transferMarkForStop, conflictsForStop, backfillTransferNames,
     layerGroupsOf, junctionStroke, planStationGroup, connValidTargets,
     groupTree, groupIsRoot, groupLeafStops, groupDrawPlan, logicalLineCount, groupUnitCount,
@@ -2840,6 +2994,63 @@
       <div class="fld"><label>分类</label><select id="lfLayer" style="flex:1"
         title="＝源图 Line 直属子图层名（如 市区线/市域线/联络线）；建线时自动带入，可改">${layerOpts.join('')}</select></div>
       <div class="fld"><label>源图层</label><input type="text" value="${esc((l.meta && l.meta.sourceLayer) || '')}" disabled></div>
+      ${(() => {
+        // 共线段小节（2026-11-28）：列出已有声明＋添加表单；联络线不渲染（validate 禁 connector 声明）。
+        // 编辑器照常画单线（已知口径），共线双线由查看器经 flatten 段级 sharedOffset 呈现
+        if (l.role === 'connector') return '';
+        const decls = Array.isArray(l.sharedTracks) ? l.sharedTracks : [];
+        const stopNameOf = (sid) => {
+          const st = l.stops.find((s) => s.id === sid);
+          if (!st) return sid;
+          return (st.name && st.name.trim()) || (st.kind === 'block' ? '（线路所）' : st.kind === 'arrow' ? '（出省箭头）' : '（未命名）');
+        };
+        // 对方线的对称声明（缺＝行内给「补对称」按钮）
+        const peerDecl = (pid) => {
+          const pl = S.lines.get(pid);
+          return (pl && (Array.isArray(pl.sharedTracks) ? pl.sharedTracks : []).find((d) => d && d.peer === l.id)) || null;
+        };
+        const idxOf = new Map(l.stops.map((st, k) => [st.id, k]));
+        const rows = decls.length ? decls.map((d) => {
+          const i = idxOf.get(d.stops[0]), j = idxOf.get(d.stops[1]);
+          const wrap = l.loop && i != null && j != null && i > j;   // 起站在止站之后＝跨环绕弧
+          return `<div class="sec-row lf-sh-row">
+            <div class="sec-main">
+              <span class="lf-sh-nm">${S.lines.has(d.peer) ? esc(lineLabelOf(d.peer)) : esc(d.peer) + '（不在数据中）'}</span>
+              <span class="lf-sh-st">${esc(stopNameOf(d.stops[0]))} ↔ ${esc(stopNameOf(d.stops[1]))}${wrap ? '（跨环绕）' : ''}</span>
+              ${peerDecl(d.peer) ? '' : `<button class="mini" data-shmirror="${esc(d.peer)}"
+                title="按换乘编组在对方线生成对称声明（validate 要求双边标注；须两端及中间站已完成换乘编组）">补对称</button>`}
+              <button class="mini danger" data-shdel="${esc(d.peer)}"
+                title="删除本条共线声明（对方线的对称声明一并删除）">✕</button>
+            </div>
+          </div>`;
+        }).join('') : '<div class="lf-sh-none">（暂无）</div>';
+        // 添加表单：对方线排除自身与联络线（validate 禁 connector 参与）；同 peer 至多一条（已声明的禁选）
+        const declared = new Set(decls.map((d) => d && d.peer));
+        const peers = [...S.lines.values()]
+          .filter((x) => x.id !== l.id && x.role !== 'connector')
+          .sort((a, b) => a.id.localeCompare(b.id));
+        const stopOpts = ['<option value="">（站）</option>'].concat(l.stops.map((st, k) => {
+          const nm = (st.name && st.name.trim()) || (st.kind === 'block' ? '（线路所）' : st.kind === 'arrow' ? '（出省箭头）' : '（未命名）');
+          return `<option value="${esc(st.id)}">${k + 1} ${esc(nm)}</option>`;
+        }));
+        const addForm = (peers.length && l.stops.length >= 2)
+          ? `<div class="lf-shared-add">
+              <select id="lfShPeer"><option value="">（对方线）</option>${peers.map((p) =>
+                `<option value="${p.id}"${declared.has(p.id) ? ' disabled' : ''}>${esc(lineLabelOf(p.id))}${declared.has(p.id) ? '（已声明）' : ''}</option>`).join('')}</select>
+              <select id="lfShFrom">${stopOpts.join('')}</select>
+              <span class="lf-sh-arrow">↔</span>
+              <select id="lfShTo">${stopOpts.join('')}</select>
+              <button class="mini primary" id="lfShAdd"
+                title="添加共线声明，并自动按换乘编组在对方线生成对称声明（validate 要求双边；映射不成时提示手动补）">添加</button>
+            </div>
+            <div class="lf-sh-hint">起止按本线站序选择${l.loop ? '；环线起站在止站之后＝跨环绕弧' : '（选反自动按站序规范）'}；共线段网页画双平行线，编辑器照常单线。</div>`
+          : `<div class="lf-sh-hint">${l.stops.length < 2 ? '设站 ≥2 后可添加共线声明。' : '没有可作为共线对方的线路（排除自身与联络线）。'}</div>`;
+        return `<div class="lf-shared">
+          <div class="lf-sh-hd">共线（与他线共轨区间）</div>
+          ${rows}
+          ${addForm}
+        </div>`;
+      })()}
       ${(() => {
         const it = matchPresetForLine(l);
         if (!it) return `<div class="fld"><label>站圆预置</label><span style="flex:1;color:var(--dim);font-size:11px">（无匹配${S.stationPresets.length ? '' : '——未载入预置文件'}）</span></div>`;
@@ -4411,6 +4622,10 @@
     if (e.target.id === 'lfUpdatePath') updatePathFromImport();
     if (e.target.id === 'lfImportStops') importStopsFromPreset();
     if (e.target.id === 'lfAdoptNames') adoptSuggestedNames();
+    // 共线段（2026-11-28）：添加 / 行内补对称 / 删除（见下方三个动作函数）
+    if (e.target.id === 'lfShAdd') { addSharedDecl(); return; }
+    if (e.target.dataset.shmirror) { mirrorSharedDecl(e.target.dataset.shmirror); return; }
+    if (e.target.dataset.shdel) { delSharedDecl(e.target.dataset.shdel); return; }
     if (e.target.id === 'lfArchive') {
       const l = S.lines.get(S.activeLine);
       if (!l) return;
@@ -4422,6 +4637,96 @@
         : `${l.id} 已取消归档。`);
     }
   });
+
+  // ---------- 共线段（sharedTracks）编辑动作（2026-11-28） ----------
+  // 纯逻辑 normalizeSharedStops / sharedMirrorStops 见逻辑层；数据层约定：删空即 delete 字段
+  // （lineForSave 另有落盘兜底剔除空数组）；共线不进画布（编辑器照常单线），改后不 renderWorld。
+  /** 线上站名显示（状态栏反馈用；未命名/线路所/出省箭头同站列表口径） */
+  function stopNameOn(line, sid) {
+    const st = line && line.stops.find((s) => s.id === sid);
+    if (!st) return sid;
+    return (st.name && st.name.trim()) || (st.kind === 'block' ? '（线路所）' : st.kind === 'arrow' ? '（出省箭头）' : '（未命名）');
+  }
+  function ensureSharedTracks(line) {
+    if (!Array.isArray(line.sharedTracks)) line.sharedTracks = [];
+  }
+  function pruneSharedTracks(line) {
+    if (Array.isArray(line.sharedTracks) && !line.sharedTracks.length) delete line.sharedTracks;
+  }
+  /** 「添加」：校验（与 validate 单线段同口径）→ 写本线声明 → 自动在对方线生成对称声明
+   *  （按换乘编组映射；映射不成仍保留本线声明并明确提示，由用户手动补——单边声明保存后
+   *  validate 会报错，故提示必须显眼）。一次 snapshot 覆盖两侧写入（Ctrl+Z 整体回退）。 */
+  function addSharedDecl() {
+    const l = S.lines.get(S.activeLine);
+    if (!l || l.role === 'connector') return;
+    const peer = $('lfShPeer') ? $('lfShPeer').value : '';
+    const from = $('lfShFrom') ? $('lfShFrom').value : '';
+    const to = $('lfShTo') ? $('lfShTo').value : '';
+    if (!peer) { setStatus('共线：请选择对方线。', true); return; }
+    if (!from || !to) { setStatus('共线：请选择起止两站。', true); return; }
+    if (from === to) { setStatus('共线：起止站不能相同。', true); return; }
+    if ((l.sharedTracks || []).some((d) => d && d.peer === peer)) {
+      setStatus(`与 ${peer} 已有共线声明（同 peer 至多一条）。`, true); return;
+    }
+    const stops = normalizeSharedStops(l, from, to);
+    if (!stops) { setStatus('共线：所选站不属本线，未添加。', true); return; }
+    const swapped = stops[0] !== from;   // 非环线反向选择已按站序重排
+    snapshot();
+    ensureSharedTracks(l);
+    l.sharedTracks.push({ peer, stops: stops.slice() });
+    l.meta.updated = today();
+    const mir = sharedMirrorStops(l, peer, S.lines, stationGroupsOf());
+    let note;
+    if (mir.ok) {
+      const pl = S.lines.get(peer);
+      ensureSharedTracks(pl);
+      pl.sharedTracks = pl.sharedTracks.filter((d) => !(d && d.peer === l.id));
+      pl.sharedTracks.push({ peer: l.id, stops: mir.stops });
+      pl.meta.updated = today();
+      note = `；已在对方线生成对称声明（${stopNameOn(pl, mir.stops[0])} ↔ ${stopNameOn(pl, mir.stops[1])}）`;
+    } else {
+      note = `；对方线未能自动生成对称声明——${mir.msg}。单边声明保存校验会报错，请到对方线属性面板手动添加`;
+    }
+    autosave(); renderLineForm();
+    setStatus(`已添加与 ${lineLabelOf(peer)} 的共线声明：${stopNameOn(l, stops[0])} ↔ ${stopNameOn(l, stops[1])}`
+      + `${swapped ? '（已按站序规范起止）' : ''}${note}。`);
+  }
+  /** 行内「补对称」：把本线既有声明镜像到对方线（不写本线）。 */
+  function mirrorSharedDecl(peer) {
+    const l = S.lines.get(S.activeLine);
+    if (!l) return;
+    const mir = sharedMirrorStops(l, peer, S.lines, stationGroupsOf());
+    if (!mir.ok) { setStatus(`补对称失败：${mir.msg}。`, true); return; }
+    const pl = S.lines.get(peer);
+    if (!pl) return;
+    snapshot();
+    ensureSharedTracks(pl);
+    pl.sharedTracks = pl.sharedTracks.filter((d) => !(d && d.peer === l.id));
+    pl.sharedTracks.push({ peer: l.id, stops: mir.stops });
+    pl.meta.updated = today();
+    autosave(); renderLineForm();
+    setStatus(`已在 ${lineLabelOf(peer)} 生成对称声明：${stopNameOn(pl, mir.stops[0])} ↔ ${stopNameOn(pl, mir.stops[1])}。`);
+  }
+  /** 行内 ✕：删除本线声明＋对方线的对称声明（只删一侧会让 validate 报单边）。 */
+  function delSharedDecl(peer) {
+    const l = S.lines.get(S.activeLine);
+    if (!l) return;
+    if (!(l.sharedTracks || []).some((d) => d && d.peer === peer)) return;
+    snapshot();
+    l.sharedTracks = l.sharedTracks.filter((d) => !(d && d.peer === peer));
+    pruneSharedTracks(l);
+    l.meta.updated = today();
+    let note = '';
+    const pl = S.lines.get(peer);
+    if (pl && (pl.sharedTracks || []).some((d) => d && d.peer === l.id)) {
+      pl.sharedTracks = pl.sharedTracks.filter((d) => !(d && d.peer === l.id));
+      pruneSharedTracks(pl);
+      pl.meta.updated = today();
+      note = '（对方线的对称声明一并删除）';
+    }
+    autosave(); renderLineForm();
+    setStatus(`已删除与 ${lineLabelOf(peer)} 的共线声明${note}。`);
+  }
 
   function toggleLoop(l, loop) {
     const n = l.stops.length;

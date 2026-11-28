@@ -120,6 +120,20 @@
   #lineform .fld { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
   #lineform .fld > label { width: 64px; flex: none; text-align: right; }
   #lineform .fld > :nth-child(2) { flex: 1; min-width: 0; }
+
+  /* 共线段小节（2026-11-28）：声明行复用 .sec-row 系，添加表单一行放下拉 */
+  .lf-shared { margin: 4px 0 6px; padding-top: 5px; border-top: 1px dashed var(--border); }
+  .lf-shared .lf-sh-hd { color: var(--dim); font-size: 11px; margin-bottom: 3px; }
+  .lf-shared .lf-sh-none { color: var(--dim); font-size: 11px; padding: 1px 2px; }
+  .lf-shared .sec-row { padding: 2px 0; }
+  .lf-shared .lf-sh-nm { flex: none; max-width: 46%; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-size: 12px; }
+  .lf-shared .lf-sh-st { flex: 1; min-width: 0; color: var(--dim); font-size: 12px; }
+  .lf-shared-add { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
+  .lf-shared-add select { flex: 1; min-width: 84px; max-width: 40%; background: var(--bg);
+    color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 2px; }
+  .lf-shared-add .lf-sh-arrow { color: var(--dim); flex: none; }
+  .lf-shared .lf-sh-hint { color: var(--dim); font-size: 11px; margin-top: 3px; }
   .namehint { display: inline-block; font-size: 11px; padding: 0 5px; margin: 1px 3px 1px 0;
     border: 1px solid var(--acc); border-radius: 3px; color: var(--acc); cursor: pointer; }
   .namehint:hover { background: var(--acc); color: #fff; }

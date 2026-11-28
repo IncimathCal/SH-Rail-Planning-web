@@ -1349,6 +1349,171 @@ const cf2 = mkRoleLine('standalone', '#112233');
 ok(L.lineForSave(cf2) === cf2, '非联络线原样返回同一对象');
 const cf3 = mkRoleLine('connector');
 ok(L.lineForSave(cf3) === cf3 && L.lineForSave(null) === null, '本就无 color 的联络线原样返回；null 不崩');
+// 空 sharedTracks 落盘剔除（2026-11-28：编辑器删除共线声明清空后不留空键）
+const cf4 = mkRoleLine('standalone', '#112233');
+cf4.sharedTracks = [];
+const cf4Out = L.lineForSave(cf4);
+ok(cf4Out !== cf4 && !('sharedTracks' in cf4Out), '空 sharedTracks 落盘剔除（浅拷贝，内存不动）');
+cf4.sharedTracks = [{ peer: 'l0002', stops: ['l0001-s01', 'l0001-s02'] }];
+ok(L.lineForSave(cf4) === cf4, '非空 sharedTracks 原样返回同一对象（透传）');
+
+// ---------- 共线段 sharedTracks（2026-11-28 编辑器录入；与 validate.py / flatten.py 同口径） ----------
+console.log('sharedTracks:');
+/** 造一条 n 站线（站名 A,B,C…），stops/segments/sections 合法配平 */
+function mkSharedLine(id, n, loop) {
+  const l = mkLine(!!loop);
+  l.id = id;
+  l.stops = Array.from({ length: n }, (_, k) => ({
+    id: `${id}-s${String(k + 1).padStart(2, '0')}`, name: String.fromCharCode(65 + k), t: k / n, geo: null,
+  }));
+  l.segments = Array.from({ length: loop ? n : n - 1 }, () => 0);
+  l.sections = [{ name: '', status: 'existing' }];
+  l.status = null;
+  return l;
+}
+const sidOf = (l, k) => l.stops[k].id;
+
+// normalizeSharedStops：非环线标反重排、环线保留方向、非法输入
+{
+  const nl = mkSharedLine('l0001', 5, false);
+  eq(L.normalizeSharedStops(nl, sidOf(nl, 1), sidOf(nl, 3)), [sidOf(nl, 1), sidOf(nl, 3)], '非环线正向原样');
+  eq(L.normalizeSharedStops(nl, sidOf(nl, 3), sidOf(nl, 1)), [sidOf(nl, 1), sidOf(nl, 3)], '非环线反向自动按站序重排（闭区间等价）');
+  const lp = mkSharedLine('l0002', 6, true);
+  eq(L.normalizeSharedStops(lp, sidOf(lp, 4), sidOf(lp, 1)), [sidOf(lp, 4), sidOf(lp, 1)], '环线保留所选方向（4→1＝跨环绕弧）');
+  eq(L.normalizeSharedStops(lp, sidOf(lp, 1), sidOf(lp, 4)), [sidOf(lp, 1), sidOf(lp, 4)], '环线正向也原样');
+  ok(L.normalizeSharedStops(nl, sidOf(nl, 2), sidOf(nl, 2)) === null, '起止同站 → null');
+  ok(L.normalizeSharedStops(nl, sidOf(nl, 2), 'l0001-s99') === null, '站不在线上 → null');
+}
+
+// sharedRangeGroupSeq：validate shared_node_seq 同口径
+{
+  const a = mkSharedLine('l0001', 5, false);
+  const b = mkSharedLine('l0002', 4, false);
+  // 组：a2+b1 同站（sg01）、a3+b2 同站（sg02）；a1/a4/a5、b3/b4 未编组
+  const sgs = [
+    { id: 'sg01', type: 'same-station', stops: [sidOf(a, 1), sidOf(b, 0)] },
+    { id: 'sg02', type: 'same-station', stops: [sidOf(a, 2), sidOf(b, 1)] },
+  ];
+  eq(L.sharedRangeGroupSeq(a, [sidOf(a, 1), sidOf(a, 2)], sgs), ['sg01', 'sg02'], '范围站序列＝顶层组 id（含两端）');
+  eq(L.sharedRangeGroupSeq(a, [sidOf(a, 2), sidOf(a, 1)], sgs), ['sg01', 'sg02'], '非环线标反＝同一闭区间（validate 重排为站序升序，序列相同）');
+  eq(L.sharedRangeGroupSeq(a, [sidOf(a, 0), sidOf(a, 3)], sgs), null, '范围含未编组站 → null（降级信号，不得报错）');
+  ok(L.sharedRangeGroupSeq(a, ['l0001-s99', sidOf(a, 2)], sgs) === null, '站定位失败 → null');
+  ok(L.sharedRangeGroupSeq(a, [sidOf(a, 2), sidOf(a, 2)], sgs) === null, '起止同站 → null');
+  // 嵌套组上溯顶层：sg11（a2 独组）被 sg01（顶层）吸收
+  const sgsNest = [
+    { id: 'sg01', type: 'out-of-station', stops: [sidOf(b, 0)], groups: ['sg11'] },
+    { id: 'sg11', type: 'same-station', stops: [sidOf(a, 1), sidOf(b, 1)] },
+    { id: 'sg02', type: 'same-station', stops: [sidOf(a, 2), sidOf(b, 2)] },
+  ];
+  eq(L.sharedRangeGroupSeq(a, [sidOf(a, 1), sidOf(a, 2)], sgsNest), ['sg01', 'sg02'], '嵌套组按最外层归一（a2 的 sg11 上溯到 sg01）');
+  // 环线跨环绕弧：6 站环线全编组，声明 [s05, s02] → 站序前进弧 s05,s06,s01,s02
+  const lp = mkSharedLine('l0003', 6, true);
+  const sgsLoop = lp.stops.map((st, k) => ({ id: `sg${String(k + 1).padStart(2, '0')}`, type: 'same-station', stops: [st.id] }));
+  eq(L.sharedRangeGroupSeq(lp, [sidOf(lp, 4), sidOf(lp, 1)], sgsLoop), ['sg05', 'sg06', 'sg01', 'sg02'], '环线 i>j 跨环绕弧（前进方向 s05→s06→s01→s02）');
+  eq(L.sharedRangeGroupSeq(lp, [sidOf(lp, 1), sidOf(lp, 4)], sgsLoop), ['sg02', 'sg03', 'sg04', 'sg05'], '环线正向（补弧）序列不同——弧向有语义');
+}
+
+// sharedMirrorStops：对称声明生成
+{
+  const A = mkSharedLine('l0001', 5, false);   // A: a1..a5
+  const B = mkSharedLine('l0002', 4, false);   // B: b1..b4
+  const lines = new Map([[A.id, A], [B.id, B]]);
+  const sgs = [
+    { id: 'sg01', type: 'same-station', stops: [sidOf(A, 1), sidOf(B, 0)] },
+    { id: 'sg02', type: 'same-station', stops: [sidOf(A, 2), sidOf(B, 1)] },
+  ];
+  A.sharedTracks = [{ peer: 'l0002', stops: [sidOf(A, 1), sidOf(A, 2)] }];
+  let m = L.sharedMirrorStops(A, 'l0002', lines, sgs);
+  ok(m.ok, '基本镜像成功');
+  eq(m.stops, [sidOf(B, 0), sidOf(B, 1)], '端点经顶层组映射到对方线站');
+  // A 声明反向（手写数据）：闭区间等价，镜像同样成功（B 侧按其站序规范输出）
+  A.sharedTracks = [{ peer: 'l0002', stops: [sidOf(A, 2), sidOf(A, 1)] }];
+  m = L.sharedMirrorStops(A, 'l0002', lines, sgs);
+  ok(m.ok && m.stops[0] === sidOf(B, 0) && m.stops[1] === sidOf(B, 1), '非环线反向声明镜像（闭区间等价，B 侧按站序规范）');
+  // nodecl / nopeer
+  ok(L.sharedMirrorStops(A, 'l0009', lines, sgs).reason === 'nodecl', '本线无该 peer 声明 → nodecl');
+  B.sharedTracks = [{ peer: 'l0001', stops: [sidOf(B, 0), sidOf(B, 1)] }];   // 占位防误判
+  const linesNoB = new Map([[A.id, A]]);
+  ok(L.sharedMirrorStops(A, 'l0002', linesNoB, sgs).reason === 'nopeer', '对方线不存在 → nopeer');
+  // ungrouped：端点未编组
+  A.sharedTracks = [{ peer: 'l0002', stops: [sidOf(A, 0), sidOf(A, 2)] }];
+  ok(L.sharedMirrorStops(A, 'l0002', lines, sgs).reason === 'ungrouped', '端点未编组 → ungrouped（降级，不生成）');
+  // nostop：对方线无对应站（A 侧两端已编组、组里缺 B 侧站）
+  A.sharedTracks = [{ peer: 'l0002', stops: [sidOf(A, 1), sidOf(A, 2)] }];
+  const sgsMiss = [
+    { id: 'sg01', type: 'same-station', stops: [sidOf(A, 1)] },
+    { id: 'sg02', type: 'same-station', stops: [sidOf(A, 2)] },
+  ];
+  ok(L.sharedMirrorStops(A, 'l0002', lines, sgsMiss).reason === 'nostop', '对方线无对应站 → nostop');
+  // ambiguous：同顶层组在对方线有两站
+  const Bb = mkSharedLine('l0003', 4, false);
+  const lines3 = new Map([[A.id, A], [B.id, B], [Bb.id, Bb]]);
+  const sgsAmb = [
+    { id: 'sg01', type: 'same-station', stops: [sidOf(A, 1), sidOf(B, 0), sidOf(B, 1)] },
+    { id: 'sg02', type: 'same-station', stops: [sidOf(A, 2), sidOf(B, 2)] },
+  ];
+  A.sharedTracks = [{ peer: 'l0002', stops: [sidOf(A, 1), sidOf(A, 2)] }];
+  ok(L.sharedMirrorStops(A, 'l0002', lines3, sgsAmb).reason === 'ambiguous', '对方线同组两站 → ambiguous（不自动选定）');
+  // mismatch：B 线范围内多一个 A 没有的编组站
+  const sgsMis = [
+    { id: 'sg01', type: 'same-station', stops: [sidOf(A, 1), sidOf(B, 0)] },
+    { id: 'sgX', type: 'same-station', stops: [sidOf(B, 1)] },
+    { id: 'sg02', type: 'same-station', stops: [sidOf(A, 2), sidOf(B, 2)] },
+  ];
+  ok(L.sharedMirrorStops(A, 'l0002', lines3, sgsMis).reason === 'mismatch', '两线范围站序列不一致 → mismatch');
+  // 3/4 号线真实形态（l0017 非环线反向声明 × l0018 环线跨环绕，2026-11-27 方案 A 数据）：
+  // A 非环线 9 站（idx0..8），共线＝A2..A6（idx1..5，声明手写为 s06→s02 反向）；
+  // B 环线 8 站（idx0..7），共线弧＝B8,B1,B2,B3,B4（idx7,0,1,2,3＝跨环绕弧）
+  const A34 = mkSharedLine('l0017', 9, false);
+  const B34 = mkSharedLine('l0018', 8, true);
+  const lines34 = new Map([[A34.id, A34], [B34.id, B34]]);
+  const sgs34 = [0, 1, 2, 3, 4].map((k) => ({
+    id: `sg${String(k + 1).padStart(2, '0')}`, type: 'same-station',
+    stops: [sidOf(A34, k + 1), sidOf(B34, (k + 7) % 8)],   // A2..A6 ↔ B8,B1,B2,B3,B4（弧序）
+  }));
+  A34.sharedTracks = [{ peer: 'l0018', stops: [sidOf(A34, 5), sidOf(A34, 1)] }];   // A6 → A2（反向）
+  m = L.sharedMirrorStops(A34, 'l0018', lines34, sgs34);
+  ok(m.ok, '3/4 号线形态镜像成功');
+  eq(m.stops, [sidOf(B34, 7), sidOf(B34, 3)], 'B 环线跨环绕弧（B8→B4）自动选定正确弧向');
+  // 未编组降级直接采用：A 侧全部编组、B 侧中段站不在组里（B 序列算不出）→ 不校验序列仍生成
+  const sgsDeg = [
+    { id: 'sg01', type: 'same-station', stops: [sidOf(A34, 1), sidOf(B34, 7)] },
+    { id: 'sg02', type: 'same-station', stops: [sidOf(A34, 2)] },
+    { id: 'sg03', type: 'same-station', stops: [sidOf(A34, 3)] },
+    { id: 'sg04', type: 'same-station', stops: [sidOf(A34, 4)] },
+    { id: 'sg05', type: 'same-station', stops: [sidOf(A34, 5), sidOf(B34, 3)] },
+  ];
+  m = L.sharedMirrorStops(A34, 'l0018', lines34, sgsDeg);
+  ok(m.ok && m.stops[0] === sidOf(B34, 7) && m.stops[1] === sidOf(B34, 3), 'B 侧中段未编组＝降级采用（不校验序列）');
+  // 真实 3/4 号线顺序陷阱（冒烟抓包 2026-11-28）：A 站序正向起点对应 B 环线上站序较小的站时，
+  // 候选 1 恰是**补弧**（直走弧）且其上站未编组——降级候选不得抢先于「可校验且匹配」的跨环绕弧
+  const sgs34v2 = [0, 1, 2, 3, 4].map((k) => ({
+    id: `st${String(k + 1).padStart(2, '0')}`, type: 'same-station',
+    stops: [sidOf(A34, k + 1), sidOf(B34, (3 - k + 8) % 8)],   // A2..A6 ↔ B4,B3,B2,B1,B8（A 正向＝B 跨环绕）
+  }));
+  A34.sharedTracks = [{ peer: 'l0018', stops: [sidOf(A34, 1), sidOf(A34, 5)] }];   // A2 → A6（站序正向）
+  m = L.sharedMirrorStops(A34, 'l0018', lines34, sgs34v2);
+  ok(m.ok && m.stops[0] === sidOf(B34, 7) && m.stops[1] === sidOf(B34, 3),
+    `补弧含未编组站时不抢降级（选跨环绕弧；got ${JSON.stringify(m.stops)}）`);
+}
+
+// lineIssues：sharedTracks 单线结构（与 validate 逐线段同口径）
+{
+  const l = mkSharedLine('l0001', 3, false);
+  l.sharedTracks = [{ peer: 'l0001', stops: [sidOf(l, 0), sidOf(l, 1)] }];
+  ok(L.lineIssues(l).some((x) => x.includes('不得与自身共线')), '检出 peer＝自身');
+  l.sharedTracks = [{ peer: 'l0002', stops: [sidOf(l, 0), sidOf(l, 1)] }, { peer: 'l0002', stops: [sidOf(l, 0), sidOf(l, 2)] }];
+  ok(L.lineIssues(l).some((x) => x.includes('重复声明')), '检出同 peer 重复');
+  l.sharedTracks = [{ peer: 'l0002', stops: [sidOf(l, 0), 'l0009-s01'] }];
+  ok(L.lineIssues(l).some((x) => x.includes('不属本线')), '检出站不属本线');
+  l.sharedTracks = [{ peer: 'l0002', stops: [sidOf(l, 1), sidOf(l, 1)] }];
+  ok(L.lineIssues(l).some((x) => x.includes('起止站相同')), '检出起止同站');
+  l.role = 'connector'; l.connects = ['l0002', 'l0003']; delete l.color;
+  ok(L.lineIssues(l).some((x) => x.includes('联络线不得声明共线段')), '检出联络线声明共线');
+  l.role = 'standalone'; l.connects = []; l.color = '#112233';
+  l.sharedTracks = [{ peer: 'l0002', stops: [sidOf(l, 0), sidOf(l, 2)] }];   // 真实 l0017 同款：起>止 的非环线声明
+  eq(L.lineIssues(l), [], '非环线反向声明合法（闭区间等价，与 validate 同口径不拦）');
+}
 
 // ---------- lineinfo.md 节编辑（2026-11-23：保真＝只动被编辑节，其余字节原样） ----------
 console.log('lineinfo 节编辑:');
