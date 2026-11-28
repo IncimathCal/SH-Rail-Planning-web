@@ -2762,6 +2762,8 @@
           return {
             time: t,
             open: typeof r.open === 'string' ? r.open : '',
+            approve: typeof r.approve === 'string' ? r.approve : '',
+            approveTime: Number.isFinite(r.approveTime) ? r.approveTime : null,
             build: typeof r.build === 'string' ? r.build : '',
             buildTime: Number.isFinite(r.buildTime) ? r.buildTime : null,
             label: typeof r.label === 'string' ? r.label : '',
@@ -2771,9 +2773,9 @@
         }
       }
     }
-    if (segStatus === 'existing') return { time: 2020.0, open: '已开通', build: '', buildTime: 2016.0, label: '既有段', stage: 'opened', handover: null };
-    if (segStatus === 'approved') return { time: 2028.5, open: '预计2028', build: '', buildTime: 2024.0, label: '近期段', stage: 'approved', handover: null };
-    return { time: 2034.5, open: '预计2034', build: '', buildTime: 2030.5, label: '远期规划', stage: 'future', handover: null };
+    if (segStatus === 'existing') return { time: 2020.0, open: '已开通', approve: '', approveTime: 2014.0, build: '', buildTime: 2016.0, label: '既有段', stage: 'opened', handover: null };
+    if (segStatus === 'approved') return { time: 2028.5, open: '预计2028', approve: '', approveTime: 2021.5, build: '', buildTime: 2024.0, label: '近期段', stage: 'approved', handover: null };
+    return { time: 2034.0, open: '远期规划', approve: '', approveTime: null, build: '', buildTime: null, label: '远期规划', stage: 'future', handover: null };
   }
   function stopOpenMeta(timeline, line, stop, lineStopsOrdered) {
     if (!line || !stop || !Array.isArray(line.segments) || !line.segments.length) {

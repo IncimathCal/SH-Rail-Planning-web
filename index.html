@@ -1174,13 +1174,14 @@
       </div>
       <div class="tl-kpis">
         <span class="tl-kpi"><b id="tlKm">0.0</b>km</span>
-        <span class="tl-kpi tl-kpi-build" id="tlBuildKpi">在建<b id="tlBuildKm">0.0</b>km</span>
+        <span class="tl-kpi tl-kpi-build" id="tlApproveKpi" hidden title="已获批复但尚未开工的线路里程">已批<b id="tlApproveKm">0.0</b>km</span>
+        <span class="tl-kpi tl-kpi-build" id="tlBuildKpi" title="当前已开工在建但尚未开通的线路里程">在建<b id="tlBuildKm">0.0</b>km</span>
         <span class="tl-kpi"><b id="tlStations">0</b>站</span>
         <span class="tl-kpi"><b id="tlLines">0</b>线</span>
       </div>
       <button id="tlClose" type="button" aria-label="退出时间轴">✕</button>
     </div>
-    <div class="tl-milestone" id="tlMilestone"><b>1993年5月</b>1号线南段通车：徐家汇—锦江乐园试运营</div>
+    <div class="tl-milestone" id="tlMilestone"><b>1990年3月</b>1号线一期正式开工</div>
     <div class="tl-controls">
       <button id="tlPlay" class="tl-btn" type="button">▶ 播放</button>
       <button id="tlReplay" class="tl-btn" type="button">↺ 重播</button>
@@ -1188,9 +1189,9 @@
         <input id="tlSlider" type="range" min="1990" max="2040" step="0.02" value="1993">
       </div>
       <button id="tlSpeed" class="tl-btn" type="button">1×</button>
-      <button id="tlFollow" class="tl-btn" type="button">聚焦更新</button>
-      <button id="tlBuild" class="tl-btn on" type="button" title="显示已开工但尚未开通的在建虚影线路">在建模式</button>
-      <button id="tlGhost" class="tl-btn on" type="button">蓝图</button>
+      <button id="tlFollow" class="tl-btn" type="button" title="开启后自动先将目标线路起点平移至视口中央，再逐站平滑跟焦">聚焦更新</button>
+      <button id="tlBuild" class="tl-btn on" type="button" title="已批复线路以浅色预显，已开工线路以彩色虚线呈现">批复/在建</button>
+      <button id="tlGhost" class="tl-btn" type="button" title="叠加全网远期蓝图底影（默认关闭，未批复线路不提前展示）">蓝图</button>
     </div>
     <div class="tl-eras" id="tlEras">
       <button type="button" class="tl-era-btn" data-year="1990.20">1990 开工</button>
