@@ -248,10 +248,10 @@ for (let i = 0; i < 100; i++) bigLabels.push({ key: 'g' + i, name: '组' + i, gr
 eq(V.filterLabels(bigLabels, 9).length, 0, 'z9 无标签');
 eq(V.filterLabels(bigLabels, 10.5).length, 100, 'z10 仅换乘组标签显示');
 eq(V.filterLabels(bigLabels, 10.99).length, 100, 'z10.99 普通单线站仍隐藏');
-eq(V.filterLabels([{ group: false, groupType: 'out-of-station' }, { group: false, groupType: null }], 10).length, 1,
-  'z10 按真实 groupType 字段显示出闸换乘站标签，不看名称');
-eq(V.filterLabels([{ group: true, groupType: 'junction' }, { group: false, groupType: null }], 10).length, 1,
-  'z10 按真实 group 字段显示换乘组标签');
+eq(V.filterLabels([{ group: false, groupType: 'out-of-station' }, { group: false, groupType: null }], 10.5).length, 1,
+  'z10.5 按真实 groupType 字段显示出闸换乘站标签，不看名称');
+eq(V.filterLabels([{ group: true, groupType: 'junction' }, { group: false, groupType: null }], 10.5).length, 1,
+  'z10.5 按真实 group 字段显示换乘组标签');
 
 eq(V.filterLabels(bigLabels, 11.5).length, 1000, 'z11 全部显示——1000 个标签单元（超旧上限 800）不再砍普通站名');
 eq(V.filterLabels(bigLabels, 11.5).filter((l) => !l.group).length, 900, 'z11 普通站标签全在');
