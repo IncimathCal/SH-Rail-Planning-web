@@ -380,6 +380,14 @@
     .lp-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
     .lp-swatch { flex: none; width: 34px; height: 10px; border-radius: 5px; }
     .lp-name { font-size: 20px; font-weight: 600; line-height: 1.3; }
+    /* 标题分类标签（2026-11-28 通用需求，手机电脑都要）：色块＋线路名后追加「市区线／市域线
+       ／预控通道」等类别小标签——次要信息弱一档：小号灰字描边 chip（黑白灰一致；线组取主线
+       分类，无 layer 不出，viewer.js openLinePage） */
+    .lp-layer-chip {
+      flex: none; font-size: 11.5px; line-height: 1.4; color: #555555;
+      border: 1px solid var(--control-border); border-radius: 999px;
+      padding: 2px 9px; white-space: nowrap;
+    }
     .lp-none {
       margin-top: 14px; color: #000; font-size: 13px;
       border: 1px dashed var(--control-border); border-radius: 10px;
@@ -590,6 +598,41 @@
     }
     .maplibregl-ctrl-bottom-right { right: 8px; bottom: 8px; }
     .maplibregl-ctrl-bottom-right .maplibregl-ctrl { margin: 0; }
+
+    /* ---------- 移动端（窄屏 <768px）bottom sheet（2026-11-28 适配第一批；桌面零改动） ----------
+       左侧 295px 面板在窄屏改全宽贴底三档（隐藏[只露把手]/半屏[默认]/全屏），档高由 viewer.js
+       applySheetSnap 写 inline px 接管（此处 50dvh＝无 JS 兜底与初始帧）；拖拽（pointer 事件挂
+       把手，.dragging 禁 transition、松手按 V.nearestSheetSnap 吸附最近档）。桌面抽屉把手/
+       展开条在移动端退役（#panelCollapse/#panelTab display none，收展语义由 sheet 把手承担，
+       高亮状态不受影响——只动面板高度不碰 S.focus/分期）。断点 768 与 viewer_core
+       MOBILE_BREAKPOINT 同值（768px 平板竖屏归桌面）。 */
+    #sheetHandle { display: none; }   /* 桌面不显示（移动端 media 内亮出） */
+    @media (max-width: 767px) {
+      #panel {
+        top: auto; left: 0; right: 0; bottom: 0; width: auto;
+        height: 50vh; height: 50dvh;   /* 无 JS 兜底＝半屏；JS 接管后 inline px 为准 */
+        border-radius: 14px 14px 0 0;
+        border-left: none; border-right: none; border-bottom: none;
+        transform: none;   /* 桌面 .collapsed 的 translateX 形态不适用（跨断点类清理见 viewer.js syncViewportMode） */
+        transition: height .3s ease;   /* 三档吸附过渡；拖拽中 .dragging／直设 .noanim 禁 */
+      }
+      #panel.collapsed { transform: none; }
+      #panel.dragging, #panel.noanim { transition: none; }
+      /* 把手：全宽触摸热区 30px（≥拇指可命中）＋视觉短条；touch-action none＝拖拽独占触摸，
+         防浏览器把手势当页面滚动（面板内容滚动不受影响） */
+      #sheetHandle {
+        display: flex; flex: none;
+        align-items: center; justify-content: center;
+        height: 30px; cursor: grab; touch-action: none; user-select: none;
+      }
+      .sheet-handle-bar { width: 44px; height: 5px; border-radius: 2.5px; background: rgba(0, 0, 0, 0.22); }
+      #panelCollapse, #panelTab { display: none !important; }
+      /* 初始页二维码双列（半屏高度下省纵向空间；卡片自身全宽设计适配半格） */
+      .splash-cards { grid-template-columns: 1fr 1fr; gap: 8px; }
+      /* 经纬读数尺等图上小字同步放大一档（站名标签放大走 viewer.js labelScale 断点乘数，
+         此处只管 SVG 静态字号） */
+      #coordinateRuler text { font-size: 12.5px; }
+    }
   </style>
 </head>
 <body>
@@ -599,8 +642,9 @@
   <div id="focusFx" aria-hidden="true"></div>
 
   <!-- 唯一左侧面板：初始界面 / 主界面（列表） / 车站页 / 线路页 四视图（滑动滑轨，见 CSS
-       #panelViews 段）＋底部署名行 -->
+       #panelViews 段）＋底部署名行。#sheetHandle＝移动端 bottom sheet 把手（桌面 display:none） -->
   <aside id="panel" class="glass">
+    <div id="sheetHandle"><span class="sheet-handle-bar"></span></div>
     <div id="panelViews">
     <!-- 初始界面（刷新/初次进入；地图正常渲染可交互） -->
     <div id="viewSplash" class="pview">

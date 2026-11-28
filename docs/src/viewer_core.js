@@ -131,6 +131,38 @@
   // 数值容差转字符串（坐标导出用，非数值兜底 0）
   function num(v) { return Number.isFinite(v) ? v : 0; }
 
+  // ---------- 移动端视口纯逻辑（2026-11-28 移动端适配第一批） ----------
+  // 断点 768：视口宽 <768（CSS 像素）＝移动端（index.html @media (max-width: 767px) 同值；
+  // 768px 平板竖屏归桌面——295px 左侧面板在该宽度仍可用）。运行时判定走胶水层 matchMedia
+  //（响应即时），本函数给单测与 JS/CSS 断点一致性锚点。
+  const MOBILE_BREAKPOINT = 768;
+  function viewportIsMobile(width) {
+    return Number.isFinite(width) && width > 0 && width < MOBILE_BREAKPOINT;
+  }
+  // 站名标签移动端整体放大一档的乘数（复用 labelScale 机制：zf = labelScale(zoom) × 本乘数；
+  // 12px→15px、13px→16.25px）。桌面端不乘（桌面回归零改动）。
+  const MOBILE_LABEL_SCALE = 1.25;
+  // bottom sheet 三档标准高度（px）：hidden＝只露把手（把手条高度，胶水层 CSS 常量同值）；
+  // half＝视口一半（四舍五入）；full＝整个视口高。viewportH/handleH 非法输入返回 null（调用方兜底）。
+  function sheetSnapHeights(viewportH, handleH) {
+    if (!Number.isFinite(viewportH) || viewportH <= 0 || !Number.isFinite(handleH) || handleH <= 0) return null;
+    return { hidden: handleH, half: Math.round(viewportH / 2), full: Math.round(viewportH) };
+  }
+  // 松手吸附：取距当前高度最近的档（等距平手按 hidden→half→full 定义序先到先得——
+  // 下拉略过半即吸 half 的手感由「就近」保证，平手罕见不刻意偏置）。heights 缺档跳过、
+  // 全缺/非法高度返回 null（调用方保持原档）。
+  function nearestSheetSnap(height, heights) {
+    if (!Number.isFinite(height) || !heights) return null;
+    let best = null, bestDist = Infinity;
+    for (const key of ['hidden', 'half', 'full']) {
+      const v = heights[key];
+      if (!Number.isFinite(v)) continue;
+      const d = Math.abs(height - v);
+      if (d < bestDist) { bestDist = d; best = key; }
+    }
+    return best;
+  }
+
   // ---------- GCJ02 偏移（测试阶段底图·高德对齐用） ----------
   // ⚠ 与 src/geom.js 同源复制，测试阶段功能，勿单侧改动——查看器不能引 geom.js 整模块
   //（那会把编辑器几何库带进 Pages 部署面），故留受控副本；两份副本漂移由
@@ -2474,6 +2506,7 @@
     PHASE_CYCLE, PHASE_LABEL_ZH, HIDDEN_LIST_LAYERS, DISPLAY_ONLY_LAYERS, DASHED_LAYERS,
     LABEL_ZOOM_GROUP, LABEL_ZOOM_STOP,
     SIZE_ZOOM_MIN, SIZE_ZOOM_HOLD, SIZE_SCALE_EXP, labelScale,
+    MOBILE_BREAKPOINT, viewportIsMobile, MOBILE_LABEL_SCALE, sheetSnapHeights, nearestSheetSnap,
     UNNAMED_STOP_ZH, stopDisplayName, formatTerminals,
     xmlEscape, normalizeHex, hexToKmlColor,
     normalizeLines, lineBboxOf, stopList, buildStopView,
