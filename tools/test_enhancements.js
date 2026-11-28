@@ -106,10 +106,45 @@ assert(Array.isArray(timeline.planApprovals) && timeline.planApprovals.length >=
 assert(timeline.planApprovals.some((p) => p.title === '《上海轨道交通第三期建设规划》（2018年~2023年）'), 'Should include 3rd construction plan banner title');
 assert(timeline.deferredStations && timeline.deferredStations['l0030-s08'] && timeline.deferredStations['l0026-s06'] && timeline.deferredStations['l0013-s32'],
   'Should include real deferred stations (14号线龙居路, 11号线陈翔公路, 15号线桂林路)');
-assert(Array.isArray(timeline.keyEvents) && timeline.keyEvents.length >= 50, 'Should generate rich chronological keyEvents feed');
+// Line 19 north先行段 (2027-07) with 4 deferred intermediate stations (泰和路/兰岗路/铁山路/铁通路)
+const seg19Early = V.segmentOpenMeta(timeline, 'l0034', 30);
+const seg19Rest = V.segmentOpenMeta(timeline, 'l0034', 28);
+assert.strictEqual(seg19Early.open, '预计2027-07', 'Line 19 江杨南路—上海宝山站 should open 2027-07');
+assert.strictEqual(seg19Rest.open, '预计2028-12', 'Line 19 一二八纪念路—江杨南路 should open 2028-12');
+for (const sid of ['l0034-s35', 'l0034-s36', 'l0034-s37', 'l0034-s38']) {
+  const dr = timeline.deferredStations[sid];
+  assert(dr && dr.builtTime === 2027.54 && dr.openTime === 2028.95, `Line 19 intermediate station ${sid} must be deferred 2027.54 -> 2028.95`);
+}
+// Line 13 West -> Line 29 handover on l0044 seg 8..10
+const seg13West = V.segmentOpenMeta(timeline, 'l0044', 8);
+assert.strictEqual(seg13West.open, '预计2027-10', 'l0044 seg 8 (前湾公园—国家会展中心) should first open 2027-10 as 13西延');
+assert(seg13West.handover && seg13West.handover.mainId === 'l0029' && seg13West.handover.beforeLineId === 'l0044' && seg13West.handover.color === '#E999C0',
+  'l0044 seg 8 must carry Line 13 handover metadata before Line 29 opens');
+// Line 20 北新园路—高东东 (l0035 seg 22) must be unapproved 远期规划
+const seg20East = V.segmentOpenMeta(timeline, 'l0035', 22);
+assert.strictEqual(seg20East.open, '远期规划', 'Line 20 北新园路—高东东 must be 远期规划');
+assert.strictEqual(seg20East.approveTime, null, 'Line 20 北新园路—高东东 must not have approveTime');
+assert.strictEqual(seg20East.buildTime, null, 'Line 20 北新园路—高东东 must not have buildTime');
+// Key events: rename & deferred station openings must include close-up coords & pauseMs >= 1200
+assert(Array.isArray(timeline.keyEvents) && timeline.keyEvents.length >= 60, 'Should generate rich chronological keyEvents feed');
+const renameEvents = timeline.keyEvents.filter((e) => e.type === 'rename');
+const stationEvents = timeline.keyEvents.filter((e) => e.type === 'station');
+assert(renameEvents.length >= 10, 'Should emit individual station rename events');
+assert(stationEvents.length >= 10, 'Should emit individual deferred-station opening events');
+for (const e of renameEvents.concat(stationEvents)) {
+  assert(Array.isArray(e.coord) && e.coord.length === 2 && Number.isFinite(e.coord[0]) && Number.isFinite(e.coord[1]),
+    `Event ${e.id} must carry valid WGS84 coord for close-up focus`);
+  assert(e.pauseMs >= 1200, `Event ${e.id} must carry pauseMs >= 1200`);
+}
 for (let i = 1; i < timeline.keyEvents.length; i++) {
   assert(timeline.keyEvents[i].time >= timeline.keyEvents[i - 1].time, 'keyEvents must be sorted chronologically');
 }
+// Zero non-station-name middle-dot (·) in timeline.json
+const rawTl = JSON.stringify(timeline);
+const allowedDotNames = ['一大会址·黄陂南路', '一大会址·新天地', '蟠祥路·国家会计学院'];
+let cleanedTl = rawTl;
+for (const nm of allowedDotNames) cleanedTl = cleanedTl.split(nm).join('');
+assert(!cleanedTl.includes('·'), 'timeline.json must not contain any non-station-name middle-dot (·)');
 
 console.log('ALL ENHANCEMENT TESTS PASSED!');
 console.log(JSON.stringify({
