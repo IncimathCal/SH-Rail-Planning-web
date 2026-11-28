@@ -16,6 +16,14 @@ wght 轴 100–900）。脚本对每个目标字重先用 fontTools.varLib.insta
 可变字体实例化成静态字重，再做子集化并压成 woff2。静态 ttf/otf 源同样
 可用（@wght 只用于标注字重，不改字形）。
 
+CFF→TrueType 轮廓转换（2026-11-28 部分安卓「只见白描边不见黑字」修复②）
+--------------------------------------------------------------------
+子集化后若字体仍是 CFF（PostScript）轮廓（源为静态 OTF 时，如苹方），自动
+原地转 TrueType（glyf）轮廓再落盘——部分安卓 WebView 对 webfont 的 CFF 轮廓
+渲染有缺陷。转换只换轮廓的数学描述（三次贝塞尔→二次逼近，误差默认 0.1% em
+级，视觉不可辨），字形设计／字符集（cmap）／度量（hmtx）不变；源本身是
+TrueType（无 CFF 表）则跳过（思源轨零改动）。详见 cff_to_glyf 文档。
+
 字符来源与剥注释规则
 --------------------
 * --data-glob 命中的 .json / .geojson：按 JSON 解析，遍历全部字符串键与值；
@@ -53,8 +61,10 @@ import os
 import re
 import sys
 
-from fontTools.ttLib import TTFont
+from fontTools.ttLib import TTFont, newTable
 from fontTools import subset as ft_subset
+from fontTools.pens.cu2quPen import Cu2QuPen
+from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.varLib import instancer
 
 # ---------------------------------------------------------------------------
@@ -187,6 +197,64 @@ def subset_font(font, char_set):
     return font
 
 
+def cff_to_glyf(font, max_err_em=1.0):
+    """CFF（PostScript 三次曲线）轮廓原地转 TrueType（glyf 二次曲线）轮廓。
+
+    背景（2026-11-28 部分安卓「只见白描边不见黑字」修复②）：苹方源是静态
+    OTF（CFF 轮廓），部分安卓 WebView 对网页 webfont 的 CFF 轮廓渲染有缺陷；
+    转 glyf 后兼容面更广。转换只改轮廓的数学描述（三次贝塞尔→二次逼近，
+    误差 max_err_em × upm/1000 单位——默认 1.0 即 0.1% em，视觉不可辨），
+    字形设计、字符集（cmap）、度量（hmtx）均不变。源本身是 TrueType（无
+    CFF 表）时不动、返回 False（思源轨零改动）。
+
+    路线＝fontTools 官方 cu2qu：Cu2QuPen 收三次曲线、逼近输出二次曲线给
+    TTGlyphPen（reverse_direction＝CFF 与 TrueType 的外轮廓方向相反，必须
+    反转）；重建 glyf/loca、删 CFF 与 VORG（VORG 只伴随 CFF 的竖排基线
+    偏移，TrueType 轨道由 vmtx 承担）、sfntVersion 改 00010000；maxp 从
+    OTTO 的 0.5 版升 1.0 全字段（recalc 按 glyf 实际轮廓统计；本流程
+    hinting=False 无 TrueType 指令，指令相关 max 字段无实义）。
+    """
+    if "CFF " not in font:
+        return False
+    glyph_order = font.getGlyphOrder()
+    upm = font["head"].unitsPerEm
+    max_err = max_err_em * upm / 1000.0
+    glyph_set = font.getGlyphSet()
+    glyf = newTable("glyf")
+    glyf.glyphOrder = glyph_order
+    glyphs = {}
+    for name in glyph_order:
+        pen = TTGlyphPen(glyph_set)
+        cu2qu = Cu2QuPen(pen, max_err, reverse_direction=True)
+        glyph_set[name].draw(cu2qu)
+        glyphs[name] = pen.glyph()
+    glyf.glyphs = glyphs
+    font["loca"] = newTable("loca")
+    font["glyf"] = glyf
+    del font["CFF "]
+    if "VORG" in font:
+        del font["VORG"]
+    font.sfntVersion = "\x00\x01\x00\x00"
+    maxp = newTable("maxp")
+    maxp.tableVersion = 0x00010000  # 1.0 全字段（OTTO 的 0.5 版只带 numGlyphs）
+    maxp.numGlyphs = len(glyph_order)
+    # 指令相关字段的保守默认（本流程 hinting=False 无 TrueType 指令，全 0；
+    # maxZones=2 为规范惯例值——只有带 twilight zone 指令的字体才需要 >1）
+    maxp.maxZones = 2
+    maxp.maxTwilightPoints = 0
+    maxp.maxStorage = 0
+    maxp.maxFunctionDefs = 0
+    maxp.maxInstructionDefs = 0
+    maxp.maxStackElements = 0
+    maxp.maxSizeOfInstructions = 0
+    font["maxp"] = maxp
+    # TTGlyphPen 产出的字形未算 bbox（xMin 等），maxp.recalc 要读——先逐字形补
+    for name in glyph_order:
+        glyphs[name].recalcBounds(glyf)
+    maxp.recalc(font)
+    return True
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="生成查看器用思源黑体中文子集 webfont（woff2）"
@@ -306,6 +374,7 @@ def main(argv=None):
 
         font = build_font(source_path, wght)
         subset_font(font, char_set)
+        converted = cff_to_glyf(font)  # CFF 源（静态 OTF）自动转 TrueType 轮廓
         out_path = os.path.normpath(os.path.join(out_dir, "subset-%s.woff2" % name))
         font.save(out_path)
 
@@ -317,6 +386,12 @@ def main(argv=None):
             failed = True
             continue
         check = TTFont(out_path)
+        if converted and ("glyf" not in check or "CFF " in check):
+            print(
+                "错误：%s 轮廓转换失败：应含 glyf 不含 CFF（实得 %s）"
+                % (out_path, sorted(k.strip() for k in check.keys()))
+            )
+            failed = True
         cmap = check.getBestCmap()
         miss_data = [c for c in data_chars if ord(c) not in cmap]
         miss_ui = [c for c in ui_chars if ord(c) not in cmap]
@@ -325,8 +400,14 @@ def main(argv=None):
         ]
         size_kb = os.path.getsize(out_path) / 1024.0
         print(
-            "subset-%s.woff2：wght=%d，%d 字形，%.1f KB"
-            % (name, wght, check["maxp"].numGlyphs, size_kb)
+            "subset-%s.woff2：wght=%d，%d 字形，%.1f KB，轮廓 %s"
+            % (
+                name,
+                wght,
+                check["maxp"].numGlyphs,
+                size_kb,
+                "TrueType（已从 CFF 转换）" if converted else "TrueType",
+            )
         )
         for label, missing, hard in (
             ("数据用字", miss_data, True),

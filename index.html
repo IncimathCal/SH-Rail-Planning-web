@@ -141,6 +141,29 @@
       font-size: 13px; color: #000;
       -webkit-text-stroke: 3.25px #fff;
     }
+    /* paint-order 降级（2026-11-28 部分安卓「只见白描边不见黑字」修复①）：
+       老内核/部分国产安卓浏览器不支持 paint-order:stroke fill——白描边按默认
+       顺序画在黑字上面，12px 黑字被 3px 描边整个糊死。不支持 paint-order 的平台
+       在本分支弃 -webkit-text-stroke，改 8 向白色 text-shadow 模拟外描边（
+       全兼容；偏移＝描边可见外扩量 1.5px，对角同分量补角，观感近似）；shadow
+       与 stroke 同属文本渲染属性，随标签 transform 缩放（viewer.js 的 zf 拼在
+       transform 末尾），行为与原描边一致。支持 paint-order 的平台（Mac/iOS/
+       Win/新安卓）不进本分支，原描边观感零改动。修复②＝苹方子集 webfont 转
+       TrueType 轮廓（tools/make_font_subset.py，见 assets/fonts/README.md）。 */
+    @supports not (paint-order: stroke fill) {
+      .map-label {
+        -webkit-text-stroke: 0;
+        text-shadow:
+          1.5px 0 #fff, -1.5px 0 #fff, 0 1.5px #fff, 0 -1.5px #fff,
+          1.5px 1.5px #fff, -1.5px 1.5px #fff, 1.5px -1.5px #fff, -1.5px -1.5px #fff;
+      }
+      .map-label.is-group {
+        -webkit-text-stroke: 0;
+        text-shadow:
+          1.63px 0 #fff, -1.63px 0 #fff, 0 1.63px #fff, 0 -1.63px #fff,
+          1.63px 1.63px #fff, -1.63px 1.63px #fff, 1.63px -1.63px #fff, -1.63px -1.63px #fff;
+      }
+    }
 
     /* ---------- 车站定位 focus 动画（二轮④去蓝：黑环；二轮⑤锚点修复） ----------
        wrapper＝0×0 定点（map.project 坐标 translate3d 到此），子元素绝对定位于该点、
