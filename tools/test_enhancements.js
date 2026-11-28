@@ -101,6 +101,16 @@ assert.strictEqual(seg26.approveTime, null, 'Unapproved Line 26 must not have an
 assert.strictEqual(seg26.buildTime, null, 'Unstarted Line 26 must not have a buildTime');
 assert(seg26.time > seg20Mid.time, 'Line 26 must come strictly after all under-construction lines (20中段)');
 
+// Plan approvals, deferred stations, and chronological key events contracts
+assert(Array.isArray(timeline.planApprovals) && timeline.planApprovals.length >= 6, 'Should include all major construction plan approvals');
+assert(timeline.planApprovals.some((p) => p.title === '《上海轨道交通第三期建设规划》（2018年~2023年）'), 'Should include 3rd construction plan banner title');
+assert(timeline.deferredStations && timeline.deferredStations['l0030-s08'] && timeline.deferredStations['l0026-s06'] && timeline.deferredStations['l0013-s32'],
+  'Should include real deferred stations (14号线龙居路, 11号线陈翔公路, 15号线桂林路)');
+assert(Array.isArray(timeline.keyEvents) && timeline.keyEvents.length >= 50, 'Should generate rich chronological keyEvents feed');
+for (let i = 1; i < timeline.keyEvents.length; i++) {
+  assert(timeline.keyEvents[i].time >= timeline.keyEvents[i - 1].time, 'keyEvents must be sorted chronologically');
+}
+
 console.log('ALL ENHANCEMENT TESTS PASSED!');
 console.log(JSON.stringify({
   totalKm: Number(netAll.total.km.toFixed(1)),

@@ -354,6 +354,14 @@
       arrivedBatchKey: '',
       panGateBatchKey: '',
       panGateUntilMs: 0,
+      eventPauseUntilMs: 0,
+      eventPauseId: '',
+      activePlanBanner: null,
+      triggeredEventIds: new Set(),
+      eventFeedCollapsed: false,
+      lastEventSig: '',
+      events: [],
+      planApprovals: [],
       userPanUntilMs: 0,
       segments: [],
       batches: [],
@@ -3418,7 +3426,13 @@
             ? arrivals.filter((a) => a.openTime <= S.tl.currentTime + 0.02).map((a) => a.lineId)
             : (label.lineIds || []);
           const histName = V.stationNameAt(S.timeline, label.name, openedLineIds.length ? openedLineIds : label.lineIds, tlDispT);
-          acc.push(Object.assign({}, label, { group: isTransferNow, displayName: histName }));
+          const defUntil = S.pinDeferredUntil && S.pinDeferredUntil.get(label.key);
+          const isDeferredNow = Number.isFinite(defUntil) && tlDispT < defUntil - 0.01 && S.tl.currentTime < defUntil - 0.01;
+          acc.push(Object.assign({}, label, {
+            group: isTransferNow,
+            deferred: isDeferredNow,
+            displayName: isDeferredNow ? (histName + '（未开）') : histName,
+          }));
           return acc;
         }, [])
       : S.dispLabels;
@@ -3473,7 +3487,7 @@
       let el = S.labelPool.get(it.key);
       if (!el) {
         el = document.createElement('div');
-        el.className = 'map-label' + (it.group ? ' is-group' : '') + (it.tlActive ? ' is-tl-active' : '');
+        el.className = 'map-label' + (it.group ? ' is-group' : '') + (it.tlActive ? ' is-tl-active' : '') + (it.deferred ? ' is-deferred' : '');
         el.textContent = txt;
         el.dataset.text = txt;   // 双层外描边 ::before content:attr(data-text) 数据源
         wrap.appendChild(el);
@@ -3485,6 +3499,7 @@
         }
         el.classList.toggle('is-group', !!it.group);
         el.classList.toggle('is-tl-active', !!(S.tl.active && it.tlActive));
+        el.classList.toggle('is-deferred', !!(S.tl.active && it.deferred));
       }
       // demo 高亮渐变：站名显隐走 opacity（.map-label 带 CSS transition）——分期/聚焦
       // 切换时站名渐隐渐显，替代原 visibility 硬切
@@ -3781,10 +3796,12 @@
     segsOut.sort((a, b) => a.endTime - b.endTime || a.startTime - b.startTime);
     batchesOut.sort((a, b) => a.startTime - b.startTime);
 
-    // ② 预处理每个叶站的开通时刻与历史移交信息（含 5号线支线 → 23号线交接）
+    // ② 预处理每个叶站的开通时刻与历史移交信息（含 5号线支线 → 23号线交接、已建未开暂缓站点）
     S.pinOpenTime = new Map();
     S.pinTransferTime = new Map();
     S.pinLineArrivals = new Map();
+    S.pinDeferredUntil = new Map();
+    const deferredMap = (S.timeline && S.timeline.deferredStations) || {};
     const stopBySid = new Map();
     for (const s of S.stops) {
       if (s && s.sid) stopBySid.set(s.sid, s);
@@ -3854,6 +3871,8 @@
         const lon = Number.isFinite(s.lon) ? s.lon : (fullStop && Number.isFinite(fullStop.lon) ? fullStop.lon : pinObj.lon);
         const lat = Number.isFinite(s.lat) ? s.lat : (fullStop && Number.isFinite(fullStop.lat) ? fullStop.lat : pinObj.lat);
         if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+        const defRec = deferredMap[s.sid] || null;
+        const effOpenTime = (defRec && Number.isFinite(defRec.openTime) && defRec.openTime > t) ? defRec.openTime : t;
         stopEntries.push({
           sid: s.sid,
           lineId: lid,
@@ -3861,7 +3880,8 @@
           color,
           lon,
           lat,
-          openTime: t,
+          builtTime: t,
+          openTime: effOpenTime,
           handover: ho,
         });
       }
@@ -3873,21 +3893,27 @@
         const t = (pinObj.sid && stopTimeBySid.get(pinObj.sid))
           || (ln && ln.segments.length ? segOpenByLineIdx.get(ln.lineId + ':' + ln.segments[0].segIndex) : 2035.0);
         const ho = (pinObj.sid && stopHandoverBySid.get(pinObj.sid)) || null;
+        const sidKey = pinObj.sid || unitKey;
+        const defRec = deferredMap[sidKey] || null;
+        const bt = Number.isFinite(t) ? t : 2035.0;
+        const ot = (defRec && Number.isFinite(defRec.openTime) && defRec.openTime > bt) ? defRec.openTime : bt;
         stopEntries.push({
-          sid: pinObj.sid || unitKey,
+          sid: sidKey,
           lineId: lid,
           mainId,
           color: (mainLn && mainLn.color) || pinObj.stroke || '#999999',
           lon: pinObj.lon,
           lat: pinObj.lat,
-          openTime: Number.isFinite(t) ? t : 2035.0,
+          builtTime: bt,
+          openTime: ot,
           handover: ho,
         });
       }
 
-      // 收集所有离散演变时刻（各叶站开通时刻 + 任何历史移交时刻如 2028.95）
+      // 收集所有离散演变时刻（已建未开出现时刻 + 正式开通时刻 + 历史移交时刻如 2028.95）
       const timeSet = new Set();
       for (const se of stopEntries) {
+        timeSet.add(se.builtTime);
         timeSet.add(se.openTime);
         if (se.handover && Number.isFinite(se.handover.beforeTime) && se.handover.beforeTime > se.openTime) {
           timeSet.add(se.handover.beforeTime);
@@ -3910,17 +3936,23 @@
       const stages = [];
       const arrivalsByMain = new Map();
       let firstTransferTime = Infinity;
+      let firstOpenedTime = Infinity;
 
       for (let ti = 0; ti < mergedTimes.length; ti++) {
         const t = mergedTimes[ti];
         const opened = [];
+        const builtOnly = [];
         const activeLinesMap = new Map();
         for (const se of stopEntries) {
-          if (se.openTime > t + 0.004) continue;
+          if (se.builtTime > t + 0.004) continue;
           const useHo = se.handover && t + 0.004 < se.handover.beforeTime;
           const effMain = useHo ? se.handover.mainId : se.mainId;
           const effLid = useHo ? se.handover.lineId : se.lineId;
           const effColor = useHo ? se.handover.color : se.color;
+          if (se.openTime > t + 0.004) {
+            builtOnly.push({ lon: se.lon, lat: se.lat, mainId: effMain, lineId: effLid, color: effColor });
+            continue;
+          }
           opened.push({ lon: se.lon, lat: se.lat, mainId: effMain, lineId: effLid, color: effColor });
           if (!activeLinesMap.has(effMain)) {
             activeLinesMap.set(effMain, { mainId: effMain, lineId: effLid, color: effColor });
@@ -3929,7 +3961,26 @@
             arrivalsByMain.set(effMain, { mainId: effMain, lineId: effLid, openTime: t, color: effColor });
           }
         }
+        // 已建未开（暂缓开通/甩站通过）阶段：线路已贯通但车站未开 → 灰色站点图标，待正式开通后恢复原色
+        if (!opened.length && builtOnly.length) {
+          const bLon = builtOnly.reduce((a, s) => a + s.lon, 0) / builtOnly.length;
+          const bLat = builtOnly.reduce((a, s) => a + s.lat, 0) / builtOnly.length;
+          const p = dc(bLon, bLat);
+          stages.push({
+            fromTime: t,
+            distinctCount: 0,
+            isDeferred: true,
+            kind: 'pin',
+            feature: {
+              type: 'Feature',
+              geometry: { type: 'Point', coordinates: [p[0], p[1]] },
+              properties: { key: unitKey, name: pinObj.name, big: 0, dark: 0, deferred: 1, stroke: '#8a9099' },
+            },
+          });
+          continue;
+        }
         if (!opened.length) continue;
+        if (!Number.isFinite(firstOpenedTime)) firstOpenedTime = t;
         const distinctCount = activeLinesMap.size;
         const activeList = Array.from(activeLinesMap.values());
         if (distinctCount >= 2 && !Number.isFinite(firstTransferTime)) firstTransferTime = t;
@@ -3940,16 +3991,23 @@
         if (isOutOfStationPin) {
           // 出闸换乘直属站：单线期画线色小圆，组内开通≥2条不同线后变黑边小圆
           const mySe = stopEntries.find((s) => s.sid === pinObj.sid) || stopEntries[0];
-          if (mySe.openTime > t + 0.004) continue;
+          if (mySe.builtTime > t + 0.004) continue;
+          const myDeferred = mySe.openTime > t + 0.004;
           const useHo = mySe.handover && t + 0.004 < mySe.handover.beforeTime;
           const myColor = useHo ? mySe.handover.color : mySe.color;
           const p = dc(pinObj.lon, pinObj.lat);
-          const dark = distinctCount >= 2 ? 1 : 0;
+          const dark = (!myDeferred && distinctCount >= 2) ? 1 : 0;
           feature = {
             type: 'Feature',
             geometry: { type: 'Point', coordinates: [p[0], p[1]] },
-            properties: { key: unitKey, name: pinObj.name, big: 0, dark, stroke: dark ? '#000000' : myColor },
+            properties: {
+              key: unitKey, name: pinObj.name, big: 0, dark,
+              deferred: myDeferred ? 1 : 0,
+              stroke: myDeferred ? '#8a9099' : (dark ? '#000000' : myColor),
+            },
           };
+          stages.push({ fromTime: t, distinctCount: myDeferred ? 0 : distinctCount, isDeferred: myDeferred, kind: 'pin', feature });
+          continue;
         } else if (distinctCount <= 1) {
           const singleLon = opened.reduce((a, s) => a + s.lon, 0) / opened.length;
           const singleLat = opened.reduce((a, s) => a + s.lat, 0) / opened.length;
@@ -3957,7 +4015,7 @@
           feature = {
             type: 'Feature',
             geometry: { type: 'Point', coordinates: [p[0], p[1]] },
-            properties: { key: unitKey, name: pinObj.name, big: 0, dark: 0, stroke: activeList[0].color },
+            properties: { key: unitKey, name: pinObj.name, big: 0, dark: 0, deferred: 0, stroke: activeList[0].color },
           };
         } else if (gType === 'junction') {
           const avgLon = opened.reduce((a, s) => a + s.lon, 0) / opened.length;
@@ -3967,7 +4025,7 @@
           feature = {
             type: 'Feature',
             geometry: { type: 'Point', coordinates: [p[0], p[1]] },
-            properties: { key: unitKey, name: pinObj.name, big: 0, dark: 0, stroke: jStroke },
+            properties: { key: unitKey, name: pinObj.name, big: 0, dark: 0, deferred: 0, stroke: jStroke },
           };
         } else {
           // 同站换乘组：2线先变黑边大圆（显式 shape='pill' 且有展宽才出2站药丸）；
@@ -3999,18 +4057,22 @@
             feature = {
               type: 'Feature',
               geometry: { type: 'Point', coordinates: [p[0], p[1]] },
-              properties: { key: unitKey, name: pinObj.name, big: 1, dark: 1, stroke: '#000000' },
+              properties: { key: unitKey, name: pinObj.name, big: 1, dark: 1, deferred: 0, stroke: '#000000' },
             };
           }
         }
         if (feature) {
-          stages.push({ fromTime: t, distinctCount, kind, feature });
+          stages.push({ fromTime: t, distinctCount, isDeferred: false, kind, feature });
         }
       }
 
       if (!stages.length) return null;
       const arrivals = Array.from(arrivalsByMain.values()).sort((a, b) => a.openTime - b.openTime);
       const openTime = stages[0].fromTime;
+      if (stages[0].isDeferred && Number.isFinite(firstOpenedTime) && firstOpenedTime > openTime) {
+        S.pinDeferredUntil.set(unitKey, firstOpenedTime);
+        if (isOutOfStationPin && pinObj.groupId != null) S.pinDeferredUntil.set('g:' + pinObj.groupId, firstOpenedTime);
+      }
       mergeLabelMeta(unitKey, openTime, firstTransferTime, arrivals);
       if (isOutOfStationPin && pinObj.groupId != null) {
         mergeLabelMeta('g:' + pinObj.groupId, openTime, firstTransferTime, arrivals);
@@ -4040,10 +4102,13 @@
     S.tl.segments = segsOut;
     S.tl.batches = batchesOut;
     S.tl.stationUnits = unitsOut;
+    S.tl.events = (S.timeline && Array.isArray(S.timeline.keyEvents)) ? S.timeline.keyEvents : [];
+    S.tl.planApprovals = (S.timeline && Array.isArray(S.timeline.planApprovals)) ? S.timeline.planApprovals : [];
     S.tl.lastDoneSig = '';
     S.tl.lastApproveSig = '';
     S.tl.lastBuildSig = '';
     S.tl.lastPinCount = '';
+    S.tl.lastEventSig = '';
 
     // 同步更新蓝图底影数据（如已建层）
     if (S.map && S.map.getSource('tl-ghost')) {
@@ -4158,19 +4223,19 @@
         id: 'tl-' + d.id, type: 'circle', source: 'tl-stops', filter: d.filter,
         layout: { visibility: 'none' },
         paint: {
-          'circle-color': '#ffffff',
+          'circle-color': ['case', ['==', ['get', 'deferred'], 1], '#d5d9df', '#ffffff'],
           'circle-radius': V.zoomInterp(V.scaledSize(d.radius), d.radius),
           'circle-stroke-color': ['get', 'stroke'],
           'circle-stroke-width': V.zoomInterp(V.scaledSize(d.strokeW), d.strokeW),
         },
       }, before);
     }
-    // 新到站平滑渐显层（柔和缩放+透明度浮现至标准站点尺寸，取代突兀爆珠气泡）
+    // 新到站平滑渐显层（柔和缩放+透明度浮现至标准站点尺寸，取代突兀爆珠气泡；支持灰态已建未开站平滑复原）
     map.addLayer({
       id: 'tl-stops-fade', type: 'circle', source: 'tl-stops-fade',
       layout: { visibility: 'none' },
       paint: {
-        'circle-color': '#ffffff',
+        'circle-color': ['coalesce', ['get', 'fill'], '#ffffff'],
         'circle-radius': ['get', 'r'],
         'circle-opacity': ['get', 'op'],
         'circle-stroke-color': ['get', 'stroke'],
@@ -4509,11 +4574,11 @@
     for (let i = 0; i < units.length; i++) {
       const u = units[i];
       if (u.openTime > t) break;
-      if (u.isLocal) liveStations++;
       const stgList = u.stages;
       let si = 0;
       while (si + 1 < stgList.length && stgList[si + 1].fromTime <= t + 1e-4) si++;
       const cur = stgList[si];
+      if (u.isLocal && !cur.isDeferred) liveStations++;
       stageSigHash += (si + 1) * ((i % 97) + 1);
       const age = t - cur.fromTime;
 
@@ -4532,6 +4597,7 @@
             r: (fromR + (targetDef.radius - fromR) * ease) * zScale,
             sw: (fromSW + (targetDef.strokeW - fromSW) * ease) * zScale,
             op: si > 0 ? (0.5 + 0.5 * ease) : ease,
+            fill: cur.isDeferred ? '#d5d9df' : '#ffffff',
             stroke: cur.feature.properties.stroke || '#000000',
           },
         });
@@ -4617,6 +4683,10 @@
       });
       eras.querySelectorAll('.tl-era-btn').forEach((eb) => eb.classList.toggle('active', eb === bestBtn));
     }
+    // 顶部各期建设规划批复横幅 + 右上角上海地铁关键事件列表同步
+    syncPlanBanner(displayT);
+    syncEventFeed(displayT, force);
+
     // 视口聚焦更新点（站级跟焦，若已开启且未处于起飞门控）
     if (S.tl.followOn && !skipFollow) maybeFollowTimelineUpdate(!!force, dtSec);
 
@@ -4629,10 +4699,133 @@
     }
   }
 
+  const TL_EVENT_TYPE_ZH = { plan: '批复', build: '开工', station: '站点', open: '开通' };
+
+  function syncPlanBanner(displayT) {
+    const banner = $('tlPlanBanner');
+    if (!banner) return;
+    if (!S.tl.active) { banner.hidden = true; return; }
+    banner.classList.toggle('panel-stowed', S.panelCollapsed);
+    let shown = S.tl.activePlanBanner || null;
+    if (!shown) {
+      const plans = S.tl.planApprovals || [];
+      for (let i = plans.length - 1; i >= 0; i--) {
+        const p = plans[i];
+        if (displayT >= p.time - 0.02 && displayT <= p.time + 0.25) {
+          shown = p;
+          break;
+        }
+      }
+    }
+    if (!shown) {
+      banner.hidden = true;
+      banner.dataset.planId = '';
+      return;
+    }
+    if (banner.hidden || banner.dataset.planId !== shown.id) {
+      banner.dataset.planId = shown.id;
+      const tEl = $('tlPlanTitle');
+      const sEl = $('tlPlanSub');
+      if (tEl) tEl.textContent = shown.title || '';
+      if (sEl) sEl.textContent = (shown.date ? (shown.date + ' 获批 · ') : '') + (shown.detail || '');
+      banner.hidden = false;
+    }
+  }
+
+  function syncEventFeed(displayT, force) {
+    const feed = $('tlEventFeed');
+    const list = $('tlEventList');
+    if (!feed || !list) return;
+    feed.hidden = !S.tl.active;
+    if (!S.tl.active) return;
+    feed.classList.toggle('is-collapsed', !!S.tl.eventFeedCollapsed);
+    const evs = S.tl.events || [];
+    let count = 0;
+    for (let i = 0; i < evs.length; i++) {
+      if (evs[i].time <= displayT + 0.015) count = i + 1;
+      else break;
+    }
+    const latestId = count > 0 ? evs[count - 1].id : '';
+    const sig = count + ':' + latestId + ':' + (S.tl.eventPauseId || '');
+    if (!force && sig === S.tl.lastEventSig) return;
+    S.tl.lastEventSig = sig;
+    const cntEl = $('tlEventCount');
+    if (cntEl) cntEl.textContent = String(count);
+    list.textContent = '';
+    const frag = document.createDocumentFragment();
+    for (let i = count - 1; i >= 0; i--) {
+      const ev = evs[i];
+      const item = document.createElement('div');
+      item.className = 'tl-ev-item' + (i === count - 1 ? ' is-latest' : '');
+      item.dataset.evId = ev.id;
+      item.dataset.evTime = String(ev.time);
+      const top = document.createElement('div');
+      top.className = 'tl-ev-top';
+      const badge = document.createElement('span');
+      badge.className = 'tl-ev-badge ev-' + (ev.type || 'open');
+      badge.textContent = TL_EVENT_TYPE_ZH[ev.type] || '事件';
+      const dt = document.createElement('span');
+      dt.className = 'tl-ev-date';
+      dt.textContent = ev.date || V.formatDecimalYear(ev.time);
+      top.append(badge, dt);
+      const name = document.createElement('div');
+      name.className = 'tl-ev-name';
+      name.textContent = ev.title || '';
+      item.append(top, name);
+      if (ev.detail) {
+        const det = document.createElement('div');
+        det.className = 'tl-ev-detail';
+        det.textContent = ev.detail;
+        item.appendChild(det);
+      }
+      item.addEventListener('click', () => {
+        const targetT = Math.max(TIMELINE_MIN_T, Math.min(TIMELINE_MAX_T, ev.time));
+        S.tl.currentTime = targetT;
+        S.tl.panGateUntilMs = 0;
+        S.tl.panGateBatchKey = '';
+        S.tl.eventPauseUntilMs = 0;
+        S.tl.eventPauseId = '';
+        S.tl.activePlanBanner = ev.type === 'plan' ? ev : null;
+        pruneTriggeredEventsAfter(ev.time);
+        const ab = timelineActiveBatchAt(targetT);
+        S.tl.arrivedBatchKey = ab ? ab.key : '';
+        renderTimelineFrame(true);
+      });
+      frag.appendChild(item);
+    }
+    list.appendChild(frag);
+    list.scrollTop = 0;
+  }
+
+  function pruneTriggeredEventsAfter(dispT) {
+    if (!(S.tl.triggeredEventIds instanceof Set)) S.tl.triggeredEventIds = new Set();
+    const evs = S.tl.events || [];
+    for (let i = 0; i < evs.length; i++) {
+      if (evs[i].time > dispT + 0.01) S.tl.triggeredEventIds.delete(evs[i].id);
+      else S.tl.triggeredEventIds.add(evs[i].id);
+    }
+  }
+
   function timelineTick(nowMs) {
     if (!S.tl.active || !S.tl.playing) { S.tl.rafId = 0; return; }
     let dt = S.tl.lastFrameMs ? Math.min(0.05, (nowMs - S.tl.lastFrameMs) / 1000) : 0.016;
     S.tl.lastFrameMs = nowMs;
+
+    // 关键事件 / 各期建设规划批复横幅停顿门控（让观众清楚阅读《上海轨道交通XXX期建设规划》与关键事件）
+    if (S.tl.eventPauseUntilMs > 0) {
+      if (nowMs < S.tl.eventPauseUntilMs) {
+        if (nowMs - S.tl.lastLabelMs > 120) {
+          S.tl.lastLabelMs = nowMs;
+          scheduleLabels();
+        }
+        S.tl.rafId = G.requestAnimationFrame(timelineTick);
+        return;
+      }
+      S.tl.eventPauseUntilMs = 0;
+      S.tl.eventPauseId = '';
+      S.tl.activePlanBanner = null;
+      dt = 0.016;
+    }
 
     // 视口「先平移就位，再开始行走」门控：
     // 切换至下一条线路时，先暂停时间推进、把目标线路起点平稳平移到视口中央，到达后再正式放行绘制！
@@ -4675,6 +4868,35 @@
       yps = TIMELINE_BASE_YPS * eraPace * speed;
     }
     const nextCt = Math.min(TIMELINE_MAX_T, ct + dt * yps);
+
+    // 检测关键事件（建设规划批复横幅、重大开工、暂缓站点开通）并施加适度停顿
+    const prevDisp = timelineDisplayTimeAt(ct);
+    const nextDisp = timelineDisplayTimeAt(nextCt);
+    const evs = S.tl.events || [];
+    for (let i = 0; i < evs.length; i++) {
+      const ev = evs[i];
+      if (!ev.pauseMs || ev.pauseMs <= 0) continue;
+      if (S.tl.triggeredEventIds.has(ev.id)) continue;
+      if (ev.time > prevDisp - 0.004 && ev.time <= nextDisp + 0.004) {
+        // 正在画线过程中不因非规划类小事件打断顺滑画线，但建设规划批复恒定停顿展示
+        if (ev.type !== 'plan' && activeBatch && ct < activeBatch.drawEndTime) {
+          S.tl.triggeredEventIds.add(ev.id);
+          continue;
+        }
+        S.tl.triggeredEventIds.add(ev.id);
+        const pauseScale = Math.sqrt(Math.max(0.5, speed));
+        const durMs = ev.type === 'plan'
+          ? Math.round(Math.max(1200, ev.pauseMs / pauseScale))
+          : Math.round(Math.max(450, ev.pauseMs / pauseScale));
+        S.tl.eventPauseId = ev.id;
+        S.tl.eventPauseUntilMs = nowMs + durMs;
+        S.tl.activePlanBanner = ev.type === 'plan' ? ev : null;
+        S.tl.currentTime = nextCt;
+        renderTimelineFrame(true, 0, true);
+        S.tl.rafId = G.requestAnimationFrame(timelineTick);
+        return;
+      }
+    }
 
     // 检测是否即将进入或跨入一条尚未视口就位的新线路批次
     if (S.tl.followOn && nowMs >= (S.tl.userPanUntilMs || 0)) {
@@ -4729,6 +4951,18 @@
       dock.hidden = !S.tl.active;
       dock.classList.toggle('panel-stowed', S.panelCollapsed);
     }
+    const feed = $('tlEventFeed');
+    if (feed) {
+      feed.hidden = !S.tl.active;
+      feed.classList.toggle('is-collapsed', !!S.tl.eventFeedCollapsed);
+    }
+    const evBtn = $('tlEventToggle');
+    if (evBtn) evBtn.textContent = S.tl.eventFeedCollapsed ? '展开' : '收起';
+    const banner = $('tlPlanBanner');
+    if (banner) {
+      if (!S.tl.active) banner.hidden = true;
+      banner.classList.toggle('panel-stowed', S.panelCollapsed);
+    }
   }
 
   function enterTimelineMode(autoPlay) {
@@ -4748,6 +4982,13 @@
     if (S.tl.currentTime >= TIMELINE_MAX_T - 0.1) S.tl.currentTime = TIMELINE_MIN_T;
     S.tl.playing = !!autoPlay;
     S.tl.lastFrameMs = 0;
+    S.tl.arrivedBatchKey = '';
+    S.tl.panGateBatchKey = '';
+    S.tl.panGateUntilMs = 0;
+    S.tl.eventPauseUntilMs = 0;
+    S.tl.eventPauseId = '';
+    S.tl.activePlanBanner = null;
+    pruneTriggeredEventsAfter(timelineDisplayTimeAt(S.tl.currentTime));
     syncTimelineButtons();
     renderTimelineFrame(true);
     if (S.tl.playing) {
@@ -4760,6 +5001,9 @@
     if (!S.tl.active) return;
     S.tl.active = false;
     S.tl.playing = false;
+    S.tl.panGateUntilMs = 0;
+    S.tl.eventPauseUntilMs = 0;
+    S.tl.activePlanBanner = null;
     if (S.tl.rafId) { G.cancelAnimationFrame(S.tl.rafId); S.tl.rafId = 0; }
     setTimelineLayersVisible(false);
     setNormalLayersVisible(true);
@@ -4773,7 +5017,10 @@
       S.tl.playing = false;
       if (S.tl.rafId) { G.cancelAnimationFrame(S.tl.rafId); S.tl.rafId = 0; }
     } else {
-      if (S.tl.currentTime >= TIMELINE_MAX_T - 0.05) S.tl.currentTime = TIMELINE_MIN_T;
+      if (S.tl.currentTime >= TIMELINE_MAX_T - 0.05) {
+        S.tl.currentTime = TIMELINE_MIN_T;
+        S.tl.triggeredEventIds = new Set();
+      }
       S.tl.playing = true;
       S.tl.lastFrameMs = 0;
       S.tl.rafId = G.requestAnimationFrame(timelineTick);
@@ -4789,6 +5036,11 @@
     });
     const closeBtn = $('tlClose');
     if (closeBtn) closeBtn.addEventListener('click', exitTimelineMode);
+    const evToggle = $('tlEventToggle');
+    if (evToggle) evToggle.addEventListener('click', () => {
+      S.tl.eventFeedCollapsed = !S.tl.eventFeedCollapsed;
+      syncTimelineButtons();
+    });
     const playBtn = $('tlPlay');
     if (playBtn) playBtn.addEventListener('click', toggleTimelinePlay);
     const replayBtn = $('tlReplay');
@@ -4799,6 +5051,10 @@
       S.tl.arrivedBatchKey = '';
       S.tl.panGateBatchKey = '';
       S.tl.panGateUntilMs = 0;
+      S.tl.eventPauseUntilMs = 0;
+      S.tl.eventPauseId = '';
+      S.tl.activePlanBanner = null;
+      S.tl.triggeredEventIds = new Set();
       S.tl.lastFollowSig = '';
       syncTimelineButtons();
       renderTimelineFrame(true);
@@ -4855,6 +5111,10 @@
         S.tl.currentTime = Math.max(TIMELINE_MIN_T, Math.min(TIMELINE_MAX_T, v));
         S.tl.panGateUntilMs = 0;
         S.tl.panGateBatchKey = '';
+        S.tl.eventPauseUntilMs = 0;
+        S.tl.eventPauseId = '';
+        S.tl.activePlanBanner = null;
+        pruneTriggeredEventsAfter(timelineDisplayTimeAt(S.tl.currentTime));
         const ab = timelineActiveBatchAt(S.tl.currentTime);
         S.tl.arrivedBatchKey = ab ? ab.key : '';
         renderTimelineFrame(true);
@@ -4869,6 +5129,10 @@
           S.tl.currentTime = Math.max(TIMELINE_MIN_T, Math.min(TIMELINE_MAX_T, y));
           S.tl.panGateUntilMs = 0;
           S.tl.panGateBatchKey = '';
+          S.tl.eventPauseUntilMs = 0;
+          S.tl.eventPauseId = '';
+          S.tl.activePlanBanner = null;
+          pruneTriggeredEventsAfter(timelineDisplayTimeAt(S.tl.currentTime));
           const ab = timelineActiveBatchAt(S.tl.currentTime);
           S.tl.arrivedBatchKey = ab ? ab.key : '';
           renderTimelineFrame(true);

@@ -623,6 +623,159 @@ APPROVE_MAP = {
     ("l0077", 0): ("2021-06", 2021.43),
 }
 
+# 各期建设规划正式批复横幅与停顿节点（顶部醒目一行文字 + 较长停顿）
+PLAN_APPROVALS = [
+    {
+        "id": "plan-1",
+        "time": 2005.45,
+        "date": "2005年6月",
+        "title": "《上海轨道交通第一期建设规划》（2005年~2010年）",
+        "detail": "国家发改委批复迎世博近期建设规划，启动7/10/11号线及2/8/9号线延伸",
+        "pauseMs": 2200,
+    },
+    {
+        "id": "plan-2",
+        "time": 2008.95,
+        "date": "2008年12月",
+        "title": "《上海轨道交通第二期建设规划》（2010年~2015年）",
+        "detail": "国家发改委批复第二期近期建设规划，批建12/13号线及9/11号线延伸",
+        "pauseMs": 2200,
+    },
+    {
+        "id": "plan-2-adj",
+        "time": 2012.45,
+        "date": "2012年6月",
+        "title": "《上海轨道交通第二期建设规划调整》（2010年~2020年）",
+        "detail": "国家发改委批复调整方案，新增14/15/17/18号线、5南延、9东延、10二期、11迪士尼段、8三期",
+        "pauseMs": 2200,
+    },
+    {
+        "id": "plan-3",
+        "time": 2018.95,
+        "date": "2018年12月",
+        "title": "《上海轨道交通第三期建设规划》（2018年~2023年）",
+        "detail": "国家发改委（发改基础〔2018〕1831号）批复19/20/21/22崇明/23号线及机场联络线、嘉闵线",
+        "pauseMs": 2400,
+    },
+    {
+        "id": "plan-yrd",
+        "time": 2021.43,
+        "date": "2021年6月",
+        "title": "《长江三角洲地区多层次轨道交通规划》（2021年~2025年）",
+        "detail": "国家发改委（发改基础〔2021〕811号）批复示范区线、南汇支线、南枫线、嘉闵北延等市域铁路",
+        "pauseMs": 2200,
+    },
+    {
+        "id": "plan-3-adj",
+        "time": 2022.45,
+        "date": "2022年6月",
+        "title": "《上海轨道交通第三期建设规划调整》（2018年~2023年）",
+        "detail": "国家发改委批复12西延、13东延、15南延、20东延、21东延及2号线T3延伸",
+        "pauseMs": 2200,
+    },
+]
+
+# 已建未开（暂缓开通 / 甩站通过 / 预留后补开通）车站字典：key = stops.geojson 的精确 sid
+# 在线路开通至车站正式启用期间，地图上以灰色站点图标表示，启用后自动恢复正常线色/换乘状态。
+DEFERRED_STATIONS = {
+    "l0021-s24": {"name": "后滩", "lineName": "7号线", "builtTime": 2009.93, "openTime": 2010.30, "openDate": "2010-04-20", "note": "7号线一期通车时暂缓，配合世博会开园启用"},
+    "l0021-s03": {"name": "潘广路", "lineName": "7号线", "builtTime": 2010.99, "openTime": 2011.50, "openDate": "2011-06-30", "note": "7号线北延通车半年后补开"},
+    "l0021-s04": {"name": "刘行", "lineName": "7号线", "builtTime": 2010.99, "openTime": 2011.50, "openDate": "2011-06-30", "note": "7号线北延通车半年后补开"},
+    "l0021-s06": {"name": "祁华路", "lineName": "7号线", "builtTime": 2010.99, "openTime": 2014.55, "openDate": "2014-07-22", "note": "7号线北延长期甩站，2014年7月正式启用"},
+    "l0022-s20": {"name": "中华艺术宫", "lineName": "8号线", "builtTime": 2007.99, "openTime": 2012.74, "openDate": "2012-09-28", "note": "原周家渡预留站，随中华艺术宫开馆启用"},
+    "l0022-s24": {"name": "东方体育中心", "lineName": "8号线", "builtTime": 2009.51, "openTime": 2011.28, "openDate": "2011-04-12", "note": "原济阳路预留站，2011年4月正式开通"},
+    "l0026-s06": {"name": "陈翔公路", "lineName": "11号线", "builtTime": 2009.99, "openTime": 2020.65, "openDate": "2020-08-25", "note": "既有11号线高架运营段增设开通新车站"},
+    "l0026-s28": {"name": "康恒路", "lineName": "11号线", "builtTime": 2013.66, "openTime": 2024.74, "openDate": "2024-09-28", "note": "原严御路预留站，改造后2024年9月开通"},
+    "l0029-s30": {"name": "祁连山南路", "lineName": "13号线", "builtTime": 2012.99, "openTime": 2013.45, "openDate": "2013-06-15", "note": "13号线一期西段通车半年后启用"},
+    "l0029-s28": {"name": "大渡河路", "lineName": "13号线", "builtTime": 2012.99, "openTime": 2014.83, "openDate": "2014-11-01", "note": "13号线一期西段暂缓站点，2014年11月开通"},
+    "l0013-s32": {"name": "桂林路", "lineName": "15号线", "builtTime": 2021.06, "openTime": 2021.49, "openDate": "2021-06-27", "note": "15号线开通5个月后启用，实现9/15号线换乘"},
+    "l0030-s08": {"name": "龙居路", "lineName": "14号线", "builtTime": 2021.99, "openTime": 2028.45, "openDate": "暂缓开通", "note": "14号线已建暂缓开通，列车过站不停"},
+    "l0033-s29": {"name": "江杨南路", "lineName": "18号线", "builtTime": 2025.99, "openTime": 2027.95, "openDate": "预计2027-12", "note": "18号线二期主体已建暂缓开通，待与19号线北段同步启用"},
+}
+
+# 重大线路开工关键事件（用于右上角事件列表及关键节点微停顿）
+GROUNDBREAKING_EVENTS = [
+    {"id": "gb-1990-l1", "time": 1990.18, "date": "1990年3月", "title": "1号线一期正式开工", "detail": "上海首条地铁破土动工，开启轨道交通时代", "pauseMs": 850},
+    {"id": "gb-1995-l2", "time": 1995.98, "date": "1995年12月", "title": "2号线一期开工建设", "detail": "东西大动脉动工，规划首次跨越黄浦江", "pauseMs": 750},
+    {"id": "gb-1997-l3", "time": 1997.48, "date": "1997年6月", "title": "3号线（明珠线）动工", "detail": "利用既有沪杭铁路内环线改造高架轨交", "pauseMs": 750},
+    {"id": "gb-2000-l4l5", "time": 2000.60, "date": "2000年8–12月", "title": "5号线一期·4号线陆续开工", "detail": "莘闵轻轨与中心城环线进入全面施工期", "pauseMs": 750},
+    {"id": "gb-2001-mag", "time": 2001.17, "date": "2001年3月", "title": "上海磁浮示范线开工", "detail": "全球首条商业运营高速磁浮线破土动工", "pauseMs": 750},
+    {"id": "gb-2001-l8", "time": 2001.97, "date": "2001年12月", "title": "8号线一期正式动工", "detail": "杨浦至浦东世博南北骨干线启动建设", "pauseMs": 700},
+    {"id": "gb-2002-l6l9", "time": 2002.83, "date": "2002年10月", "title": "6号线·9号线一期开工", "detail": "浦东南北线与松江新城轨交同步动工", "pauseMs": 700},
+    {"id": "gb-2005-l7", "time": 2005.90, "date": "2005年11月", "title": "7号线一期全面开工", "detail": "世博会西北—东南骨干线进入施工高峰", "pauseMs": 700},
+    {"id": "gb-2006-l10l11", "time": 2006.15, "date": "2006年2–3月", "title": "10号线·11号线一期动工", "detail": "全自动10号线与嘉定11号线相继开工", "pauseMs": 700},
+    {"id": "gb-2008-l12l13", "time": 2008.99, "date": "2008年12月", "title": "12号线·13号线全面开工", "detail": "第二轮建设规划核心换乘干线动工", "pauseMs": 700},
+    {"id": "gb-2009-js", "time": 2009.61, "date": "2009年8月", "title": "金山铁路改建开工", "detail": "中国首条公交化市域铁路启动电气化改造", "pauseMs": 700},
+    {"id": "gb-2010-l16", "time": 2010.20, "date": "2010年3月", "title": "16号线（临港线）开工", "detail": "快速串联中心城与临港新片区", "pauseMs": 700},
+    {"id": "gb-2014-l14l17", "time": 2014.90, "date": "2014年1–11月", "title": "17号线·5南延·14号线开工", "detail": "青浦线、奉贤跨江线与8A大运量14号线开工", "pauseMs": 750},
+    {"id": "gb-2015-l15l18", "time": 2015.65, "date": "2015年8月–2016年5月", "title": "15号线·18号线一期开工", "detail": "两条全自动南北换乘走廊相继动工", "pauseMs": 750},
+    {"id": "gb-2019-air", "time": 2019.49, "date": "2019年6月", "title": "机场联络线正式开工", "detail": "第三轮规划首个重磅市域快线破土动工", "pauseMs": 850},
+    {"id": "gb-2019-l22", "time": 2019.95, "date": "2019年12月", "title": "22号线（崇明线）开工", "detail": "上海首条穿越长江入崇明岛轨交启动建设", "pauseMs": 850},
+    {"id": "gb-2021-jm", "time": 2021.49, "date": "2021年6月", "title": "嘉闵线·13西延·18二期开工", "detail": "西上海南北市域大干线与多条延伸线同步动工", "pauseMs": 850},
+    {"id": "gb-2022-l21nh", "time": 2022.02, "date": "2022年1月", "title": "21号线一期·南汇线开工", "detail": "浦东科创走廊与临港两港快线全面动工", "pauseMs": 850},
+    {"id": "gb-2022-sfq", "time": 2022.53, "date": "2022年7月", "title": "示范区线市域铁路开工", "detail": "长三角生态绿色一体化示范区首条市域线动工", "pauseMs": 800},
+    {"id": "gb-2022-l23l20", "time": 2022.71, "date": "2022年9–12月", "title": "23号线·20西段·12西延开工", "detail": "第三轮骨干地铁集中进入土建高峰", "pauseMs": 850},
+    {"id": "gb-2023-l19nf", "time": 2023.88, "date": "2023年11–12月", "title": "19号线·15南延·南枫线开工", "detail": "新一代南北换乘王与南部95公里快线全面开工", "pauseMs": 850},
+    {"id": "gb-2024-l20e", "time": 2024.98, "date": "2024年12月", "title": "20号线东段/中段·2号线T3延开工", "detail": "本轮在建项目全部转入实质施工阶段", "pauseMs": 800},
+]
+
+
+def build_key_events():
+    events = []
+    for p in PLAN_APPROVALS:
+        events.append({
+            "id": p["id"],
+            "time": p["time"],
+            "date": p["date"],
+            "type": "plan",
+            "title": p["title"],
+            "detail": p["detail"],
+            "pauseMs": p["pauseMs"],
+        })
+    for g in GROUNDBREAKING_EVENTS:
+        events.append({
+            "id": g["id"],
+            "time": g["time"],
+            "date": g["date"],
+            "type": "build",
+            "title": g["title"],
+            "detail": g["detail"],
+            "pauseMs": g["pauseMs"],
+        })
+    # 合并同日补开的暂缓站点（如 2011-06-30 7号线潘广路/刘行）
+    by_open = {}
+    for sid, d in DEFERRED_STATIONS.items():
+        if d["openDate"].startswith("暂缓") or d["openDate"].startswith("预计"):
+            continue
+        k = (d["openTime"], d["lineName"])
+        by_open.setdefault(k, []).append(d)
+    for (ot, ln), arr in sorted(by_open.items()):
+        names = "、".join(x["name"] for x in arr)
+        events.append({
+            "id": f"st-{ot:.2f}-{ln}",
+            "time": ot,
+            "date": arr[0]["openDate"][:7].replace("-", "年") + "月",
+            "type": "station",
+            "title": f"{ln} {names}站开通启用",
+            "detail": arr[0]["note"],
+            "pauseMs": 850,
+        })
+    for idx, m in enumerate(MILESTONES):
+        if m["time"] <= 1990.5:
+            continue  # 1990-03 开工已在 GROUNDBREAKING_EVENTS 中，避免重复
+        events.append({
+            "id": f"ms-{idx}",
+            "time": m["time"],
+            "date": m["date"],
+            "type": "open",
+            "title": m["title"],
+            "detail": m.get("detail", ""),
+            "pauseMs": 0,  # 线路开通已有 1.15s 线末停顿
+        })
+    type_order = {"plan": 0, "build": 1, "station": 2, "open": 3}
+    events.sort(key=lambda e: (e["time"], type_order.get(e["type"], 9), e["id"]))
+    return events
+
 
 def main():
     lines_fc = json.loads((ROOT / "docs/net/lines.geojson").read_text(encoding="utf-8"))
@@ -685,10 +838,14 @@ def main():
             "segments": segs_out,
         }
 
+    key_events = build_key_events()
     payload = {
         "fmt": "net-timeline@1",
         "range": {"min": 1990.0, "max": 2040.0},
         "milestones": MILESTONES,
+        "planApprovals": PLAN_APPROVALS,
+        "deferredStations": DEFERRED_STATIONS,
+        "keyEvents": key_events,
         "stationRenames": STATION_RENAMES,
         "lines": out_lines,
     }
@@ -698,7 +855,8 @@ def main():
         dst.write_text(raw, encoding="utf-8")
     print(
         f"Generated timeline.json: {len(out_lines)} lines, {len(MILESTONES)} milestones, "
-        f"{len(STATION_RENAMES)} renamed stations ({len(raw):,} bytes)"
+        f"{len(PLAN_APPROVALS)} plan approvals, {len(DEFERRED_STATIONS)} deferred stations, "
+        f"{len(key_events)} key events, {len(STATION_RENAMES)} renamed stations ({len(raw):,} bytes)"
     )
 
 
