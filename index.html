@@ -117,7 +117,9 @@
       transition: opacity .25s ease;   /* 分期/聚焦站名显隐渐变（原 visibility 硬切改 opacity） */
     }
     .map-label.is-group {
-      font-size: 13px; font-weight: 600; color: #000;
+      /* 2026-11-28 用户裁定：组站（换乘站）标签去加粗——weight 与普通站一致
+         （仅保留 13px 字号档与配套描边宽度；用户只点名加粗） */
+      font-size: 13px; color: #000;
       -webkit-text-stroke: 3.25px #fff;
     }
 
@@ -495,6 +497,49 @@
     .lp-xfer-item:hover { background: var(--hover); }
     .lp-xfer-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
     .lp-xfer-name { font-size: 12px; line-height: 1.3; color: #555555; white-space: nowrap; }
+
+    /* ---- 环线表达（2026-11-28 用户需求，保持竖排不变）：主线段一侧的回环指示 ----
+       .lp-loop＝rail 右侧 C 形细线（右边框＋上下端横边、右侧圆角），从底部回接到顶部
+       ——示意环绕段（末站开回首站，列表首末站不重复）；顶端 ::before 箭头向上＝循环
+       流向。色＝本线标志色（--sec-color，与竖线同源）；z-index 0 与 rail 同层、被站
+       节点（z1）自然覆盖（节点后穿过，与地图语言一致）。
+       .lp-loop-note＝段顶「环线」小字（12px 灰，与站名左对齐）——放 secEl 外防推低
+       rail 的绝对定位锚，见 viewer.js buildStopSection 注 */
+    .lp-loop {
+      position: absolute; left: 16px; width: 10px; top: 15px; bottom: 15px;
+      border: 1.5px solid var(--sec-color, #888888); border-left: none;
+      border-radius: 0 10px 10px 0; box-sizing: border-box;
+      z-index: 0; pointer-events: none;
+    }
+    .lp-loop::before {
+      content: ''; position: absolute; top: -5px; left: 50%; transform: translateX(-50%);
+      border-left: 4px solid transparent; border-right: 4px solid transparent;
+      border-bottom: 6px solid var(--sec-color, #888888);
+    }
+    .lp-loop-note {
+      min-height: 18px; padding-left: 27px; margin-bottom: 2px;
+      font-size: 12px; line-height: 18px; color: #555555; letter-spacing: 1px;
+    }
+    /* ---- 共线区间标注（2026-11-28 用户需求，sharedTracks 消费）：区间内站行的对方
+       线色侧边条（贴 rail 右缘，逐行片段拼连续、区间首末行圆头——与地图共线段双平行
+       线表达同构）；区间首行「与〈对方名〉共线」小字（前置对方色小短条）。与换乘信息
+       （行尾「圆点＋线名」可点跳转）的区分：形状（短条 vs 圆点）、位置（站名后 vs 行尾
+       右对齐）、语义文字（含「共线」）、静态不可点（共线≠换乘）。黑白灰不破：彩色仅
+       侧边条与小短条（对方线标志色），文字恒灰 ---- */
+    .lp-shared-bar {
+      position: absolute; left: 13.5px; top: 0; bottom: 0; width: 3px;
+      z-index: 0; pointer-events: none;
+    }
+    .lp-shared-bar.lp-shared-first { border-top-left-radius: 1.5px; border-top-right-radius: 1.5px; }
+    .lp-shared-bar.lp-shared-last { border-bottom-left-radius: 1.5px; border-bottom-right-radius: 1.5px; }
+    .lp-shared-tag {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 12px; line-height: 1.3; color: #555555; white-space: nowrap;
+    }
+    .lp-shared-tag::before {
+      content: ''; flex: none; width: 9px; height: 3px; border-radius: 1.5px;
+      background: var(--shared-color, #888888);
+    }
 
     /* ---- 车站页（2026-11-27 点击车站）：顶条/标题区复用线路页（lp-head/lp-name），
        主体＝一行一自然线路（色块＋线名＋多名标注），行可点（点行＝高亮该线＋跳线路页） ---- */

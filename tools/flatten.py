@@ -9,11 +9,16 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
   <out>/lines.geojson  线路×分段，每 feature 一条 LineString
                         properties: lineId / name / aliases / color / role /
                         layer / loop / connects / groupId / segIndex /
-                        segStatus / sectionName / sharedOffset
+                        segStatus / sectionName / sharedOffset / sharedTracks
                         （sectionName＝所属分段名，空名段省略该键；
                         sharedOffset＝共线段双平行线偏移像素（2026-11-27 方案 A：
                         线文件顶层可选 sharedTracks 声明，仅共线范围内的小段写该键，
                         查看器 line-offset 数据驱动消费；非破坏性可选字段，不升版）；
+                        sharedTracks＝线文件共线共轨声明的**原样透传**
+                        （2026-11-28 线路页车站列表共线标注用：[{peer, stops}]，
+                        每段 feature 均带同值；无声明输出空数组保持键齐——沿用
+                        connects/groupId 的做法；结构已由 validate 保证，此处
+                        仅防御过滤坏项，不重算范围——查看器侧按站 id 自行定位）；
                         layer＝线路 meta.layer，中文值合法，查看器左栏
                         类别过滤用；connects＝联络线接轨对象线 id 列表，
                         仅 role:"connector" 线携带、其余线为空数组——
@@ -394,6 +399,16 @@ def flatten_line(line, ap, tps, group_color, stop_group, conn_target_index=None,
         # 线组归属 id（2026-11-22 主支线合并：查看器归并用）。无组为空字符串
         # 保持键齐（沿用 connects 的做法——net 消费端不必判键存在）
         "groupId": line.get("groupId") or "",
+        # 共线共轨声明原样透传（2026-11-28 线路页车站列表「与对方线共线」标注用）。
+        # validate 已保证结构（peer 合法、stops 恰 2 个本线站 id、双侧对称）；此处
+        # 防御过滤坏项即可——范围换算（含环线环绕弧）由查看器按站 id 自行定位。
+        "sharedTracks": [
+            {"peer": sh.get("peer"), "stops": list(sh.get("stops") or [])}
+            for sh in (line.get("sharedTracks") or [])
+            if isinstance(sh, dict) and isinstance(sh.get("peer"), str)
+            and isinstance(sh.get("stops"), list) and len(sh.get("stops") or []) == 2
+            and all(isinstance(s, str) for s in sh.get("stops") or [])
+        ],
     }
 
     def to_lonlat(x, y):

@@ -41,6 +41,14 @@
 // 高亮渐变：focus-veil 白罩常驻化（fill-opacity 0↔0.7 走 paint transition 渐入渐出）、
 // basemap-veil 档位切换同挂 transition、站名标签 visibility 硬切改 opacity transition；
 // 联络线 blend/fade 动态层与分期他省 dim 位的过渡未做（层全删全建/特征无稳定 id）。
+// 2026-11-28 三项（用户需求）：①线路页车站列表环线表达（保持竖排不变）——环线段
+//（section.loop，如 4 号线/26 号线）rail 一侧画 C 形细线从底部回接到顶部＋顶端箭头
+// 示意循环＋段顶「环线」小字（环绕段＝末站开回首站，列表首末站不重复）；②共线区间
+// 表达（sharedTracks 消费，flatten 线级透传＋V.lineStopSections row.shared）——区间
+// 内站行加对方线色侧边条（逐行片段拼连续、区间首末行圆头，与地图共线双平行线同构）
+// ＋区间首行「与〈对方名〉共线」小字（前置对方色小短条，与行尾可点的换乘「圆点＋
+// 线名」视觉区分：共线≠换乘、静态不可点）；③换乘站（组站）标签去加粗——CSS
+// .map-label.is-group 删 font-weight:600（字号档与描边宽度维持现状，用户只点名加粗）。
 // 2026-11-27 动效改版（用户「所有动效都是硬切，希望改成滑动、平滑缩放到对应位置」）：
 // ①面板四视图切换由 display 硬切改滑动过渡——视图绝对堆叠于 #panelViews 滑轨
 //（CSS data-pos 三态，见 index.html），层级推挤方向（rank：splash<main<station<line）：
@@ -2417,6 +2425,17 @@
           interMarks.get(mk.at.after).push(mk);
         }
       }
+      // 环线表达（2026-11-28 用户需求，保持竖排不变）：回环指示＝主线段 rail 一侧的
+      // C 形细线（从底部回接到顶部、顶端箭头示意循环——环绕段＝末站开回首站，列表首末
+      // 站不重复）＋段顶「环线」小字。note 放 secEl 外（wrap 层、段之前）——secEl 内
+      // 首子元素会推低 rail 的绝对定位锚（rail top 按行区起算）。少于 2 行无环可示（防御）。
+      const isLoop = !!sec.loop && sec.rows.length >= 2;
+      if (isLoop) {
+        const note = document.createElement('div');
+        note.className = 'lp-loop-note';
+        note.textContent = '环线';
+        wrap.appendChild(note);
+      }
       const secEl = document.createElement('div');
       secEl.className = 'lp-sec';
       secEl.id = 'lpsec-' + si;
@@ -2426,6 +2445,11 @@
       const tailArrow = sec.rows.length && sec.rows[sec.rows.length - 1].kind === 'arrow';
       rail.className = 'lp-rail' + (headArrow ? ' lp-rail-head' : '') + (tailArrow ? ' lp-rail-tail' : '');
       secEl.appendChild(rail);
+      if (isLoop) {
+        const lp = document.createElement('div');
+        lp.className = 'lp-loop';
+        secEl.appendChild(lp);
+      }
       sec.rows.forEach((row, ri) => {
         const inter = interMarks.get(ri - 1);   // at.after=ri-1：画在上一行与本行之间
         if (inter) {
@@ -2444,6 +2468,24 @@
         const r = document.createElement('div');
         r.className = 'lp-row';
         r.id = 'lprow-' + si + '-' + ri;
+        // 共线区间标注（2026-11-28 用户需求，sharedTracks 消费）：区间内站行加对方线色
+        // 侧边条（细竖条贴 rail 右缘，逐行片段拼连续、段首末行圆头——与地图共线段双
+        // 平行线的表达同构）；连续行段＝相邻行同 shared.mainId 归并（环线环绕跨段自然
+        // 拆两段，各自成条）。段首行加「与〈对方名〉共线」小字（前置对方色小短条），
+        // 与换乘信息（行尾「圆点＋线名」可点）视觉区分：共线≠换乘、位置不同、形状不同
+        //（短条 vs 圆点）、静态不可点。
+        const sh = row.shared || null;
+        const prevSh = ri > 0 ? (sec.rows[ri - 1].shared || null) : null;
+        const nextSh = ri + 1 < sec.rows.length ? (sec.rows[ri + 1].shared || null) : null;
+        const shFirst = sh && (!prevSh || prevSh.mainId !== sh.mainId);
+        const shLast = sh && (!nextSh || nextSh.mainId !== sh.mainId);
+        if (sh) {
+          const bar = document.createElement('span');
+          bar.className = 'lp-shared-bar' + (shFirst ? ' lp-shared-first' : '') + (shLast ? ' lp-shared-last' : '');
+          bar.style.background = sh.color || '#888888';
+          bar.dataset.sharedMain = sh.mainId;
+          r.appendChild(bar);
+        }
         const g = row.glyph || { kind: 'dot', stroke: null };
         const node = document.createElement('span');
         node.className = 'lp-node lp-node-' + g.kind;
@@ -2453,6 +2495,13 @@
         nm.className = 'lp-station';
         nm.textContent = row.name || V.stopDisplayName('');
         r.appendChild(nm);
+        if (sh && shFirst) {
+          const tag = document.createElement('span');
+          tag.className = 'lp-shared-tag';
+          tag.style.setProperty('--shared-color', sh.color || '#888888');
+          tag.textContent = '与' + (sh.name || sh.mainId) + '共线';
+          r.appendChild(tag);
+        }
         for (const mk of rowMarks.get(ri) || []) r.appendChild(markElOfStopList(mk));
         // 换乘信息（2026-11-27）：站名/接入标注之后，行内右侧对齐收尾（margin-left:auto）；
         // 空集（单线站/junction 同组站）不建 DOM 不占位；真数据最多 6 条（上海南站），

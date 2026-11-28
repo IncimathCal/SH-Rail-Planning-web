@@ -2188,6 +2188,99 @@ console.log('lineStopSections / stopNodeGlyph:');
   eq(V.branchDestLabel([{ kind: 'arrow' }, { kind: 'stop', name: '尾站' }], 'head', '支线名'), '尾站', 'head 接入 → 去向取尾端具名站');
   eq(V.branchDestLabel([{ kind: 'arrow', name: '' }], 'head', '示范区出省支线'), '示范区出省支线', '无具名站 → 退支线自身名（不造名）');
 
+  // —— 环线与共线（2026-11-28 用户需求：section.loop 环线标记 / row.shared 共线区间标注）——
+  // sharedTrackRowRange＝flatten shared_track_decls 同构的站区间口径（非环闭区间/
+  // 环线沿站序前进弧跨环绕；两端边界站含在内）
+  eq(V.sharedTrackRowRange(false, 6, 1, 3), [1, 2, 3], '非环线＝闭区间');
+  eq(V.sharedTrackRowRange(false, 6, 3, 1), [1, 2, 3], '非环线声明标反＝同一区间（方向不敏感）');
+  eq(V.sharedTrackRowRange(true, 6, 1, 3), [1, 2, 3], '环线 i<j＝前进弧');
+  eq(V.sharedTrackRowRange(true, 6, 4, 1), [4, 5, 0, 1], '环线 i>j 跨环绕（环绕段一端的站在区间内）');
+  eq(V.sharedTrackRowRange(true, 6, 1, 4), [1, 2, 3, 4], '环线标反＝补弧（数据侧须按本线站序给起止）');
+  eq(V.sharedTrackRowRange(false, 6, 2, 2), [], '同点 → 空');
+  eq(V.sharedTrackRowRange(false, 6, -1, 2), [], '越界 → 空（防御）');
+  eq(V.sharedTrackRowRange(true, 6, 4, 6), [], '越界（j＝n） → 空（防御）');
+  // normalizeLines：线级 sharedTracks 透传＋坏项防御过滤
+  {
+    const lmST = V.normalizeLines(fc(lineFeat('lq', 0, 'existing', [[121, 31], [121.1, 31]], {
+      sharedTracks: [
+        { peer: 'ok', stops: ['a', 'b'] },
+        { peer: 123, stops: ['a', 'b'] },            // peer 非字符串 → 过滤
+        { peer: 'bad', stops: ['a'] },               // stops 长度 ≠2 → 过滤
+        { peer: 'bad2', stops: ['a', 7] },           // stops 元素非字符串 → 过滤
+      ],
+    })));
+    eq(lmST.get('lq').sharedTracks, [{ peer: 'ok', stops: ['a', 'b'] }], 'sharedTracks 合法项透传＋坏项过滤');
+    const lmNo = V.normalizeLines(fc(lineFeat('lq2', 0, 'existing', [[121, 31], [121.1, 31]])));
+    eq(lmNo.get('lq2').sharedTracks, [], '无声明 → 空数组（键齐）');
+  }
+  // 模型夹具：lp 环线 6 站（闭合折线），与 l3 双边共线——lp 声明站 4→站 1（环线跨环绕：
+  // 区间行 4,5,0,1）；l3 非环 5 站声明站 2→站 4（闭区间行 2,3,4）。l3 入组 lg3（组名
+  // 「三线组」主线 l3）→ lp 侧 shared 取组名＋主线色（transfers 同口径）；lp 无组 →
+  // l3 侧 shared 退线名。mA 加「组内互标」脏声明（peer=mB 同组）→ 不标。
+  const loopCoords = [[121.0, 31.0], [121.1, 31.05], [121.2, 31.0], [121.2, 30.9], [121.1, 30.85], [121.0, 30.9], [121.0, 31.0]];
+  const linesFCLoop = fc(
+    lineFeat('lp', 0, 'existing', loopCoords, {
+      role: 'standalone', color: '#00a0a0', loop: true,
+      sharedTracks: [{ peer: 'l3', stops: ['lp-s4', 'lp-s1'] }],
+    }),
+    lineFeat('l3', 0, 'existing', [[121.05, 30.87], [121.1, 30.87], [121.15, 30.87], [121.18, 30.9], [121.2, 30.95]], {
+      role: 'main', groupId: 'lg3', color: '#f0c000',
+      sharedTracks: [{ peer: 'lp', stops: ['l3-s2', 'l3-s4'] }],
+    }),
+    lineFeat('mA', 0, 'existing', [[121.0, 31.0], [121.2, 31.0]], {
+      role: 'main', groupId: 'lgA', color: '#ff0000',
+      sharedTracks: [{ peer: 'mB', stops: ['mA-s1', 'mA-s3'] }],   // 组内互标（脏数据）
+    }),
+    lineFeat('mB', 0, 'existing', [[121.1, 31.0], [121.1, 30.95]], { role: 'branch', groupId: 'lgA', color: '#00aa00' }),
+  );
+  const lmLoop = V.normalizeLines(linesFCLoop);
+  const lgLoop = V.buildLineGroups(lmLoop, [
+    { id: 'lg3', name: '三线组', mainId: 'l3', members: ['l3'] },
+    { id: 'lgA', name: 'A线组', mainId: 'mA', members: ['mA', 'mB'] },
+  ]);
+  const stopsFCLoop = fc(
+    ...[0, 1, 2, 3, 4, 5].map((k) => stopFeatX('lp-s' + k, '环' + k, 'lp', k / 6, 121 + 0.1 * k, 30.85 + 0.1 * Math.sin(k), { idx: k })),
+    ...[0, 1, 2, 3, 4].map((k) => stopFeatX('l3-s' + k, '三' + k, 'l3', k / 5, 121.05 + 0.03 * k, 30.87 + 0.02 * k, { idx: k })),
+  );
+  const modelLoop = V.lineStopSections('lp', lmLoop, V.stopList(stopsFCLoop), lgLoop, null);
+  ok(modelLoop.sections[0].loop === true, '环线段 loop 标记（渲染层画回环指示）');
+  eq(modelLoop.sections[0].rows.length, 6, '环线列表首末站不重复（6 站 6 行）');
+  const shRowsLp = modelLoop.sections[0].rows.map((r, i) => (r.shared ? i : -1)).filter((i) => i >= 0);
+  eq(shRowsLp, [0, 1, 4, 5], 'lp 共线区间＝声明站 4→1 跨环绕（行 4,5,0,1；两端边界站含在内）');
+  eq(modelLoop.sections[0].rows[4].shared, { mainId: 'l3', name: '三线组', color: '#f0c000' },
+    'lp 侧 shared＝对方归一主线（组名优先＋主线色，transfers 同口径）');
+  const modelL3 = V.lineStopSections('l3', lmLoop, V.stopList(stopsFCLoop), lgLoop, null);
+  ok(modelL3.sections[0].loop === false, '非环线段 loop=false');
+  const shRowsL3 = modelL3.sections[0].rows.map((r, i) => (r.shared ? i : -1)).filter((i) => i >= 0);
+  eq(shRowsL3, [2, 3, 4], 'l3 共线区间＝非环闭区间（行 2,3,4）');
+  eq(modelL3.sections[0].rows[2].shared, { mainId: 'lp', name: 'lp名', color: '#00a0a0' },
+    'l3 侧 shared 对象无组 → 退线名＋自身色');
+  // 防御：组内互标（mA 声明 peer=mB，归一后仍是本自然线路）→ 不标
+  const modelMA2 = V.lineStopSections('mA', lmLoop, stops2, lg2, tree2);
+  ok(modelMA2.sections[0].rows.every((r) => !r.shared), '组内互标（归一后＝本线）不产生共线标注');
+  // 防御：声明站定位失败（对方存在但声明站不在本线站表）→ 不标不炸
+  const lmGhost = V.normalizeLines(fc(
+    lineFeat('lz1', 0, 'existing', [[121, 31], [121.1, 31]], { sharedTracks: [{ peer: 'lp', stops: ['nope-a', 'nope-b'] }] }),
+  ));
+  const modelGhost = V.lineStopSections('lz1', lmGhost, V.stopList(fc(
+    stopFeatX('lz1-a', '甲', 'lz1', 0, 121, 31, { idx: 0 }),
+    stopFeatX('lz1-b', '乙', 'lz1', 1, 121.1, 31, { idx: 1 }),
+  )), null, null);
+  ok(modelGhost.sections[0].rows.every((r) => !r.shared), '声明站定位失败 → 无共线标注（防御）');
+  // arrow 行不标：lz2 站序 [站, arrow, 站, 站]、声明站 0→站 2 → 行 0 与 2 标、arrow 行不标
+  const lmArr = V.normalizeLines(fc(
+    lineFeat('lz2', 0, 'existing', [[121, 31], [121.1, 31], [121.2, 31]], { sharedTracks: [{ peer: 'lp', stops: ['lz2-a', 'lz2-c'] }] }),
+    lineFeat('lp', 0, 'existing', loopCoords, { role: 'standalone', color: '#00a0a0', loop: true }),
+  ));
+  const modelArr = V.lineStopSections('lz2', lmArr, V.stopList(fc(
+    stopFeatX('lz2-a', '甲', 'lz2', 0, 121, 31, { idx: 0 }),
+    stopFeatX('lz2-x', '', 'lz2', 0.5, 121.05, 31, { idx: 1, kind: 'arrow' }),
+    stopFeatX('lz2-c', '丙', 'lz2', 1, 121.1, 31, { idx: 2 }),
+    stopFeatX('lz2-d', '丁', 'lz2', 1, 121.2, 31, { idx: 3 }),
+  )), null, null);
+  eq(modelArr.sections[0].rows.map((r) => (r.shared ? 1 : 0)), [1, 0, 1, 0],
+    'arrow 行不打共线标（区间端点外的行照常，arrow 中间行无 shared）');
+
   // stopPinKeyOf：站 → 绘制单元 pin key（2026-11-27 线路页站行点进车站页的反查；
   // 口径＝buildStopView 的 emitUnit 出图：同站/junction 单元→组 pin、出闸直属站→单站
   // pin、出闸内子组→子组自身单元、无组→sid）
