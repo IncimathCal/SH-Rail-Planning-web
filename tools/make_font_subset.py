@@ -75,6 +75,22 @@ FALLBACK_GROUPS = [
     ("警示与其他", "⚠℃¥￥"),
 ]
 
+
+def gb2312_level1_chars():
+    """GB2312 一级常用汉字（16–55 区，3755 字），纯编码生成、无外部数据文件。
+
+    供 --common-hanzi 兜底：真数据站名＋UI 文案之外的常用字也进子集，
+    避免数据更新后个别新站名缺字回退系统字体造成字形混排。
+    """
+    chars = []
+    for qu in range(16, 56):        # 区 16–55＝一级汉字
+        for wei in range(1, 95):    # 每区 94 位
+            try:
+                chars.append(bytes([0xA0 + qu, 0xA0 + wei]).decode("gb2312"))
+            except UnicodeDecodeError:
+                pass                # 区内空位（如末区不足 94 字）
+    return "".join(chars)
+
 # ---------------------------------------------------------------------------
 # 注释剥离（HTML 的 <!-- -->、CSS 与 JS 的 /* */、JS 的 // 行注释）
 # ---------------------------------------------------------------------------
@@ -204,6 +220,12 @@ def main(argv=None):
         default=None,
         help="字符表存档路径（默认 <out-dir>/subset-chars.txt）",
     )
+    parser.add_argument(
+        "--common-hanzi",
+        action="store_true",
+        help="兜底集追加 GB2312 一级常用汉字 3755 字（软校验；"
+        "2026-11-28 苹方子集用，思源默认命令不带以维持原口径）",
+    )
     args = parser.parse_args(argv)
     if args.data_glob is None:
         args.data_glob = ["build/net/*"]
@@ -234,6 +256,8 @@ def main(argv=None):
     fallback_chars = set()
     for _label, group in FALLBACK_GROUPS:
         fallback_chars.update(group)
+    if args.common_hanzi:
+        fallback_chars.update(gb2312_level1_chars())
 
     # 空白统一不进字符表（换行/制表等不可见，字体无需字形；普通空格除外）
     def wanted(c):

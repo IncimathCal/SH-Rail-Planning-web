@@ -38,9 +38,35 @@
       --slide-dur: 420ms;
       --slide-ease: cubic-bezier(.3, .1, .3, 1);
       --swap-dur: 240ms;
+      /* 字体栈集中定义（2026-11-28 苹方嵌入改版，全栈唯一改点）：
+         "PingFang SC"＝系统真苹方——装有苹方的设备（Mac/iOS/自装）本地命中、零下载；
+         "PingFang Web"＝苹方子集 webfont——无苹方设备由它渲染苹方；
+         "SHMetro Web"＝思源黑体子集——保留的回退轨。
+         ⚠ 回退思源黑体＝把 "PingFang Web" 从本变量移除这一处即可
+         （思源 subset-*.woff2 与其 @font-face 完整保留，不动）。 */
+      --font-stack: "PingFang SC", "PingFang Web", "SHMetro Web", system-ui, "Microsoft YaHei", sans-serif;
     }
     /* 2026-11-27：prefers-reduced-motion 归零分支已拆——用户明令要看到动画（系统
        「减少动态」偏好下降级与其意愿相反），滑动/交叉滑动时长恒为标准值。 */
+    /* ---------- 字体链（2026-11-28 苹方嵌入；版权风险用户明示自担） ----------
+       目标：所有设备（含无苹方系统的）都用苹方渲染。
+       "PingFang Web"＝苹方子集（assets/fonts/subset-pingfang-*.woff2，源＝用户
+       本机 PingFang SC 静态 OTF 子集化，字符集＝真数据用字＋UI 文案＋符号兜底
+       ＋GB2312 一级常用字，见 assets/fonts/README.md 与 pingfang-chars.txt）；
+       下面两条思源 @font-face 原样保留作回退轨。
+       回退思源黑体＝删 :root --font-stack 里的 "PingFang Web" 一处即可（见上注）。 */
+    @font-face {
+      font-family: "PingFang Web";
+      src: url("assets/fonts/subset-pingfang-regular.woff2") format("woff2");
+      font-weight: 400;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "PingFang Web";
+      src: url("assets/fonts/subset-pingfang-semibold.woff2") format("woff2");
+      font-weight: 600;
+      font-display: swap;
+    }
     @font-face {
       font-family: "SHMetro Web";
       src: url("assets/fonts/subset-regular.woff2") format("woff2");
@@ -55,7 +81,7 @@
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; background: var(--bg); }
-    body { font: 14px/1.5 "PingFang SC", "SHMetro Web", system-ui, "Microsoft YaHei", sans-serif; color: var(--text); overflow: hidden; }
+    body { font-family: var(--font-stack); font-size: 14px; line-height: 1.5; color: var(--text); overflow: hidden; }
 
     #map { position: absolute; inset: 0; }
 
@@ -80,7 +106,7 @@
     /* ---------- HTML 中文标签叠加层（沿旧实现；opacity 渐隐渐显属高亮渐变一环） ---------- */
     #labelLayer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 1; }
     #coordinateRuler { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; overflow: hidden; }
-    #coordinateRuler text { fill: #6b7280; font: 11px "PingFang SC","SHMetro Web",system-ui,sans-serif; font-variant-numeric: tabular-nums; }
+    #coordinateRuler text { fill: #6b7280; font-family: var(--font-stack); font-size: 11px; font-variant-numeric: tabular-nums; }
     .map-label {
       position: absolute; left: 0; top: 0;
       font-size: 12px; line-height: 1.2; color: #000;
