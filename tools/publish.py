@@ -60,7 +60,7 @@ def inject_beta_notice(out_dir):
 <div id="betaNotice" role="dialog" aria-modal="true" aria-label="提示">
   <div id="betaNoticeCard">
     <div id="betaNoticeTitle">提示</div>
-    <div id="betaNoticeText">测试版网页，南枫线、苏淀沪线信息过时，未做移动端适配</div>
+    <div id="betaNoticeText">测试版网页，南枫线、苏淀沪线信息过时</div>
     <button id="betaNoticeConfirm" type="button">确认</button>
   </div>
 </div>
