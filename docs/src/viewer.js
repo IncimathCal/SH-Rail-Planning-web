@@ -41,6 +41,14 @@
 // 高亮渐变：focus-veil 白罩常驻化（fill-opacity 0↔0.7 走 paint transition 渐入渐出）、
 // basemap-veil 档位切换同挂 transition、站名标签 visibility 硬切改 opacity transition；
 // 联络线 blend/fade 动态层与分期他省 dim 位的过渡未做（层全删全建/特征无稳定 id）。
+// 2026-11-28 三项（用户需求）：①线路页车站列表环线表达（保持竖排不变）——环线段
+//（section.loop，如 4 号线/26 号线）rail 一侧画 C 形细线从底部回接到顶部＋顶端箭头
+// 示意循环＋段顶「环线」小字（环绕段＝末站开回首站，列表首末站不重复）；②共线区间
+// 表达（sharedTracks 消费，flatten 线级透传＋V.lineStopSections row.shared）——区间
+// 内站行加对方线色侧边条（逐行片段拼连续、区间首末行圆头，与地图共线双平行线同构）
+// ＋区间首行「与〈对方名〉共线」小字（前置对方色小短条，与行尾可点的换乘「圆点＋
+// 线名」视觉区分：共线≠换乘、静态不可点）；③换乘站（组站）标签去加粗——CSS
+// .map-label.is-group 删 font-weight:600（字号档与描边宽度维持现状，用户只点名加粗）。
 // 2026-11-27 动效改版（用户「所有动效都是硬切，希望改成滑动、平滑缩放到对应位置」）：
 // ①面板四视图切换由 display 硬切改滑动过渡——视图绝对堆叠于 #panelViews 滑轨
 //（CSS data-pos 三态，见 index.html），层级推挤方向（rank：splash<main<station<line）：
@@ -209,6 +217,20 @@
 // 其他相机照旧——cameraPadding 移动端改算 bottom 让位）；④viewport meta 已有无需补；
 // ⑤通用：线路页标题后加分类标签（主线 layer，.lp-layer-chip）。纯逻辑 V.viewportIsMobile/
 // V.sheetSnapHeights/V.nearestSheetSnap 单测覆盖（tools/test_viewer_logic.js）。
+// 2026-11-28 真机反馈三项修复（用户 390×844 真机验收抓包）：
+// ①把手完全拖不了（无头合成 pointer 通过、真机 touch 不动）——pointer 单轨在真机不稳
+//（iOS 老 WebView 无 Pointer Events／浏览器手势仲裁 touch-action 失效即 pointercancel），
+// 改 touch＋pointer 双轨（wireSheetHandle）：touchstart/touchmove/touchend {passive:false}
+// 直挂＋preventDefault（阻止滚动/双击缩放/长按选字——touchstart 上 preventDefault 是唯一
+// 可靠的滚动阻止，touch-action 仅辅助），pointer 流保留（桌面无头/鼠标路径）；两流共用一条
+// drag 会话、move/收尾幂等去重（真机 pointerdown 先到建会话、touchmove 照常驱动；pointer
+// 全灭的环境 touchstart 自建会话）。把手热区 30→44px（Apple HIG 最小触摸目标，视觉短条
+// 居中、上下留白均可命中）。
+// ②移动端点线路太难命中——queryRenderedFeatures 由点查改 ±V.HIT_BUFFER_MOBILE=12px 盒查
+//（renderedFeaturesAt 内判 isMobileViewport；桌面保持点查不变；站圈优先等判定语义不变，
+// 盒查只是喂给既有过滤器的候选变多——移动端站圈同步变易点是手指精度的自然收益）。
+// ③sheet 档位三改二：四分之三屏（默认）＋收起，半屏/全屏退役（V.sheetSnapHeights/
+// nearestSheetSnap 两档化，档名 'hidden'|'expanded'；点击把手＝两档互切；初始 75%）。
 // 2026-11-25 分期态他省线纠正（用户裁定）：他省线在任何情况下不得被期次高亮（不进
 // 期次高亮集合、不被白罩压暗），也绝不因进入分期态而从图上消失——分期态照常显示，
 // 口径＝聚焦态既有「恒调光」。实现：①渲染特征带 province 0/1 数字位（线/站圈/药丸，
@@ -294,7 +316,7 @@
       view: 'splash',             // 'splash' 初始界面 | 'main' 主界面（列表） | 'station' 车站页 | 'line' 线路页（滑动层级见 VIEW_RANK）
       tab: '市区线',               // 主界面当前选项卡（市区线/市域线/预控通道；他省与联络线不进列表）
       searching: false,           // 搜索态：结果占据整个面板主体（顶条与署名行保留）
-      sheetSnap: 'half',          // 移动端 bottom sheet 档位 'hidden'|'half'|'full'（2026-11-28；桌面不消费，跨断点与 collapsed 互映射）
+      sheetSnap: 'expanded',      // 移动端 bottom sheet 档位 'hidden'|'expanded'（2026-11-28 真机反馈改两档：四分之三屏[默认]＋收起；桌面不消费，跨断点与 collapsed 互映射）
       linePageId: null,           // 线路页当前线路（主线 id；setFocus 同源）
       linePageFrom: 'list',       // 线路页进入来源（'list'|'search'|'station'|'line'）——搜索来源返回保留词与结果；车站来源返回回车站页（2026-11-27 逐级返回链）；'line'＝站行换乘项跳转来源，返回回原线路页（2026-11-27 换乘链）
       linePagePrev: null,         // 换乘链栈（from='line' 时有效）：{ id, from, prev }——点换乘项前所在线路页及其来源，逐级返回（见 backFromLinePage）
@@ -748,8 +770,13 @@
   // 查询走 rAF 合帧，同 scheduleLabels 模式，隐藏页 rAF 停摆行为与页面一致）。
   function renderedFeaturesAt(point) {
     if (!S.map || !point) return null;
+    // 2026-11-28 真机反馈②：移动端点线路太难命中——点查改 ±V.HIT_BUFFER_MOBILE=12px 盒查
+    //（手指命中精度差；站圈优先等既有判定语义不变，盒查只是扩大候选喂给过滤器——移动端
+    // 站圈同步变易点是手指精度的自然收益）。桌面保持点查逐位不变。
+    const geom = isMobileViewport() ? V.hitQueryBox(point, V.HIT_BUFFER_MOBILE) : point;
+    if (!geom) return null;
     try {
-      return S.map.queryRenderedFeatures(point);   // 全层查询后按层过滤（见上注）
+      return S.map.queryRenderedFeatures(geom);   // 全层查询后按层过滤（见上注）
     } catch (e) { return null; }
   }
   function clickableMainOf(feats) {
@@ -2015,21 +2042,22 @@
     scheduleLabels();
   }
 
-  // ---------- 移动端 bottom sheet（2026-11-28 适配第一批；桌面零改动） ----------
+  // ---------- 移动端 bottom sheet（2026-11-28 适配第一批＋真机反馈修复；桌面零改动） ----------
   // 断点判定＝matchMedia，与 index.html @media (max-width: 767px) 同串同值（768＝
   // VIEWER_CORE.MOBILE_BREAKPOINT；768px 平板竖屏归桌面——295px 左侧面板在该宽度仍可用）。
-  // SHEET_HANDLE_H＝把手触摸区高，与 index.html #sheetHandle 的 height:30px 同值（两处同改）。
+  // SHEET_HANDLE_H＝把手触摸区高，与 index.html #sheetHandle 的 height:44px 同值（两处同改；
+  // 2026-11-28 真机反馈 30→44＝Apple HIG 最小触摸目标，视觉短条居中、上下留白均可命中）。
   const MQ_MOBILE = G.matchMedia ? G.matchMedia('(max-width: 767px)') : null;
   function isMobileViewport() { return !!(MQ_MOBILE && MQ_MOBILE.matches); }
-  const SHEET_HANDLE_H = 30;
-  // 三档标准高度（px）：hidden＝只露把手、half＝视口半高、full＝整个视口；视口高取
-  // innerHeight（documentElement 兜底）。core 纯函数防御返回 null 时就地兜半屏。
+  const SHEET_HANDLE_H = 44;
+  // 两档标准高度（px）：hidden＝只露把手、expanded＝视口四分之三；视口高取
+  // innerHeight（documentElement 兜底）。core 纯函数防御返回 null 时就地兜两档。
   function sheetHeightsNow() {
     const vh = G.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 0;
     const h = V.sheetSnapHeights(vh, SHEET_HANDLE_H);
-    return h || { hidden: SHEET_HANDLE_H, half: Math.round(vh / 2) || SHEET_HANDLE_H, full: vh || SHEET_HANDLE_H };
+    return h || { hidden: SHEET_HANDLE_H, expanded: Math.round(vh * 3 / 4) || SHEET_HANDLE_H };
   }
-  // 三档应用：写 #panel inline 高度＋data-sheetSnap（冒烟断言/CSS 钩子）；hidden ⇔
+  // 两档应用：写 #panel inline 高度＋data-sheetSnap（冒烟断言/CSS 钩子）；hidden ⇔
   // S.panelCollapsed 同步 true（相机让位与可见性判定消费同一「收起」语义）。instant＝直设
   // 不播过渡（初始/跨断点/resize 重贴）；常规档切换走 .3s height 过渡。只动面板高度，
   // 不碰聚焦/分期——收起不影响高亮，与桌面抽屉同语义。
@@ -2037,7 +2065,7 @@
     const panel = $('panel');
     if (!panel) return;
     const heights = sheetHeightsNow();
-    if (!(snap in heights)) snap = 'half';
+    if (!(snap in heights)) snap = 'expanded';
     S.ui.sheetSnap = snap;
     S.panelCollapsed = snap === 'hidden';
     if (instant) panel.classList.add('noanim');
@@ -2045,47 +2073,85 @@
     panel.dataset.sheetSnap = snap;
     if (instant) { void panel.offsetWidth; panel.classList.remove('noanim'); }
   }
-  // 把手拖拽（pointer 事件，2026-11-28 需求）：拖拽中 .dragging 禁 transition、高度随指针
-  // 直更（hidden～full 夹取）；松手按 V.nearestSheetSnap 吸附最近档并恢复过渡。位移 <6px
-  // 视为点击＝收一档/展开（hidden→half、half→hidden、full→half）。move/up 挂 document 级
-  // ——指针滑出把手区仍跟踪，不依赖 setPointerCapture。仅移动端生效（桌面把手 display:none
-  // 不可达；防御上再判一次断点）。
+  // 把手拖拽（2026-11-28 真机反馈重写：touch＋pointer 双轨）：拖拽中 .dragging 禁 transition、
+  // 高度随手指直更（hidden～expanded 夹取）；松手按 V.nearestSheetSnap 吸附最近档并恢复过渡。
+  // 位移 <6px 视为点击＝两档互切（hidden⇄expanded）。
+  // 根因背景：初版纯 pointer 单轨无头合成通过、真机 touch 完全不拖——真机上 pointer 流
+  // 不稳（iOS 老 WebView 干脆不派发 Pointer Events；touch-action 失效时浏览器手势仲裁几帧
+  // 后 pointercancel 收场）。修复＝双轨：
+  // · touchstart/touchmove/touchend/touchcancel 直挂且 {passive:false}——touchstart 的
+  //   preventDefault 是唯一可靠的滚动阻止（touch-action 只是辅助；顺带阻止双击缩放/长按
+  //   选字/合成 click，tap 语义自管不吃亏）；touchmove 的 preventDefault 拖拽中阻止页面滚动。
+  // · pointer 流保留（桌面无头合成/鼠标/正常派发 pointer 的触屏），pointerdown 的
+  //   preventDefault 只压兼容鼠标事件，不碰 touch 流。
+  // 去重＝单一 drag 会话＋幂等：真机 touch 序列先派发 pointerdown（建会话）再 touchstart
+  //（preventDefault 照调、startDrag 幂等忽略），pointermove 与 touchmove 都驱动同一会话
+  //（同为高度重设，无冲突），pointerup/touchend 先到者收尾、后到者空转；pointer 全灭的
+  // 环境 touchstart 自建会话。move/up 挂 document 级——手指滑出把手区仍跟踪（touch 的
+  // 隐式指针捕获派发到 handle 再冒泡，无需 setPointerCapture）。仅移动端生效（桌面把手
+  // display:none 不可达；防御上再判一次断点）。
   function wireSheetHandle() {
     const handle = $('sheetHandle');
     if (!handle) return;
     let dragging = false, startX = 0, startY = 0, startH = 0, lastX = 0, lastY = 0;
-    handle.addEventListener('pointerdown', (e) => {
-      if (!isMobileViewport()) return;
-      if (e.button != null && e.button !== 0) return;   // 只认主键/触摸/笔
+    const startDrag = (x, y) => {
+      if (dragging) return;   // 幂等：pointerdown/touchstart 先到者建会话
       dragging = true;
-      startX = lastX = e.clientX; startY = lastY = e.clientY;
+      startX = lastX = x; startY = lastY = y;
       startH = $('panel').getBoundingClientRect().height;
       $('panel').classList.add('dragging');
-      e.preventDefault();   // 防触摸长按选字/鼠标拖选
-    });
-    document.addEventListener('pointermove', (e) => {
+    };
+    const moveDrag = (x, y) => {
       if (!dragging) return;
-      lastX = e.clientX; lastY = e.clientY;
+      lastX = x; lastY = y;
       const hh = sheetHeightsNow();
-      const h = Math.min(hh.full, Math.max(hh.hidden, startH + (startY - e.clientY)));
+      const h = Math.min(hh.expanded, Math.max(hh.hidden, startH + (startY - y)));
       $('panel').style.height = h + 'px';
-    });
+    };
     const finish = () => {
       if (!dragging) return;
       dragging = false;
       $('panel').classList.remove('dragging');
       const tap = Math.abs(lastY - startY) < 6 && Math.abs(lastX - startX) < 6;
       if (tap) {
-        // 点击把手＝收一档/展开：hidden→half（展开）、half→hidden（收起，等价桌面收起按钮）、
-        // full→half（收一档，骤然全隐太猛）
-        applySheetSnap(S.ui.sheetSnap === 'full' ? 'half' : (S.ui.sheetSnap === 'hidden' ? 'half' : 'hidden'));
+        // 点击把手＝两档互切（2026-11-28 真机反馈改版）：hidden→expanded（展开）、
+        // expanded→hidden（收起，等价桌面收起按钮）
+        applySheetSnap(S.ui.sheetSnap === 'hidden' ? 'expanded' : 'hidden');
         return;
       }
       const snap = V.nearestSheetSnap($('panel').getBoundingClientRect().height, sheetHeightsNow());
       applySheetSnap(snap || S.ui.sheetSnap);
     };
+    // pointer 轨（鼠标/笔/正常派发 pointer 的触屏；桌面无头合成流同此）
+    handle.addEventListener('pointerdown', (e) => {
+      if (!isMobileViewport()) return;
+      if (e.button != null && e.button !== 0) return;   // 只认主键/触摸/笔
+      startDrag(e.clientX, e.clientY);
+      e.preventDefault();   // 只压兼容鼠标事件（选字/拖选），touch 流不受影响
+    });
+    document.addEventListener('pointermove', (e) => { moveDrag(e.clientX, e.clientY); });
     document.addEventListener('pointerup', finish);
     document.addEventListener('pointercancel', finish);
+    // touch 轨（真机主路径；{passive:false} 才能 preventDefault）
+    handle.addEventListener('touchstart', (e) => {
+      if (!isMobileViewport()) return;
+      const t = e.touches && e.touches[0];
+      if (t) startDrag(t.clientX, t.clientY);
+      e.preventDefault();   // 无条件：阻止滚动/双击缩放/长按选字/合成 click（tap 自管）
+    }, { passive: false });
+    document.addEventListener('touchmove', (e) => {
+      if (!dragging) return;
+      const t = e.touches && e.touches[0];
+      if (t) moveDrag(t.clientX, t.clientY);
+      e.preventDefault();   // 拖拽中阻止页面滚动（touch-action 失效时的兜底）
+    }, { passive: false });
+    document.addEventListener('touchend', (e) => {
+      if (!dragging) return;
+      const t = e.changedTouches && e.changedTouches[0];
+      if (t) { lastX = t.clientX; lastY = t.clientY; }
+      finish();
+    });
+    document.addEventListener('touchcancel', finish);
   }
   // 跨断点切换（旋转/拉宽拉窄窗口）：桌面抽屉态与移动 sheet 档互映射（collapsed⇔hidden），
   // 并清对端残留形态（inline 高度 / collapsed 类）。标签字号乘数随断点变——重排一轮。
@@ -2101,7 +2167,7 @@
       panel.classList.remove('collapsed');
       $('panelCollapse').classList.remove('stowed');
       $('panelTab').hidden = true;
-      applySheetSnap(wasCollapsed ? 'hidden' : 'half', true);
+      applySheetSnap(wasCollapsed ? 'hidden' : 'expanded', true);
     } else {
       panel.style.height = '';
       delete panel.dataset.sheetSnap;
@@ -2110,7 +2176,8 @@
     }
     scheduleLabels();
   }
-  // 初始化（wireUI 头部）：移动端首帧即半屏（instant 不闪）；MQ change＝跨断点同步；
+  // 初始化（wireUI 头部）：移动端首帧即四分之三屏（instant 不闪；2026-11-28 真机反馈改
+  // 两档后的默认档）；MQ change＝跨断点同步；
   // resize＝移动端视口高变（地址栏收展/旋转）重贴当前档标准高度（拖拽中不抢）。
   function initViewportMode() {
     wireSheetHandle();
@@ -2122,7 +2189,7 @@
     G.addEventListener('resize', () => {
       if (isMobileViewport() && S.ui.sheetSnap) applySheetSnap(S.ui.sheetSnap, true);
     });
-    if (isMobileViewport()) applySheetSnap('half', true);
+    if (isMobileViewport()) applySheetSnap('expanded', true);
   }
 
   // ---------- 线路列表（demo 新 UI：三选项卡；自然线路；分期单选态变灰） ----------
@@ -2292,7 +2359,7 @@
       body.appendChild(tip);
     }
     // 车站列表（2026-11-27）：信息（或「无信息」提示）下方——竖直线站序样式，主线段
-    // ＋分割线＋每条支线一段；arrow 出省端画线端箭头不写站名；接入标注（往支线去向/
+    // ＋分割线＋每条支线一段；arrow 出省端画线端箭头＋「出省」小字；接入标注（往支线去向/
     // 往主线/联络对方线）＝V.lineStopSections 模型。lineinfo 有无与本列表无耦合。
     // 2026-11-27 增：站行 transfers（换乘信息，lineOrder 序与车站页一致）。
     const stopModel = V.lineStopSections(lineId, S.linesMap, S.stops, S.lineGroups, S.groupTree, S.lineOrder);
@@ -2417,6 +2484,18 @@
           interMarks.get(mk.at.after).push(mk);
         }
       }
+      // 环线表达（2026-11-28 用户改版，真机目验裁定「C 形回环线诡异」）：只留段顶「环线」
+      // 小字＋rail 头尾与出省端同款的线端箭头（首端朝上、末端朝下，朝列表两端外侧示意
+      // 循环延续；复用 lp-rail-head/lp-rail-tail 三角，环线不出省，与 arrow 端并入同一
+      // class 判定）。note 放 secEl 外（wrap 层、段之前）——secEl 内首子元素会推低 rail
+      // 的绝对定位锚（rail top 按行区起算）。少于 2 行无环可示（防御）。
+      const isLoop = !!sec.loop && sec.rows.length >= 2;
+      if (isLoop) {
+        const note = document.createElement('div');
+        note.className = 'lp-loop-note';
+        note.textContent = '环线';
+        wrap.appendChild(note);
+      }
       const secEl = document.createElement('div');
       secEl.className = 'lp-sec';
       secEl.id = 'lpsec-' + si;
@@ -2424,7 +2503,11 @@
       const rail = document.createElement('div');
       const headArrow = sec.rows.length && sec.rows[0].kind === 'arrow';
       const tailArrow = sec.rows.length && sec.rows[sec.rows.length - 1].kind === 'arrow';
-      rail.className = 'lp-rail' + (headArrow ? ' lp-rail-head' : '') + (tailArrow ? ' lp-rail-tail' : '');
+      // 箭头 class：出省端（arrow 行）与环线头尾同款三角——环线＝两端各一个，出省线＝仅
+      // 出省端（真出省端另有「出省」小字区分，见下方 arrow 行）。
+      rail.className = 'lp-rail'
+        + (headArrow || isLoop ? ' lp-rail-head' : '')
+        + (tailArrow || isLoop ? ' lp-rail-tail' : '');
       secEl.appendChild(rail);
       sec.rows.forEach((row, ri) => {
         const inter = interMarks.get(ri - 1);   // at.after=ri-1：画在上一行与本行之间
@@ -2435,15 +2518,38 @@
           for (const mk of inter) iv.appendChild(markElOfStopList(mk));
           secEl.appendChild(iv);
         }
-        if (row.kind === 'arrow') {   // 出省端：只画线端箭头（rail 端三角），不写站名
+        if (row.kind === 'arrow') {   // 出省端：线端箭头（rail 端三角）＋「出省」小字
+          // （2026-11-28 防混淆：环线头尾也用同款箭头了，真出省端加二字标注区分；仍不写站名）
           const ar = document.createElement('div');
           ar.className = 'lp-row lp-row-arrow';
+          const an = document.createElement('span');
+          an.className = 'lp-arrow-note';
+          an.textContent = '出省';
+          ar.appendChild(an);
           secEl.appendChild(ar);
           return;
         }
         const r = document.createElement('div');
         r.className = 'lp-row';
         r.id = 'lprow-' + si + '-' + ri;
+        // 共线区间标注（2026-11-28 用户需求，sharedTracks 消费）：区间内站行加对方线色
+        // 侧边条（细竖条贴 rail 右缘，逐行片段拼连续、段首末行圆头——与地图共线段双
+        // 平行线的表达同构）；连续行段＝相邻行同 shared.mainId 归并（环线环绕跨段自然
+        // 拆两段，各自成条）。段首行加「与〈对方名〉共线」小字（前置对方色小短条），
+        // 与换乘信息（行尾「圆点＋线名」可点）视觉区分：共线≠换乘、位置不同、形状不同
+        //（短条 vs 圆点）、静态不可点。
+        const sh = row.shared || null;
+        const prevSh = ri > 0 ? (sec.rows[ri - 1].shared || null) : null;
+        const nextSh = ri + 1 < sec.rows.length ? (sec.rows[ri + 1].shared || null) : null;
+        const shFirst = sh && (!prevSh || prevSh.mainId !== sh.mainId);
+        const shLast = sh && (!nextSh || nextSh.mainId !== sh.mainId);
+        if (sh) {
+          const bar = document.createElement('span');
+          bar.className = 'lp-shared-bar' + (shFirst ? ' lp-shared-first' : '') + (shLast ? ' lp-shared-last' : '');
+          bar.style.background = sh.color || '#888888';
+          bar.dataset.sharedMain = sh.mainId;
+          r.appendChild(bar);
+        }
         const g = row.glyph || { kind: 'dot', stroke: null };
         const node = document.createElement('span');
         node.className = 'lp-node lp-node-' + g.kind;
@@ -2453,6 +2559,13 @@
         nm.className = 'lp-station';
         nm.textContent = row.name || V.stopDisplayName('');
         r.appendChild(nm);
+        if (sh && shFirst) {
+          const tag = document.createElement('span');
+          tag.className = 'lp-shared-tag';
+          tag.style.setProperty('--shared-color', sh.color || '#888888');
+          tag.textContent = '与' + (sh.name || sh.mainId) + '共线';
+          r.appendChild(tag);
+        }
         for (const mk of rowMarks.get(ri) || []) r.appendChild(markElOfStopList(mk));
         // 换乘信息（2026-11-27）：站名/接入标注之后，行内右侧对齐收尾（margin-left:auto）；
         // 空集（单线站/junction 同组站）不建 DOM 不占位；真数据最多 6 条（上海南站），
@@ -3012,8 +3125,8 @@
   // 高亮状态不受收起影响（只动 CSS，不碰 S.focus/分期）。会话内不持久化，刷新回展开。
   function setLinePanelCollapsed(collapsed) {
     // 移动端（2026-11-28）：桌面抽屉把手/展开条已 display:none，本函数正常不可达；防御
-    // 转发到 sheet 档（hidden＝收起）。
-    if (isMobileViewport()) { applySheetSnap(collapsed ? 'hidden' : 'half'); return; }
+    // 转发到 sheet 档（hidden＝收起、expanded＝展开档 75%）。
+    if (isMobileViewport()) { applySheetSnap(collapsed ? 'hidden' : 'expanded'); return; }
     S.panelCollapsed = collapsed;
     $('panel').classList.toggle('collapsed', collapsed);
     $('panelCollapse').classList.toggle('stowed', collapsed);

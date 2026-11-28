@@ -38,9 +38,35 @@
       --slide-dur: 420ms;
       --slide-ease: cubic-bezier(.3, .1, .3, 1);
       --swap-dur: 240ms;
+      /* 字体栈集中定义（2026-11-28 苹方嵌入改版，全栈唯一改点）：
+         "PingFang SC"＝系统真苹方——装有苹方的设备（Mac/iOS/自装）本地命中、零下载；
+         "PingFang Web"＝苹方子集 webfont——无苹方设备由它渲染苹方；
+         "SHMetro Web"＝思源黑体子集——保留的回退轨。
+         ⚠ 回退思源黑体＝把 "PingFang Web" 从本变量移除这一处即可
+         （思源 subset-*.woff2 与其 @font-face 完整保留，不动）。 */
+      --font-stack: "PingFang SC", "PingFang Web", "SHMetro Web", system-ui, "Microsoft YaHei", sans-serif;
     }
     /* 2026-11-27：prefers-reduced-motion 归零分支已拆——用户明令要看到动画（系统
        「减少动态」偏好下降级与其意愿相反），滑动/交叉滑动时长恒为标准值。 */
+    /* ---------- 字体链（2026-11-28 苹方嵌入；版权风险用户明示自担） ----------
+       目标：所有设备（含无苹方系统的）都用苹方渲染。
+       "PingFang Web"＝苹方子集（assets/fonts/subset-pingfang-*.woff2，源＝用户
+       本机 PingFang SC 静态 OTF 子集化，字符集＝真数据用字＋UI 文案＋符号兜底
+       ＋GB2312 一级常用字，见 assets/fonts/README.md 与 pingfang-chars.txt）；
+       下面两条思源 @font-face 原样保留作回退轨。
+       回退思源黑体＝删 :root --font-stack 里的 "PingFang Web" 一处即可（见上注）。 */
+    @font-face {
+      font-family: "PingFang Web";
+      src: url("assets/fonts/subset-pingfang-regular.woff2") format("woff2");
+      font-weight: 400;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "PingFang Web";
+      src: url("assets/fonts/subset-pingfang-semibold.woff2") format("woff2");
+      font-weight: 600;
+      font-display: swap;
+    }
     @font-face {
       font-family: "SHMetro Web";
       src: url("assets/fonts/subset-regular.woff2") format("woff2");
@@ -55,7 +81,7 @@
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; background: var(--bg); }
-    body { font: 14px/1.5 "PingFang SC", "SHMetro Web", system-ui, "Microsoft YaHei", sans-serif; color: var(--text); overflow: hidden; }
+    body { font-family: var(--font-stack); font-size: 14px; line-height: 1.5; color: var(--text); overflow: hidden; }
 
     #map { position: absolute; inset: 0; }
 
@@ -80,7 +106,7 @@
     /* ---------- HTML 中文标签叠加层（沿旧实现；opacity 渐隐渐显属高亮渐变一环） ---------- */
     #labelLayer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 1; }
     #coordinateRuler { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; overflow: hidden; }
-    #coordinateRuler text { fill: #6b7280; font: 11px "PingFang SC","SHMetro Web",system-ui,sans-serif; font-variant-numeric: tabular-nums; }
+    #coordinateRuler text { fill: #6b7280; font-family: var(--font-stack); font-size: 11px; font-variant-numeric: tabular-nums; }
     .map-label {
       position: absolute; left: 0; top: 0;
       font-size: 12px; line-height: 1.2; color: #000;
@@ -91,7 +117,9 @@
       transition: opacity .25s ease;   /* 分期/聚焦站名显隐渐变（原 visibility 硬切改 opacity） */
     }
     .map-label.is-group {
-      font-size: 13px; font-weight: 600; color: #000;
+      /* 2026-11-28 用户裁定：组站（换乘站）标签去加粗——weight 与普通站一致
+         （仅保留 13px 字号档与配套描边宽度；用户只点名加粗） */
+      font-size: 13px; color: #000;
       -webkit-text-stroke: 3.25px #fff;
     }
 
@@ -470,6 +498,58 @@
     .lp-xfer-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
     .lp-xfer-name { font-size: 12px; line-height: 1.3; color: #555555; white-space: nowrap; }
 
+    /* ---- 环线表达（2026-11-28 用户改版，真机目验裁定「C 形回环线诡异」）：只留
+       段顶「环线」小字＋rail 头尾与出省端同款箭头（lp-rail-head/lp-rail-tail 端
+       三角，朝列表两端外侧示意循环延续）；旧 C 形回环线（.lp-loop）＋其顶端箭头已删。
+       .lp-loop-note＝段顶「环线」小字（12px 灰，与站名左对齐）——放 secEl 外防推低
+       rail 的绝对定位锚，见 viewer.js buildStopSection 注。
+       .lp-arrow-note＝出省端「出省」小字（2026-11-28 防混淆）：环线头尾也用同款
+       箭头后，真出省端加二字标注区分；灰 12px 一档（与「环线」note 同规格） ---- */
+    .lp-arrow-note {
+      padding-left: 27px; font-size: 12px; line-height: 1.3;
+      color: #555555; letter-spacing: 1px;
+    }
+    .lp-loop-note {
+      min-height: 18px; padding-left: 27px; margin-bottom: 2px;
+      font-size: 12px; line-height: 18px; color: #555555; letter-spacing: 1px;
+    }
+    /* ---- 共线区间标注（2026-11-28 用户需求，sharedTracks 消费）：区间内站行的对方
+       线色侧边条（贴 rail 右缘，逐行片段拼连续、区间首末行圆头——与地图共线段双平行
+       线表达同构）；区间首行「与〈对方名〉共线」小字（前置对方色小短条）。与换乘信息
+       （行尾「圆点＋线名」可点跳转）的区分：形状（短条 vs 圆点）、位置（站名后 vs 行尾
+       右对齐）、语义文字（含「共线」）、静态不可点（共线≠换乘）。黑白灰不破：彩色仅
+       侧边条与小短条（对方线标志色），文字恒灰 ---- */
+    .lp-shared-bar {
+      position: absolute; left: 13.5px; top: 0; bottom: 0; width: 3px;
+      z-index: 0; pointer-events: none;
+    }
+    .lp-shared-bar.lp-shared-first { border-top-left-radius: 1.5px; border-top-right-radius: 1.5px; }
+    .lp-shared-bar.lp-shared-last { border-bottom-left-radius: 1.5px; border-bottom-right-radius: 1.5px; }
+    /* 区间首末行渐隐（2026-11-28 用户需求）：侧边条接入端沿竖条方向渐变到透明——mask
+       渐变实现（背景色仍行内实色、JS 零改动），与接入标注 lp-mark-tail「渐变到透明」
+       视觉语言一致；中间行保持实色。环绕跨段拆开的区间＝逐行片段天然逐段，各自首末
+       渐隐；单行区间（first＋last 同行）双端渐隐（0-3-0 特异性覆盖两条单 class 规则）。 */
+    .lp-shared-bar.lp-shared-first {
+      -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 10px);
+      mask-image: linear-gradient(180deg, transparent 0, #000 10px);
+    }
+    .lp-shared-bar.lp-shared-last {
+      -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 10px), transparent);
+      mask-image: linear-gradient(180deg, #000 calc(100% - 10px), transparent);
+    }
+    .lp-shared-bar.lp-shared-first.lp-shared-last {
+      -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 10px, #000 calc(100% - 10px), transparent);
+      mask-image: linear-gradient(180deg, transparent 0, #000 10px, #000 calc(100% - 10px), transparent);
+    }
+    .lp-shared-tag {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 12px; line-height: 1.3; color: #555555; white-space: nowrap;
+    }
+    .lp-shared-tag::before {
+      content: ''; flex: none; width: 9px; height: 3px; border-radius: 1.5px;
+      background: var(--shared-color, #888888);
+    }
+
     /* ---- 车站页（2026-11-27 点击车站）：顶条/标题区复用线路页（lp-head/lp-name），
        主体＝一行一自然线路（色块＋线名＋多名标注），行可点（点行＝高亮该线＋跳线路页） ---- */
     #viewStation { overflow: hidden; }
@@ -599,35 +679,37 @@
     .maplibregl-ctrl-bottom-right { right: 8px; bottom: 8px; }
     .maplibregl-ctrl-bottom-right .maplibregl-ctrl { margin: 0; }
 
-    /* ---------- 移动端（窄屏 <768px）bottom sheet（2026-11-28 适配第一批；桌面零改动） ----------
-       左侧 295px 面板在窄屏改全宽贴底三档（隐藏[只露把手]/半屏[默认]/全屏），档高由 viewer.js
-       applySheetSnap 写 inline px 接管（此处 50dvh＝无 JS 兜底与初始帧）；拖拽（pointer 事件挂
-       把手，.dragging 禁 transition、松手按 V.nearestSheetSnap 吸附最近档）。桌面抽屉把手/
-       展开条在移动端退役（#panelCollapse/#panelTab display none，收展语义由 sheet 把手承担，
-       高亮状态不受影响——只动面板高度不碰 S.focus/分期）。断点 768 与 viewer_core
-       MOBILE_BREAKPOINT 同值（768px 平板竖屏归桌面）。 */
+    /* ---------- 移动端（窄屏 <768px）bottom sheet（2026-11-28 适配第一批＋真机反馈修复；桌面零改动） ----------
+       左侧 295px 面板在窄屏改全宽贴底两档（隐藏[只露把手]/四分之三屏[默认]——2026-11-28 真机
+       反馈改版，半屏/全屏退役），档高由 viewer.js applySheetSnap 写 inline px 接管（此处 75dvh＝
+       无 JS 兜底与初始帧）；拖拽（touch＋pointer 双轨挂把手，.dragging 禁 transition、松手按
+       V.nearestSheetSnap 吸附最近档；touchstart/touchmove {passive:false}＋preventDefault＝真机
+       滚动阻止主防线）。桌面抽屉把手/展开条在移动端退役（#panelCollapse/#panelTab display
+       none，收展语义由 sheet 把手承担，高亮状态不受影响——只动面板高度不碰 S.focus/分期）。
+       断点 768 与 viewer_core MOBILE_BREAKPOINT 同值（768px 平板竖屏归桌面）。 */
     #sheetHandle { display: none; }   /* 桌面不显示（移动端 media 内亮出） */
     @media (max-width: 767px) {
       #panel {
         top: auto; left: 0; right: 0; bottom: 0; width: auto;
-        height: 50vh; height: 50dvh;   /* 无 JS 兜底＝半屏；JS 接管后 inline px 为准 */
+        height: 75vh; height: 75dvh;   /* 无 JS 兜底＝四分之三屏；JS 接管后 inline px 为准 */
         border-radius: 14px 14px 0 0;
         border-left: none; border-right: none; border-bottom: none;
         transform: none;   /* 桌面 .collapsed 的 translateX 形态不适用（跨断点类清理见 viewer.js syncViewportMode） */
-        transition: height .3s ease;   /* 三档吸附过渡；拖拽中 .dragging／直设 .noanim 禁 */
+        transition: height .3s ease;   /* 两档吸附过渡；拖拽中 .dragging／直设 .noanim 禁 */
       }
       #panel.collapsed { transform: none; }
       #panel.dragging, #panel.noanim { transition: none; }
-      /* 把手：全宽触摸热区 30px（≥拇指可命中）＋视觉短条；touch-action none＝拖拽独占触摸，
-         防浏览器把手势当页面滚动（面板内容滚动不受影响） */
+      /* 把手：全宽触摸热区 44px（2026-11-28 真机反馈 30→44＝Apple HIG 最小触摸目标；视觉
+         短条居中，上下留白均可命中——「点高点到地图」的热区外沿上移）＋视觉短条；
+         touch-action none＝拖拽独占触摸的辅助防线（真机主防线＝viewer.js touch 轨 preventDefault） */
       #sheetHandle {
         display: flex; flex: none;
         align-items: center; justify-content: center;
-        height: 30px; cursor: grab; touch-action: none; user-select: none;
+        height: 44px; cursor: grab; touch-action: none; user-select: none;
       }
       .sheet-handle-bar { width: 44px; height: 5px; border-radius: 2.5px; background: rgba(0, 0, 0, 0.22); }
       #panelCollapse, #panelTab { display: none !important; }
-      /* 初始页二维码双列（半屏高度下省纵向空间；卡片自身全宽设计适配半格） */
+      /* 初始页二维码双列（sheet 档高度下省纵向空间；卡片自身全宽设计适配半格） */
       .splash-cards { grid-template-columns: 1fr 1fr; gap: 8px; }
       /* 经纬读数尺等图上小字同步放大一档（站名标签放大走 viewer.js labelScale 断点乘数，
          此处只管 SVG 静态字号） */

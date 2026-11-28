@@ -58,6 +58,10 @@
 // 投影到成员线，≤150m 归站、否则行间——block 线路所 flatten 已剔除只能几何兜底，approx
 // 标记〕；stopNodeGlyph 节点形态＝地图 buildStopView 同规则列表版；联络线自身名称绝不
 // 进模型——标注只写「联络〈对方自然线路名〉」＋对方主线色）。
+// 2026-11-28 增：环线与共线在车站列表的表达（normalizeLines 保留线级 sharedTracks
+// 透传声明；lineStopSections 增 section.loop 与 row.shared——sharedTrackRowRange 纯函数
+// ＝flatten shared_track_decls 同构的站区间口径：非环闭区间/环线沿站序前进弧跨环绕、
+// 两端边界站含在内；对方线归一主线、组名优先主线色，共线≠换乘但取名取色同口径）。
 
 (function (G) {
   'use strict';
@@ -142,25 +146,40 @@
   // 站名标签移动端整体放大一档的乘数（复用 labelScale 机制：zf = labelScale(zoom) × 本乘数；
   // 12px→15px、13px→16.25px）。桌面端不乘（桌面回归零改动）。
   const MOBILE_LABEL_SCALE = 1.25;
-  // bottom sheet 三档标准高度（px）：hidden＝只露把手（把手条高度，胶水层 CSS 常量同值）；
-  // half＝视口一半（四舍五入）；full＝整个视口高。viewportH/handleH 非法输入返回 null（调用方兜底）。
+  // bottom sheet 两档标准高度（px，2026-11-28 真机反馈改版：四分之三屏[默认]＋收起，半屏/
+  // 全屏退役）：hidden＝只露把手（把手条高度，胶水层 CSS 常量同值）；expanded＝视口四分之
+  // 三（四舍五入）。viewportH/handleH 非法输入返回 null（调用方兜底）。
   function sheetSnapHeights(viewportH, handleH) {
     if (!Number.isFinite(viewportH) || viewportH <= 0 || !Number.isFinite(handleH) || handleH <= 0) return null;
-    return { hidden: handleH, half: Math.round(viewportH / 2), full: Math.round(viewportH) };
+    return { hidden: handleH, expanded: Math.round(viewportH * 3 / 4) };
   }
-  // 松手吸附：取距当前高度最近的档（等距平手按 hidden→half→full 定义序先到先得——
-  // 下拉略过半即吸 half 的手感由「就近」保证，平手罕见不刻意偏置）。heights 缺档跳过、
-  // 全缺/非法高度返回 null（调用方保持原档）。
+  // 松手吸附：取距当前高度最近的档（等距平手按 hidden→expanded 定义序先到先得）。heights
+  // 缺档跳过、全缺/非法高度返回 null（调用方保持原档）。
   function nearestSheetSnap(height, heights) {
     if (!Number.isFinite(height) || !heights) return null;
     let best = null, bestDist = Infinity;
-    for (const key of ['hidden', 'half', 'full']) {
+    for (const key of ['hidden', 'expanded']) {
       const v = heights[key];
       if (!Number.isFinite(v)) continue;
       const d = Math.abs(height - v);
       if (d < bestDist) { bestDist = d; best = key; }
     }
     return best;
+  }
+  // 移动端单击命中容差（CSS px，2026-11-28 真机反馈：手指点线路太难命中）：仅移动端把
+  // queryRenderedFeatures 的点查放宽为 ±buffer 盒查（手指命中精度差，取 12——任务书「约
+  // ±10-12px」上限档，站圈半径 5.5-7.5px 之上再给 4-6px 余量）；桌面保持点查不变。
+  const HIT_BUFFER_MOBILE = 12;
+  // 点查几何 → 盒查几何：[x, y] 数组或 maplibre PointLike {x, y}（onMapClick 的 e.point 是
+  //后者、胶水层 hoverPoint 是前者，两形态都收）→ [[x-b, y-b], [x+b, y+b]]（buffer=0 得零
+  // 尺寸盒＝等价点查）。非法点（缺坐标/非有限数）返回 null（调用方按无命中处理）。
+  function hitQueryBox(point, buffer) {
+    // Number(null)=0 的坑：null/undefined 先归 NaN（缺坐标一律非法），别喂给 Number
+    const x = Number(Array.isArray(point) ? point[0] : (point ? point.x : undefined));
+    const y = Number(Array.isArray(point) ? point[1] : (point ? point.y : undefined));
+    const b = Number(buffer);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(b) || b < 0) return null;
+    return [[x - b, y - b], [x + b, y + b]];
   }
 
   // ---------- GCJ02 偏移（测试阶段底图·高德对齐用） ----------
@@ -301,6 +320,16 @@
           // 保持键齐——沿用 connects 的做法），首段建 line 对象时取一次；组名/成员并集
           // 在 buildLineGroups 与 net/index.json lineGroups 汇算
           groupId: typeof p.groupId === 'string' ? p.groupId : '',
+          // 共线共轨声明（2026-11-28 线路页车站列表「与对方线共线」标注）：flatten 线级
+          // 原样透传（每段 feature 同值，首段取一次）；结构防御过滤（peer 字符串、stops
+          // 恰 2 个字符串——validate 是门禁，此处只兜脏数据），范围换算在 lineStopSections
+          sharedTracks: Array.isArray(p.sharedTracks)
+            ? p.sharedTracks
+                .filter((sh) => sh && typeof sh.peer === 'string' && sh.peer
+                  && Array.isArray(sh.stops) && sh.stops.length === 2
+                  && sh.stops.every((s) => typeof s === 'string' && s))
+                .map((sh) => ({ peer: sh.peer, stops: sh.stops.slice() }))
+            : [],
           segments: [],
         };
         out.set(id, line);
@@ -1083,9 +1112,27 @@
     }
     return fallbackName || '';
   }
+  // 共线声明 → 站行区间（2026-11-28 线路页车站列表共线标注）：i/j＝sharedTracks 声明
+  // 两端站在该段的行号。与 flatten shared_track_decls 的段范围同构的**站集合**口径：
+  // 非环线＝闭区间（声明标反等价，重排 min/max）；环线＝沿站序前进弧——i>j 跨环绕
+  // （行 i..n-1＋0..j，即环绕段一端的站也在区间内；标反即取补弧，数据侧须按本线
+  // 站序给起止，validate 已要求双侧一致）。两端边界站含在内。越界/同点 → 空表。
+  function sharedTrackRowRange(loop, n, i, j) {
+    if (!Number.isInteger(i) || !Number.isInteger(j) || i === j) return [];
+    if (i < 0 || j < 0 || i >= n || j >= n) return [];
+    const out = [];
+    if (loop && i > j) {
+      for (let k = i; k < n; k++) out.push(k);
+      for (let k = 0; k <= j; k++) out.push(k);
+    } else {
+      const a = Math.min(i, j), b = Math.max(i, j);
+      for (let k = a; k <= b; k++) out.push(k);
+    }
+    return out;
+  }
   // lineStopSections 主函数。返回：
-  // { mainId, sections: [{ lineId, isMain, name, color,
-  //     rows: [{ sid, name, kind, t, glyph, transfers }],
+  // { mainId, sections: [{ lineId, isMain, name, color, loop,
+  //     rows: [{ sid, name, kind, t, glyph, transfers, shared }],
   //     marks: [{ at: {row:i}|{after:i}, type:'branch'|'toMain'|'conn',
   //               label, color, targetSectionIdx, targetAt, targetMainId, approx }] }] }
   //   mark 定位：at.row＝行内（该站行处）、at.after＝行间（画在第 i 行与 i+1 行之间）。
@@ -1093,6 +1140,10 @@
   //   targetMainId＝对方主线 id。color：branch＝支线色 / toMain＝主线色 / conn＝对方主线色。
   //   transfers（2026-11-27 换乘信息）：该站还能换乘的其他自然线路
   //   [{ mainId, name, color }]，口径见「③ 换乘信息」注；arrow 行恒 []。
+  //   loop（2026-11-28 环线表达）：该成员线 loop:true——渲染层主线段一侧画回环指示。
+  //   shared（2026-11-28 共线表达）：该站行处于与本线共线共轨区间的对方自然线路
+  //   { mainId, name, color }（两端边界站含在内；环线沿站序前进弧跨环绕），口径见
+  //   「④ 共线区间标注」注；非共线行无该键。
   // lineOrder（可选第 6 参，2026-11-27 增）：换乘项排序（stationFocusOf 同款——自定义序
   // 优先、未列入者 lineId 升序 tie-break）；不传＝纯 lineId 升序。
   function lineStopSections(mainId, linesMap, stops, lineGroups, tree, lineOrder) {
@@ -1118,6 +1169,8 @@
         isMain: String(lid) === mainIdNorm,
         name: line ? (line.name || '') : '',
         color: line ? line.color : DEFAULT_LINE_COLOR,
+        // 环线标记（2026-11-28 线路页环线表达）：该成员线自身 loop——渲染层画回环指示
+        loop: !!(line && line.loop),
         rows: [],
         marks: [],
       });
@@ -1348,6 +1401,43 @@
       const srcRows = rowsByLine.get(sec.lineId) || [];
       for (let i = 0; i < sec.rows.length; i++) {
         sec.rows[i].transfers = srcRows[i] && srcRows[i].kind !== 'arrow' ? transferListOf(srcRows[i]) : [];
+      }
+    }
+    // —— ④ 共线区间标注（2026-11-28 用户需求：sharedTracks 双边声明 → 站行「与对方线
+    // 共线」）——口径＝flatten shared_track_decls 同构：声明两端站 id 在该成员线段内定位
+    // 行号（定位失败防御跳过），站集合＝sharedTrackRowRange（非环闭区间/环线沿站序前进弧
+    // 跨环绕；两端边界站含在内）。对方线归一到主线（mainOfId）、**组名优先＋主线色**
+    //（transfers 同口径，共线≠换乘但取色取名一致）；对方不存在于 linesMap 或归一后仍是
+    // 本自然线路（组内互标，脏数据）→ 不标。同一行被多条声明命中保留首条；arrow 行不是
+    // 站、不标。row.shared＝{ mainId, name, color }（渲染层画对方线色侧边条＋区间首行
+    // 「与〈对方名〉共线」小字）。
+    const sharedInfoOf = (pid) => {
+      const mid = mainOfId(pid);
+      if (!mid || mid === mainIdNorm || !linesMap.has(mid)) return null;
+      const grpS = lg ? lg.ofLine.get(mid) : null;
+      const lineS = linesMap.get(mid);
+      return {
+        mainId: mid,
+        name: grpS ? (grpS.name || (lineS && lineS.name) || mid) : ((lineS && lineS.name) || mid),
+        color: lineS ? lineS.color : DEFAULT_LINE_COLOR,
+      };
+    };
+    for (const lid of members) {
+      const line = linesMap.get(lid);
+      const decls = line && Array.isArray(line.sharedTracks) ? line.sharedTracks : [];
+      if (!decls.length) continue;
+      const rows = rowsByLine.get(lid) || [];
+      const sec = sections[secIndexOf.get(String(lid))];
+      if (!sec) continue;
+      for (const sh of decls) {
+        const info = sharedInfoOf(sh.peer);
+        if (!info) continue;
+        const i = rowIndexBySid(String(lid), sh.stops[0]);
+        const j = rowIndexBySid(String(lid), sh.stops[1]);
+        for (const k of sharedTrackRowRange(!!(line && line.loop), rows.length, i, j)) {
+          if (rows[k].kind === 'arrow' || sec.rows[k].shared) continue;
+          sec.rows[k].shared = info;
+        }
       }
     }
     return { mainId: mainIdNorm, sections };
@@ -2507,6 +2597,7 @@
     LABEL_ZOOM_GROUP, LABEL_ZOOM_STOP,
     SIZE_ZOOM_MIN, SIZE_ZOOM_HOLD, SIZE_SCALE_EXP, labelScale,
     MOBILE_BREAKPOINT, viewportIsMobile, MOBILE_LABEL_SCALE, sheetSnapHeights, nearestSheetSnap,
+    HIT_BUFFER_MOBILE, hitQueryBox,
     UNNAMED_STOP_ZH, stopDisplayName, formatTerminals,
     xmlEscape, normalizeHex, hexToKmlColor,
     normalizeLines, lineBboxOf, stopList, buildStopView,
@@ -2522,7 +2613,7 @@
     pointToScreenPolylineDist,
     buildLineGroups, lineSearchEntries, lineLabelOf, linesOfPin,
     lineStopSections, stopNodeGlyph, nearestOnLineGeom, lineEndpointsOf,
-    stopsOfLineOrdered, junctionBuckets, branchDestLabel, STATION_SNAP_M,
+    stopsOfLineOrdered, junctionBuckets, branchDestLabel, sharedTrackRowRange, STATION_SNAP_M,
     matchEntries, filterLabels, visibleLabels, stopUnitMatchesPhase,
     parseLineInfo, safeLinkUrl, lineInfoEntryOf,
     buildLineGeoJSON, buildLineKML,
