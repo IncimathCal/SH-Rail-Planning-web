@@ -246,15 +246,15 @@ const bigLabels = [];
 for (let i = 0; i < 900; i++) bigLabels.push({ key: 's' + i, name: '站' + i, group: false });
 for (let i = 0; i < 100; i++) bigLabels.push({ key: 'g' + i, name: '组' + i, group: true });
 eq(V.filterLabels(bigLabels, 9).length, 0, 'z9 无标签');
-eq(V.filterLabels(bigLabels, 10).length, 100, 'z10 仅换乘组标签显示');
+eq(V.filterLabels(bigLabels, 10.5).length, 100, 'z10 仅换乘组标签显示');
 eq(V.filterLabels(bigLabels, 10.99).length, 100, 'z10.99 普通单线站仍隐藏');
 eq(V.filterLabels([{ group: false, groupType: 'out-of-station' }, { group: false, groupType: null }], 10).length, 1,
   'z10 按真实 groupType 字段显示出闸换乘站标签，不看名称');
 eq(V.filterLabels([{ group: true, groupType: 'junction' }, { group: false, groupType: null }], 10).length, 1,
   'z10 按真实 group 字段显示换乘组标签');
 
-eq(V.filterLabels(bigLabels, 11).length, 1000, 'z11 全部显示——1000 个标签单元（超旧上限 800）不再砍普通站名');
-eq(V.filterLabels(bigLabels, 11).filter((l) => !l.group).length, 900, 'z11 普通站标签全在');
+eq(V.filterLabels(bigLabels, 11.5).length, 1000, 'z11 全部显示——1000 个标签单元（超旧上限 800）不再砍普通站名');
+eq(V.filterLabels(bigLabels, 11.5).filter((l) => !l.group).length, 900, 'z11 普通站标签全在');
 eq(V.filterLabels(bigLabels, 11).filter((l) => l.group).length, 100, 'z11 换乘组标签全在');
 eq(V.filterLabels(bigLabels, 13).length, 1000, 'z13 全部显示');
 eq(V.filterLabels([], 15).length, 0, '空标签不崩');
@@ -269,8 +269,8 @@ for (let ln = 0; ln < 60; ln++) {
 const scaleLabels = V.buildStopView(V.stopList(fc(...scaleFeats))).labels;
 eq(scaleLabels.length, 1080, '规模样本：1080 个普通站标签单元（＞旧上限 800）');
 eq(V.visibleLabels(scaleLabels, 10.99, {}).length, 0, '规模样本 z10.99：门槛下无标签（组站统一 11）');
-eq(V.visibleLabels(scaleLabels, 11, {}).length, 1080, '规模样本 z11：1080 个普通站名全部显示（旧 LABEL_CAP 下为 0）');
-eq(V.visibleLabels(scaleLabels, 11, { dimmedSet: new Set(['l3']) }).length, 1062, '规模样本 z11 调光一条线：仅该线 18 站隐去');
+eq(V.visibleLabels(scaleLabels, 11.5, {}).length, 1080, '规模样本 z11：1080 个普通站名全部显示（旧 LABEL_CAP 下为 0）');
+eq(V.visibleLabels(scaleLabels, 11.5, { dimmedSet: new Set(['l3']) }).length, 1062, '规模样本 z11 调光一条线：仅该线 18 站隐去');
 const statusStops = V.stopList(fc(
   { type: 'Feature', geometry: { type: 'Point', coordinates: [121, 31] }, properties: { sid: 'sf', name: '龙居路', lineId: 'l14', lineName: '14号线', t: 0.2, stopStatus: 'future' } },
   { type: 'Feature', geometry: { type: 'Point', coordinates: [121.1, 31.1] }, properties: { sid: 'sn', name: '普通站', lineId: 'lOther', lineName: '其他线', t: 0.4 } },
@@ -278,10 +278,10 @@ const statusStops = V.stopList(fc(
 eq(statusStops[0].stopStatus, 'future', 'stopStatus 合法值从 stops.geojson 读入');
 ok(!Object.prototype.hasOwnProperty.call(statusStops[1], 'stopStatus'), '无 stopStatus 时不添加键以兼容旧结构');
 const statusLabels = V.buildStopView(statusStops).labels;
-eq(V.visibleLabels(statusLabels, 11, { phase: 'existing' }).map((l) => l.key), ['sn'], '站点分期覆盖：future 站名在既有档隐藏，未标注站名沿用线路期次行为');
-eq(V.visibleLabels(statusLabels, 11, { phase: 'future', dimmedSet: new Set(['lOther']) }).map((l) => l.key), ['sf'], '站点分期覆盖：future 站名在远期档显示，非匹配线路按旧行为隐藏');
-eq(V.visibleLabels(statusLabels, 11, { phase: 'existing', focus: 'l14' }).map((l) => l.key), ['sf'], '聚焦站名常显优先于站点分期覆盖');
-eq(V.visibleLabels(statusLabels, 11, { phase: 'existing', hiddenLineIds: ['l14', 'lOther'] }).length, 0, 'hiddenLineIds 纯逻辑能力位保留（旧四档 API；2026-11-25 后分期态他省站名不走此隐藏，见 displayOnlyIds 用例）');
+eq(V.visibleLabels(statusLabels, 11.5, { phase: 'existing' }).map((l) => l.key), ['sn'], '站点分期覆盖：future 站名在既有档隐藏，未标注站名沿用线路期次行为');
+eq(V.visibleLabels(statusLabels, 11.5, { phase: 'future', dimmedSet: new Set(['lOther']) }).map((l) => l.key), ['sf'], '站点分期覆盖：future 站名在远期档显示，非匹配线路按旧行为隐藏');
+eq(V.visibleLabels(statusLabels, 11.5, { phase: 'existing', focus: 'l14' }).map((l) => l.key), ['sf'], '聚焦站名常显优先于站点分期覆盖');
+eq(V.visibleLabels(statusLabels, 11.5, { phase: 'existing', hiddenLineIds: ['l14', 'lOther'] }).length, 0, 'hiddenLineIds 纯逻辑能力位保留（旧四档 API；2026-11-25 后分期态他省站名不走此隐藏，见 displayOnlyIds 用例）');
 eq(V.stopUnitMatchesPhase([{ lineId: 'lA', status: 'future' }, { lineId: 'lB' }], 'future', new Set(['lB'])), true, '混合覆盖组：任一覆盖匹配成员即可正常显示');
 eq(V.stopUnitMatchesPhase([{ lineId: 'lA' }, { lineId: 'lB' }], 'future', new Set(['lA'])), true, '未覆盖组成员按 lineId 回退 dimSet，任一未调光则正常');
 eq(V.stopUnitMatchesPhase([{ lineId: 'lA' }, { lineId: 'lB' }], 'future', new Set(['lA', 'lB'])), false, '未覆盖组成员全部调光则整组调光');
@@ -539,7 +539,7 @@ eq(V.visibleLabels(vlLabelsTP, 13, { dimmedSet: dimTP, displayOnlyIds: ['tp', 't
 eq(V.visibleLabels(vlLabelsTP, 13, { dimmedSet: dimTP }).map((l) => l.key),
   ['mix'],
   '对照：不传 displayOnlyIds 时他省纯单元标签随全成员调光隐藏（旧行为）——新参数是唯一放行口');
-eq(V.visibleLabels(vlLabelsTP, 10, { dimmedSet: dimTP, displayOnlyIds: ['tp', 'tq'] }).map((l) => l.key),
+eq(V.visibleLabels(vlLabelsTP, 10.5, { dimmedSet: dimTP, displayOnlyIds: ['tp', 'tq'] }).map((l) => l.key),
   ['p2', 'mix'],
   'displayOnlyIds 放行不越 zoom 门槛：z10 普通站（含他省单站）仍隐藏、组标签（他省组/混合组）照门槛规则显示');
 eq(V.visibleLabels(vlLabelsTP, 13, { dimmedSet: dimTP, displayOnlyIds: [] }).map((l) => l.key),
@@ -694,7 +694,7 @@ const veilDim = V.computeDimmedSet(mixTP, { focus: 'la' });
 eq(V.visibleLabels(vlLabels, 9, { focus: 'la', dimmedSet: veilDim }).map((l) => l.key).sort(),
   ['g1', 's1'],
   '聚焦下 z9 标签＝聚焦成员常显照旧＋其余隐藏');
-eq(V.visibleLabels(vlLabels, 11, { focus: 'la', dimmedSet: veilDim }).map((l) => l.key).sort(),
+eq(V.visibleLabels(vlLabels, 11.5, { focus: 'la', dimmedSet: veilDim }).map((l) => l.key).sort(),
   ['g1', 's1'],
   '聚焦下 z11 其余标签隐藏（2026-11-22 真机反馈轮改写——原「全都不动全显」的站名侧语义收回）');
 
@@ -1403,10 +1403,10 @@ const svNx = V.buildStopView(stNx, { linesMap: lmNx, lineGroups: lgNx, tree: tre
   eq(V.buildStopView(stNo, { linesMap: lmNx, lineGroups: lgNx, tree: V.buildGroupTree(noDirect, stNo) }).labels.map((l) => l.key),
     ['g:g9001', 'g:g9002', 'g:g9004'], '④ 出闸单元没有直属站则本单元不出自己的标签（子组标签照出）');
   // 嵌套组与出闸换乘标签按 group/groupType 结构字段在 z≥10 显示。
-  eq([V.filterLabels(svNx.labels, 11).length, V.filterLabels(svNx.labels, 10).length, V.filterLabels(svNx.labels, 9.99).length], [4, 4, 0], '嵌套单元标签 z≥10 显示');
+  eq([V.filterLabels(svNx.labels, 11.5).length, V.filterLabels(svNx.labels, 10.5).length, V.filterLabels(svNx.labels, 9.99).length], [4, 4, 0], '嵌套单元标签 z≥10 显示');
   eq(V.filterLabels([{ key: 'plain', group: false, groupType: null }], 10).length, 0, 'z10 普通站仍隐藏');
-  eq(V.filterLabels([{ key: 'exchange', group: false, groupType: 'out-of-station' }], 10).map((l) => l.key), ['exchange'], 'z10 出闸换乘站按类型显示');
-  eq(V.filterLabels([{ key: 'interchange', group: true, groupType: 'same-station' }], 10).map((l) => l.key), ['interchange'], 'z10 换乘组按结构字段显示');
+  eq(V.filterLabels([{ key: 'exchange', group: false, groupType: 'out-of-station' }], 10.5).map((l) => l.key), ['exchange'], 'z10 出闸换乘站按类型显示');
+  eq(V.filterLabels([{ key: 'interchange', group: true, groupType: 'same-station' }], 10.5).map((l) => l.key), ['interchange'], 'z10 换乘组按结构字段显示');
 
 
   // 调光口径不变：单元标签收全部成员线，全成员被调光才隐藏
