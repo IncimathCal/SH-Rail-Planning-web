@@ -768,23 +768,29 @@ ok(V.viewportIsMobile(NaN) === false && V.viewportIsMobile(null) === false && V.
 ok(V.MOBILE_LABEL_SCALE === 1.25, '标签移动端乘数＝1.25（12px→15px、13px→16.25px「放大一档」）');
 ok(Math.abs(V.labelScale(11) * V.MOBILE_LABEL_SCALE - 1.25) < 1e-12, 'z≥11 移动端标签有效缩放＝1.25');
 ok(Math.abs(V.labelScale(9) * V.MOBILE_LABEL_SCALE - 0.3125) < 1e-12, 'z=9 移动端＝0.25×1.25（缩放与放大叠乘不封顶）');
-// 两档（2026-11-28 真机反馈改版：四分之三屏[默认]＋收起；半屏/全屏退役；把手高 30→44）
-eq(V.sheetSnapHeights(844, 44), { hidden: 44, expanded: 633 }, 'sheetSnapHeights：两档标准高（expanded＝round(vh×3/4)，844→633）');
-eq(V.sheetSnapHeights(845, 44), { hidden: 44, expanded: 634 }, '奇数视口高 expanded＝round(845×0.75)＝634（633.75 四舍五入）');
-eq(V.sheetSnapHeights(800, 30), { hidden: 30, expanded: 600 }, '844 真机视口外的一般值照算（800→600）');
+// 两档（2026-11-28 真机反馈改版：大档[默认]＋收起；半屏/全屏退役；把手高 30→44；
+// 同日二轮 75%→80%＝五分之四屏）
+eq(V.sheetSnapHeights(844, 44), { hidden: 44, expanded: 675 }, 'sheetSnapHeights：两档标准高（expanded＝round(vh×4/5)，844→675）');
+eq(V.sheetSnapHeights(845, 44), { hidden: 44, expanded: 676 }, '视口高 ×4/5 整除：845→676（无舍入）');
+eq(V.sheetSnapHeights(846, 44), { hidden: 44, expanded: 677 }, '非整除向上舍入：846×0.8＝676.8→677');
+eq(V.sheetSnapHeights(800, 30), { hidden: 30, expanded: 640 }, '844 真机视口外的一般值照算（800→640）');
 ok(V.sheetSnapHeights(0, 44) === null && V.sheetSnapHeights(-100, 44) === null, 'sheetSnapHeights 非正视口＝null');
 ok(V.sheetSnapHeights(844, 0) === null && V.sheetSnapHeights(844, NaN) === null, 'sheetSnapHeights 非法把手高＝null');
 ok(V.sheetSnapHeights(NaN, 44) === null && V.sheetSnapHeights(null, 44) === null, 'sheetSnapHeights 非法视口＝null');
-eq(V.nearestSheetSnap(633, { hidden: 44, expanded: 633 }), 'expanded', '吸附：恰在档位上');
-eq(V.nearestSheetSnap(600, { hidden: 44, expanded: 633 }), 'expanded', '吸附：75% 档附近→expanded');
-eq(V.nearestSheetSnap(60, { hidden: 44, expanded: 633 }), 'hidden', '吸附：把手附近→hidden');
-eq(V.nearestSheetSnap(5, { hidden: 44, expanded: 633 }), 'hidden', '吸附：越下界（拖拽已夹取，防御）');
-eq(V.nearestSheetSnap(900, { hidden: 44, expanded: 633 }), 'expanded', '吸附：越上界（防御）');
-eq(V.nearestSheetSnap(338, { hidden: 44, expanded: 633 }), 'hidden', '吸附：338 距两档均 295（等距平手）→按定义序取先 hidden');
-eq(V.nearestSheetSnap(339, { hidden: 44, expanded: 633 }), 'expanded', '吸附：过中点 1px→expanded（就近）');
+eq(V.nearestSheetSnap(675, { hidden: 44, expanded: 675 }), 'expanded', '吸附：恰在档位上');
+eq(V.nearestSheetSnap(640, { hidden: 44, expanded: 675 }), 'expanded', '吸附：80% 档附近→expanded');
+eq(V.nearestSheetSnap(60, { hidden: 44, expanded: 675 }), 'hidden', '吸附：把手附近→hidden');
+eq(V.nearestSheetSnap(5, { hidden: 44, expanded: 675 }), 'hidden', '吸附：越下界（拖拽已夹取，防御）');
+eq(V.nearestSheetSnap(900, { hidden: 44, expanded: 675 }), 'expanded', '吸附：越上界（防御）');
+eq(V.nearestSheetSnap(359, { hidden: 44, expanded: 675 }), 'hidden', '吸附：359 距两档均 316（等距平手）→按定义序取先 hidden');
+eq(V.nearestSheetSnap(360, { hidden: 44, expanded: 675 }), 'expanded', '吸附：过中点 1px→expanded（就近）');
 eq(V.nearestSheetSnap(100, {}), null, '吸附：全缺档＝null（调用方保持原档）');
-ok(V.nearestSheetSnap(NaN, { hidden: 44, expanded: 633 }) === null, '吸附：非法高度＝null');
-ok(V.nearestSheetSnap(633, null) === null && V.nearestSheetSnap(633, undefined) === null, '吸附：heights 缺省＝null');
+ok(V.nearestSheetSnap(NaN, { hidden: 44, expanded: 675 }) === null, '吸附：非法高度＝null');
+ok(V.nearestSheetSnap(675, null) === null && V.nearestSheetSnap(675, undefined) === null, '吸附：heights 缺省＝null');
+// 移动端相机让位全零（2026-11-28 真机二轮用户裁定：全面取消——一切相机动作对整个视口
+// 居中/取景；胶水层 cameraPadding 移动端分支直接采用本返回值）
+eq(V.mobileCameraPadding(), { top: 0, bottom: 0, left: 0, right: 0 }, 'mobileCameraPadding：四边全零（无 bottom/任何方向让位）');
+eq(V.mobileCameraPadding(), V.mobileCameraPadding(), 'mobileCameraPadding：每次调用新对象（消费方改写不污染）');
 // 移动端命中盒（2026-11-28 真机反馈②：点查 → ±12px 盒查）
 ok(V.HIT_BUFFER_MOBILE === 12, '移动端命中容差＝12px（任务书「约 ±10-12px」上限档）');
 eq(V.hitQueryBox([100, 200], 12), [[88, 188], [112, 212]], 'hitQueryBox：数组点 → ±12px 盒');
