@@ -779,7 +779,7 @@
   //     out-of-station 单元：直属站各自普通尺寸圈（出闸换乘物理上是两个站，不并点，黑边），
   //       子组各自成单元；
   //     除出闸单元的直属站外，成员的个人小圈一律不再单独出现。
-  //   pills —— 逻辑线 ≥3 的 same-station 单元的胶囊折线（近乎共点的组用站圈）：叶站 geo 按 planGroupPillChain 链序
+  //   pills —— 逻辑线 ≥3 的 same-station 单元的胶囊折线：叶站 geo 按 planGroupPillChain 链序
   //（渲染层双层 line＋圆头端帽即得白底黑边胶囊）。条目自带 pin（组级信息面板/hover 单元，
   // key 'g:<id>'，渲染层并入 pinByKey；不进 pins＝不渲染成圈）。
   //   labels —— HTML 标签与搜索条目单元：无组站各一；每个单元各一（均值位置，名取首个非空）；
@@ -1076,7 +1076,7 @@
   // 无组＝白心小圈线色描边；出闸直属站＝黑边小圈；同站/junction 单元＝大圈
   //（junction 描边取成员线角色优先级色——main＞standalone＞branch＞connector，
   // 与胶水层 junctionStroke 同源规则）；药丸条件（shape:"pill"/带子组/逻辑线≥3）
-  // 同 buildStopView（近乎共点的折线降级只影响地图）。返回 null（arrow 行无节点）或 { kind:'dot'|'dark'|'big'|'pill',
+  // 同 buildStopView。返回 null（arrow 行无节点）或 { kind:'dot'|'dark'|'big'|'pill',
   // stroke:色值|null }——stroke null＝渲染层退段色（普通站）。
   function stopNodeGlyph(stop, tree, linesMap, lineGroups) {
     if (!stop || stop.kind === 'arrow') return null;
@@ -2681,6 +2681,381 @@
     return L.join('\n');
   }
 
+  // ---------- 里程、站点数据与时间轴纯逻辑（2026-11-28 增强） ----------
+  const EARTH_RADIUS_KM = 6371.0088;
+  function haversineKm(a, b) {
+    if (!a || !b || !Number.isFinite(a[0]) || !Number.isFinite(a[1]) || !Number.isFinite(b[0]) || !Number.isFinite(b[1])) return 0;
+    const toRad = Math.PI / 180;
+    const dLat = (b[1] - a[1]) * toRad;
+    const dLon = (b[0] - a[0]) * toRad;
+    const lat1 = a[1] * toRad;
+    const lat2 = b[1] * toRad;
+    const s = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+      + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(Math.max(0, s))));
+  }
+  function polylineCumDistKm(coords) {
+    const out = [0];
+    if (!Array.isArray(coords) || coords.length < 2) return out;
+    let acc = 0;
+    for (let i = 1; i < coords.length; i++) {
+      acc += haversineKm(coords[i - 1], coords[i]);
+      out.push(acc);
+    }
+    return out;
+  }
+  function polylineLengthKm(coords) {
+    const cum = polylineCumDistKm(coords);
+    return cum.length ? cum[cum.length - 1] : 0;
+  }
+  // 按累计距离比例截取折线（时间轴 60fps 渐进画线用），返回 { coords, tip }
+  function slicePolylineByRatio(coords, cumDist, totalKm, ratio) {
+    if (!Array.isArray(coords) || coords.length < 2) return null;
+    const r = Math.max(0, Math.min(1, Number.isFinite(ratio) ? ratio : 0));
+    if (r <= 0) return null;
+    if (r >= 1 || !Number.isFinite(totalKm) || totalKm <= 0) {
+      return { coords: coords.slice(), tip: coords[coords.length - 1] };
+    }
+    const target = totalKm * r;
+    const out = [coords[0]];
+    for (let i = 1; i < coords.length; i++) {
+      const dPrev = cumDist[i - 1] || 0;
+      const dCurr = cumDist[i] || dPrev;
+      if (dCurr >= target) {
+        const span = dCurr - dPrev;
+        const frac = span > 1e-9 ? Math.max(0, Math.min(1, (target - dPrev) / span)) : 1;
+        const tip = [
+          coords[i - 1][0] + (coords[i][0] - coords[i - 1][0]) * frac,
+          coords[i - 1][1] + (coords[i][1] - coords[i - 1][1]) * frac,
+        ];
+        out.push(tip);
+        return { coords: out, tip };
+      }
+      out.push(coords[i]);
+    }
+    return { coords: out, tip: out[out.length - 1] };
+  }
+  function formatKm(km) {
+    if (!Number.isFinite(km) || km < 0) return '0.0';
+    return km >= 100 ? km.toFixed(1) : km.toFixed(1);
+  }
+  function formatDecimalYear(t) {
+    if (!Number.isFinite(t)) return '';
+    const yr = Math.floor(t + 1e-6);
+    const frac = Math.max(0, t - yr);
+    const mo = Math.min(12, Math.max(1, Math.floor(frac * 12) + 1));
+    return yr + '年' + String(mo).padStart(2, '0') + '月';
+  }
+  const TIMELINE_STAGE_ZH = {
+    opened: '已开通',
+    approved: '近期在建/获批',
+    future: '远期规划',
+    corridor: '远景预控',
+  };
+  function segmentOpenMeta(timeline, lineId, segIndex, segStatus) {
+    const lid = lineId != null ? String(lineId) : '';
+    const entry = timeline && timeline.lines ? timeline.lines[lid] : null;
+    if (entry && Array.isArray(entry.segments)) {
+      for (const r of entry.segments) {
+        if (segIndex >= r.from && segIndex <= r.to) {
+          const t = Number.isFinite(r.time) ? r.time : 2035;
+          return {
+            time: t,
+            open: typeof r.open === 'string' ? r.open : '',
+            approve: typeof r.approve === 'string' ? r.approve : '',
+            approveTime: Number.isFinite(r.approveTime) ? r.approveTime : null,
+            build: typeof r.build === 'string' ? r.build : '',
+            buildTime: Number.isFinite(r.buildTime) ? r.buildTime : null,
+            label: typeof r.label === 'string' ? r.label : '',
+            stage: typeof r.stage === 'string' ? r.stage : 'future',
+            handover: r.handover && typeof r.handover === 'object' ? r.handover : null,
+          };
+        }
+      }
+    }
+    if (segStatus === 'existing') return { time: 2020.0, open: '已开通', approve: '', approveTime: 2014.0, build: '', buildTime: 2016.0, label: '既有段', stage: 'opened', handover: null };
+    if (segStatus === 'approved') return { time: 2028.5, open: '预计2028', approve: '', approveTime: 2021.5, build: '', buildTime: 2024.0, label: '近期段', stage: 'approved', handover: null };
+    return { time: 2034.0, open: '远期规划', approve: '', approveTime: null, build: '', buildTime: null, label: '远期规划', stage: 'future', handover: null };
+  }
+  function stopOpenMeta(timeline, line, stop, lineStopsOrdered) {
+    if (!line || !stop || !Array.isArray(line.segments) || !line.segments.length) {
+      return { time: 2035, open: '远期规划', label: '', stage: 'future' };
+    }
+    const segs = line.segments;
+    const ord = Array.isArray(lineStopsOrdered) ? lineStopsOrdered : [];
+    let idx = ord.findIndex((s) => s.sid === stop.sid);
+    if (idx < 0 && Number.isFinite(stop.stopIndex)) idx = stop.stopIndex;
+    const cand = [];
+    if (idx >= 0) {
+      if (idx < segs.length) cand.push(segs[idx]);
+      if (idx - 1 >= 0 && idx - 1 < segs.length) cand.push(segs[idx - 1]);
+      if (line.loop && idx === 0 && segs.length > 0) cand.push(segs[segs.length - 1]);
+    }
+    if (!cand.length) cand.push(segs[0]);
+    let best = null;
+    for (const seg of cand) {
+      const m = segmentOpenMeta(timeline, line.lineId, seg.segIndex, seg.segStatus);
+      if (!best || m.time < best.time) best = m;
+    }
+    return best || { time: 2035, open: '远期规划', label: '', stage: 'future' };
+  }
+  function computeLineMetrics(lineId, linesMap, stops, lineGroups, timeline) {
+    const id = lineId != null ? String(lineId) : '';
+    const mainId = (lineGroups && lineGroups.mainOf instanceof Map && lineGroups.mainOf.get(id)) || id;
+    const grp = lineGroups && lineGroups.ofLine instanceof Map ? lineGroups.ofLine.get(mainId) : null;
+    const memberIds = grp && Array.isArray(grp.members) && grp.members.length ? grp.members : [mainId];
+
+    let totalKm = 0, mainKm = 0, branchKm = 0;
+    const phaseKm = { existing: 0, approved: 0, future: 0 };
+    const perLine = new Map();
+    const stageMap = new Map();
+    const uniqueStopKeys = new Set();
+    let totalIntervals = 0;
+
+    for (const lid of memberIds) {
+      const line = linesMap.get(lid);
+      if (!line) continue;
+      const ordStops = (Array.isArray(stops) ? stops : [])
+        .filter((s) => s && s.kind !== 'arrow' && s.lineId === lid)
+        .sort((a, b) => (a.stopIndex != null && b.stopIndex != null ? a.stopIndex - b.stopIndex : num(a.t) - num(b.t)));
+      const segKms = [];
+      let lineKm = 0;
+      for (const seg of line.segments) {
+        const km = polylineLengthKm(seg.coords);
+        segKms.push({ segIndex: seg.segIndex, km, segStatus: seg.segStatus });
+        lineKm += km;
+        if (seg.segStatus === 'existing') phaseKm.existing += km;
+        else if (seg.segStatus === 'approved') phaseKm.approved += km;
+        else phaseKm.future += km;
+        const om = segmentOpenMeta(timeline, lid, seg.segIndex, seg.segStatus);
+        const sk = om.time.toFixed(2) + '|' + om.open + '|' + om.label;
+        if (!stageMap.has(sk)) stageMap.set(sk, { time: om.time, open: om.open, label: om.label, stage: om.stage, km: 0 });
+        stageMap.get(sk).km += km;
+      }
+      totalKm += lineKm;
+      if (lid === mainId) mainKm += lineKm;
+      else branchKm += lineKm;
+
+      // 计算沿线各站累计里程与前后站间距
+      const stopCumKm = new Map();
+      const stopPrev = new Map();
+      const stopNext = new Map();
+      const stopOpen = new Map();
+      let cum = 0;
+      for (let i = 0; i < ordStops.length; i++) {
+        const s = ordStops[i];
+        if (i > 0) {
+          const prevSeg = segKms[i - 1];
+          const stepKm = prevSeg ? prevSeg.km : haversineKm([ordStops[i - 1].lon, ordStops[i - 1].lat], [s.lon, s.lat]);
+          cum += stepKm;
+          stopPrev.set(s.sid, { sid: ordStops[i - 1].sid, name: ordStops[i - 1].name, km: stepKm });
+          stopNext.set(ordStops[i - 1].sid, { sid: s.sid, name: s.name, km: stepKm });
+          totalIntervals++;
+        }
+        stopCumKm.set(s.sid, cum);
+        stopOpen.set(s.sid, stopOpenMeta(timeline, line, s, ordStops));
+        const uk = s.groupId ? ('g:' + s.groupId) : s.sid;
+        uniqueStopKeys.add(uk);
+      }
+      if (line.loop && ordStops.length >= 2) {
+        const lastSeg = segKms[ordStops.length - 1];
+        const wrapKm = lastSeg ? lastSeg.km : haversineKm([ordStops[ordStops.length - 1].lon, ordStops[ordStops.length - 1].lat], [ordStops[0].lon, ordStops[0].lat]);
+        stopNext.set(ordStops[ordStops.length - 1].sid, { sid: ordStops[0].sid, name: ordStops[0].name, km: wrapKm });
+        stopPrev.set(ordStops[0].sid, { sid: ordStops[ordStops.length - 1].sid, name: ordStops[ordStops.length - 1].name, km: wrapKm });
+        totalIntervals++;
+      }
+      perLine.set(lid, {
+        lineId: lid,
+        km: lineKm,
+        stopCount: ordStops.length,
+        ordStops,
+        segKms,
+        stopCumKm,
+        stopPrev,
+        stopNext,
+        stopOpen,
+      });
+    }
+
+    const stages = Array.from(stageMap.values()).sort((a, b) => a.time - b.time);
+    const tlEntry = timeline && timeline.lines ? timeline.lines[mainId] : null;
+    const firstOpen = (tlEntry && tlEntry.firstOpen) || (stages.length ? stages[0].open : '');
+    const summary = (tlEntry && tlEntry.summary) || '';
+    const stopCount = uniqueStopKeys.size;
+    const avgSpacingKm = totalIntervals > 0 ? totalKm / totalIntervals : 0;
+
+    return {
+      mainId,
+      memberIds,
+      totalKm,
+      mainKm,
+      branchKm,
+      phaseKm,
+      stopCount,
+      avgSpacingKm,
+      firstOpen,
+      summary,
+      stages,
+      perLine,
+    };
+  }
+  function computeNetworkMetrics(linesMap, stops, lineGroups, view, opts) {
+    const o = opts || {};
+    const phases = o.phases instanceof Set ? o.phases : null;
+    const phaseActive = !!o.phaseActive && phases != null;
+    const total = { km: 0, lines: 0, stations: 0 };
+    const active = { km: 0, lines: 0, stations: 0 };
+    const byPhase = { existing: 0, approved: 0, future: 0 };
+    const byLayer = { '市区线': 0, '市域线': 0, '预控通道': 0 };
+    const seenTotalLines = new Set();
+    const seenActiveLines = new Set();
+
+    for (const line of linesMap.values()) {
+      const rank = lineLayerRank(line);
+      if (rank === 'displayOnly' || rank === 'hidden') continue; // 仅统计上海市域内主干/预控线网
+      const mainId = (lineGroups && lineGroups.mainOf instanceof Map && lineGroups.mainOf.get(line.lineId)) || line.lineId;
+      seenTotalLines.add(mainId);
+      let lineHit = false;
+      for (const seg of line.segments) {
+        const km = polylineLengthKm(seg.coords);
+        total.km += km;
+        if (seg.segStatus === 'existing') byPhase.existing += km;
+        else if (seg.segStatus === 'approved') byPhase.approved += km;
+        else byPhase.future += km;
+        if (Object.prototype.hasOwnProperty.call(byLayer, line.layer)) byLayer[line.layer] += km;
+        if (!phaseActive || phases.has(seg.segStatus)) {
+          active.km += km;
+          lineHit = true;
+        }
+      }
+      if (lineHit) seenActiveLines.add(mainId);
+    }
+    total.lines = seenTotalLines.size;
+    active.lines = seenActiveLines.size;
+
+    // 实体站数：按 view.pins + view.pills 中属于本地非联络线的独立站点/换乘节点计
+    const allUnits = [];
+    if (view && Array.isArray(view.pins)) {
+      for (const p of view.pins) allUnits.push(p);
+    }
+    if (view && Array.isArray(view.pills)) {
+      for (const pill of view.pills) if (pill && pill.pin) allUnits.push(pill.pin);
+    }
+    const seenPinKeys = new Set();
+    for (const pin of allUnits) {
+      if (!pin || seenPinKeys.has(pin.key)) continue;
+      seenPinKeys.add(pin.key);
+      const lids = (pin.kind === 'group' && Array.isArray(pin.lineIds) && pin.lineIds.length)
+        ? pin.lineIds : (pin.lineId ? [pin.lineId] : []);
+      const localLids = lids.filter((lid) => {
+        const ln = linesMap.get(String(lid));
+        return ln && lineLayerRank(ln) !== 'displayOnly' && lineLayerRank(ln) !== 'hidden';
+      });
+      if (!localLids.length) continue;
+      total.stations++;
+      if (!phaseActive) {
+        active.stations++;
+      } else {
+        const hit = localLids.some((lid) => {
+          const ln = linesMap.get(String(lid));
+          if (!ln) return false;
+          const stOfPin = (Array.isArray(stops) ? stops : []).filter((s) => s.lineId === ln.lineId && (s.sid === pin.sid || (pin.groupId && s.groupId === pin.groupId)));
+          if (stOfPin.length) {
+            return stOfPin.some((s) => {
+              const st = stopPhaseOf(ln, s, stops);
+              return st != null && phases.has(st);
+            });
+          }
+          return ln.segments.some((sg) => phases.has(sg.segStatus));
+        });
+        if (hit) active.stations++;
+      }
+    }
+    return { total, active, byPhase, byLayer };
+  }
+  function computeStationMetrics(st, pin, linesMap, stops, lineGroups, groupTree, timeline, metricsCache) {
+    if (!st) return null;
+    const lineCount = Array.isArray(st.lines) ? st.lines.length : 0;
+    let transferLabel = '单线车站';
+    if (pin && pin.groupType === 'junction') transferLabel = '接轨分岔站';
+    else if (pin && pin.groupType === 'out-of-station') transferLabel = '出闸换乘站（' + lineCount + '线）';
+    else if (lineCount >= 2) transferLabel = '同站换乘站（' + lineCount + '线）';
+
+    const memberStops = pin ? stationMemberStops(pin, groupTree) : [];
+    const memberSids = new Set(memberStops.map((s) => s.sid));
+    let earliest = null;
+    const lineDetails = [];
+
+    for (const ln of st.lines || []) {
+      const m = (metricsCache && metricsCache.get(ln.mainId))
+        || computeLineMetrics(ln.mainId, linesMap, stops, lineGroups, timeline);
+      let foundStop = null, foundSub = null;
+      for (const [lid, sub] of m.perLine.entries()) {
+        const hit = sub.ordStops.find((s) => memberSids.has(s.sid));
+        if (hit) { foundStop = hit; foundSub = sub; break; }
+      }
+      const openInfo = (foundStop && foundSub) ? foundSub.stopOpen.get(foundStop.sid) : null;
+      if (openInfo && (!earliest || openInfo.time < earliest.time)) earliest = openInfo;
+      lineDetails.push({
+        mainId: ln.mainId,
+        name: ln.name,
+        color: ln.color,
+        calls: ln.calls || [],
+        totalKm: m.totalKm,
+        cumKm: (foundStop && foundSub && foundSub.stopCumKm.has(foundStop.sid)) ? foundSub.stopCumKm.get(foundStop.sid) : null,
+        prev: (foundStop && foundSub) ? foundSub.stopPrev.get(foundStop.sid) || null : null,
+        next: (foundStop && foundSub) ? foundSub.stopNext.get(foundStop.sid) || null : null,
+        open: openInfo ? openInfo.open : m.firstOpen,
+        stage: openInfo ? openInfo.stage : 'future',
+      });
+    }
+
+    const memberLineIds = memberStops.map((s) => String(s.lineId || '')).filter(Boolean);
+    const renameHistory = stationRenameHistory(timeline, st.name, memberLineIds);
+
+    return {
+      lon: st.lon,
+      lat: st.lat,
+      transferLabel,
+      earliestOpen: earliest ? earliest.open : '',
+      earliestStage: earliest ? earliest.stage : 'future',
+      renameHistory,
+      lineDetails,
+    };
+  }
+  function stationRenameHistory(timeline, stationName, lineIds) {
+    const map = timeline && timeline.stationRenames && typeof timeline.stationRenames === 'object'
+      ? timeline.stationRenames : null;
+    if (!map || !stationName) return [];
+    const nm = String(stationName);
+    const ids = Array.isArray(lineIds) ? lineIds : (lineIds ? [lineIds] : []);
+    for (const lid of ids) {
+      const scoped = map[String(lid) + ':' + nm];
+      if (Array.isArray(scoped) && scoped.length) return scoped;
+    }
+    const bare = map[nm];
+    return Array.isArray(bare) && bare.length ? bare : [];
+  }
+  function stationNameAt(timeline, stationName, lineIds, currentTime) {
+    const fallback = stationName != null ? String(stationName) : '';
+    const hist = stationRenameHistory(timeline, fallback, lineIds);
+    if (!hist.length || !Number.isFinite(currentTime)) return fallback;
+    let chosen = hist[0].name || fallback;
+    for (let i = 0; i < hist.length; i++) {
+      const e = hist[i];
+      if (e && Number.isFinite(e.time) && e.time <= currentTime + 0.005) chosen = e.name || chosen;
+    }
+    return chosen;
+  }
+  function timelineMilestoneAt(timeline, currentTime) {
+    const list = timeline && Array.isArray(timeline.milestones) ? timeline.milestones : [];
+    let best = null;
+    for (const ms of list) {
+      if (ms && Number.isFinite(ms.time) && ms.time <= currentTime + 0.05) best = ms;
+    }
+    return best;
+  }
+
   // ---------- 导出 ----------
   const Core = {
     DIM_OPACITY, SEG_STATUS_RANK, DEFAULT_LINE_COLOR, GROUP_TYPE_ZH, ROLE_ZH, SEG_STATUS_ZH,
@@ -2711,6 +3086,10 @@
     buildLineGeoJSON, buildLineKML,
     outOfChina, wgs84ToGcj02, gcj02ToWgs84, makeDispCoord,
     niceTickStep, formatCoordinate, coordinateTicks, edgeTickPositions,
+    haversineKm, polylineCumDistKm, polylineLengthKm, slicePolylineByRatio,
+    formatKm, formatDecimalYear, TIMELINE_STAGE_ZH,
+    segmentOpenMeta, stopOpenMeta, computeLineMetrics, computeNetworkMetrics,
+    computeStationMetrics, stationRenameHistory, stationNameAt, timelineMilestoneAt,
   };
   G.VIEWER_CORE = Core;
   if (typeof module !== 'undefined' && module.exports) module.exports = Core;

@@ -128,41 +128,52 @@
     #coordinateRuler { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; overflow: hidden; }
     #coordinateRuler text { fill: #6b7280; font-family: var(--font-stack); font-size: 11px; font-variant-numeric: tabular-nums; }
     .map-label {
-      position: absolute; left: 0; top: 0;
+      position: absolute; left: 0; top: 0; z-index: 0;
       font-size: 12px; line-height: 1.2; color: #000;
       white-space: nowrap; pointer-events: none; will-change: transform;
-      paint-order: stroke fill;
-      -webkit-text-stroke: 3px #fff;
       transform-origin: 50% 140%;
       transition: opacity .25s ease;   /* 分期/聚焦站名显隐渐变（原 visibility 硬切改 opacity） */
     }
+    /* 双层堆叠外描边（2026-11-28 根治老旧浏览器「只见白边不见黑字」）：
+       根因：Chromium <123、旧 Safari、微信 X5/UC/QQ/国产安卓 WebView 因 SVG 早已支持
+       paint-order，@supports (paint-order: stroke fill) 误判为 true，却不对 HTML 文本的
+       -webkit-text-stroke 生效，白描边直接盖在黑字上方糊死正文。
+       根治：父元素 .map-label 仅渲染纯黑正文、绝不挂 -webkit-text-stroke，且以 position:absolute
+       + z-index:0 建立 CSS 2.1 独立层叠上下文；::before 凭 attr(data-text) 与 z-index:-1 恒在
+       父正文之下绘制白色外扩描边——在任何内核下均物理不可能遮盖黑字。 */
+    .map-label::before {
+      content: attr(data-text);
+      position: absolute; left: 0; top: 0; z-index: -1;
+      color: #fff;
+      -webkit-text-stroke: 3px #fff;
+      -webkit-text-fill-color: #fff;
+      pointer-events: none;
+    }
     .map-label.is-group {
-      /* 2026-11-28 用户裁定：组站（换乘站）标签去加粗——weight 与普通站一致
-         （仅保留 13px 字号档与配套描边宽度；用户只点名加粗） */
+      /* 2026-11-28 用户裁定：组站（换乘站）标签去加粗——weight 与普通站一致 */
       font-size: 13px; color: #000;
+    }
+    .map-label.is-group::before {
       -webkit-text-stroke: 3.25px #fff;
     }
-    /* paint-order 降级（2026-11-28 部分安卓「只见白描边不见黑字」修复①）：
-       老内核/部分国产安卓浏览器不支持 paint-order:stroke fill——白描边按默认
-       顺序画在黑字上面，12px 黑字被 3px 描边整个糊死。不支持 paint-order 的平台
-       在本分支弃 -webkit-text-stroke，改 8 向白色 text-shadow 模拟外描边（
-       全兼容；偏移＝描边可见外扩量 1.5px，对角同分量补角，观感近似）；shadow
-       与 stroke 同属文本渲染属性，随标签 transform 缩放（viewer.js 的 zf 拼在
-       transform 末尾），行为与原描边一致。支持 paint-order 的平台（Mac/iOS/
-       Win/新安卓）不进本分支，原描边观感零改动。修复②＝苹方子集 webfont 转
-       TrueType 轮廓（tools/make_font_subset.py，见 assets/fonts/README.md）。 */
-    @supports not (paint-order: stroke fill) {
-      .map-label {
+    .map-label.is-tl-active {
+      font-weight: 600; z-index: 3;
+    }
+    .map-label.is-tl-active::before {
+      -webkit-text-stroke: 3.4px #fff;
+    }
+    @supports not (-webkit-text-stroke: 1px #fff) {
+      .map-label::before {
         -webkit-text-stroke: 0;
         text-shadow:
           1.5px 0 #fff, -1.5px 0 #fff, 0 1.5px #fff, 0 -1.5px #fff,
-          1.5px 1.5px #fff, -1.5px 1.5px #fff, 1.5px -1.5px #fff, -1.5px -1.5px #fff;
+          1.1px 1.1px #fff, -1.1px 1.1px #fff, 1.1px -1.1px #fff, -1.1px -1.1px #fff;
       }
-      .map-label.is-group {
+      .map-label.is-group::before {
         -webkit-text-stroke: 0;
         text-shadow:
           1.63px 0 #fff, -1.63px 0 #fff, 0 1.63px #fff, 0 -1.63px #fff,
-          1.63px 1.63px #fff, -1.63px 1.63px #fff, 1.63px -1.63px #fff, -1.63px -1.63px #fff;
+          1.2px 1.2px #fff, -1.2px 1.2px #fff, 1.2px -1.2px #fff, -1.2px -1.2px #fff;
       }
     }
 
@@ -388,21 +399,58 @@
     .line-item.phase-out:hover { background: transparent; }
     .line-swatch { flex: none; width: 18px; height: 5px; border-radius: 2.5px; }
     .line-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .line-meta {
+      margin-left: auto; flex: none; font-size: 11px; color: #555555;
+      font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
     .panel-tip { padding: 10px 14px; color: #000; font-size: 12px; }
 
-    /* 底部三按钮区（显示线路/站名两循环＋底图清单展开；列表视图底部、署名行上方；线路页不显示） */
-    #cycleBar {
-      flex: none; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
-      padding: 10px 12px 12px; border-top: 1px solid var(--panel-border);
+    /* 全网里程与站点概览条（2026-11-28 增） */
+    #netStatsBar {
+      flex: none; padding: 8px 12px 7px;
+      border-bottom: 1px solid var(--panel-border);
+      background: rgba(255, 255, 255, 0.28);
     }
-    .cycle-cell { text-align: center; }
+    .ns-grid {
+      display: grid; grid-template-columns: 1.35fr 1fr 0.85fr; gap: 6px;
+    }
+    .ns-cell { min-width: 0; }
+    .ns-val {
+      font-size: 14px; font-weight: 600; line-height: 1.25; color: #000;
+      font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
+    .ns-unit { font-size: 10.5px; font-weight: 400; color: #555; margin-left: 2px; }
+    .ns-lbl { font-size: 10.5px; color: #555555; line-height: 1.3; margin-top: 1px; }
+    .ns-bar {
+      display: flex; height: 4px; border-radius: 2px; overflow: hidden;
+      background: rgba(0, 0, 0, 0.08); margin-top: 6px; gap: 1px;
+    }
+    .ns-seg-ex { background: #111111; }
+    .ns-seg-ap { background: #666666; }
+    .ns-seg-fu { background: #bbbbbb; }
+    .ns-legend {
+      display: flex; justify-content: space-between; gap: 4px;
+      margin-top: 4px; font-size: 10px; color: #555555;
+      font-variant-numeric: tabular-nums;
+    }
+    .ns-legend span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+    .ns-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex: none; }
+
+    /* 底部四按钮区（显示线路/站名/底图/时间演变；列表视图底部、署名行上方；线路页不显示） */
+    #cycleBar {
+      flex: none; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 6px;
+      padding: 9px 10px 10px; border-top: 1px solid var(--panel-border);
+    }
+    .cycle-cell { text-align: center; min-width: 0; }
     .cycle-cell button {
-      width: 100%; padding: 7px 0; cursor: pointer; font-size: 13.5px;
+      width: 100%; padding: 7px 2px; cursor: pointer; font-size: 12.5px;
       color: #000; background: rgba(255,255,255,.5);
       border: 1px solid var(--control-border); border-radius: 10px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .cycle-cell button:hover { border-color: #000; }
-    .cycle-cap { margin-top: 4px; font-size: 10.5px; color: #000; letter-spacing: 1px; }
+    .cycle-cell button.is-active { background: #000; color: #fff; border-color: #000; }
+    .cycle-cap { margin-top: 4px; font-size: 10px; color: #000; letter-spacing: 0.5px; }
 
     /* 底图清单弹出（2026-11-27 改版：底图按钮单点展开全部清单，循环退役）——挂在底图格
        （position:relative）内、自按钮上方弹出；#panel overflow:hidden 只裁面板边界外，
@@ -471,6 +519,278 @@
     .lp-links { margin-top: 12px; }
     .lp-links-cap { font-size: 12px; color: #555555; margin-bottom: 2px; }
     .lp-links a { color: #3366CC; text-decoration: underline; }
+    /* 线路里程与开通数据卡（2026-11-28 增） */
+    .lp-metrics {
+      margin-top: 10px; padding: 10px 11px; border-radius: 10px;
+      background: rgba(255, 255, 255, 0.52); border: 1px solid var(--panel-border);
+    }
+    .lp-mgrid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px;
+    }
+    .lp-mitem-v {
+      font-size: 15px; font-weight: 600; color: #000; line-height: 1.25;
+      font-variant-numeric: tabular-nums;
+    }
+    .lp-mitem-v small { font-size: 11px; font-weight: 400; color: #555; margin-left: 2px; }
+    .lp-mitem-k { font-size: 11px; color: #555555; margin-top: 1px; }
+    .lp-mphase {
+      margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--panel-border);
+      font-size: 11px; color: #444444; line-height: 1.5; font-variant-numeric: tabular-nums;
+    }
+    .lp-tl-box {
+      margin-top: 10px; padding: 9px 11px; border-radius: 10px;
+      background: rgba(255, 255, 255, 0.42); border: 1px solid var(--panel-border);
+    }
+    .lp-tl-cap { font-size: 11.5px; font-weight: 600; color: #000; margin-bottom: 5px; }
+    .lp-tl-sum { font-size: 11.5px; color: #333; line-height: 1.55; margin-bottom: 6px; }
+    .lp-tl-row {
+      display: flex; align-items: baseline; gap: 6px; padding: 3px 0;
+      font-size: 11.5px; line-height: 1.45; border-top: 1px dashed rgba(0,0,0,.07);
+    }
+    .lp-tl-row:first-of-type { border-top: none; }
+    .lp-tl-date {
+      flex: none; font-size: 10.5px; padding: 1px 6px; border-radius: 999px;
+      font-variant-numeric: tabular-nums; white-space: nowrap;
+      border: 1px solid var(--control-border); background: rgba(255,255,255,.7); color: #000;
+    }
+    .lp-tl-date.st-opened { background: #111; color: #fff; border-color: #111; }
+    .lp-tl-date.st-approved { background: rgba(0,0,0,.08); color: #000; }
+    .lp-tl-date.st-future, .lp-tl-date.st-corridor { color: #555; }
+    .lp-tl-lbl { flex: 1; min-width: 0; color: #222; }
+    .lp-tl-km { flex: none; font-size: 10.5px; color: #555; font-variant-numeric: tabular-nums; }
+    /* 站间距离小注与站行里程角标 */
+    .lp-seg-dist {
+      position: relative; padding-left: 27px; height: 15px; line-height: 15px;
+      font-size: 10px; color: #777777; font-variant-numeric: tabular-nums;
+      user-select: none;
+    }
+    .lp-stop-meta {
+      font-size: 10.5px; color: #666666; font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    /* 车站详情数据卡与线路详行 */
+    .st-metrics {
+      margin-top: 10px; margin-bottom: 10px; padding: 10px 11px; border-radius: 10px;
+      background: rgba(255, 255, 255, 0.52); border: 1px solid var(--panel-border);
+    }
+    .st-meta-row {
+      display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+      padding: 3px 0; font-size: 12px; font-variant-numeric: tabular-nums;
+    }
+    .st-meta-k { color: #555555; flex: none; }
+    .st-meta-v { color: #000000; text-align: right; word-break: break-all; }
+    .st-line-wrap {
+      padding: 8px 4px; cursor: pointer; user-select: none;
+      border-bottom: 1px solid var(--panel-border); border-radius: 6px;
+    }
+    .st-line-wrap:last-child { border-bottom: none; }
+    .st-line-wrap:hover { background: var(--hover); }
+    .st-line-top { display: flex; align-items: center; gap: 8px; }
+    .st-line-open {
+      margin-left: auto; flex: none; font-size: 10.5px; padding: 1px 6px; border-radius: 999px;
+      border: 1px solid var(--control-border); font-variant-numeric: tabular-nums; color: #333;
+    }
+    .st-line-open.st-opened { background: #111; color: #fff; border-color: #111; }
+    .st-line-sub {
+      margin-top: 4px; padding-left: 26px; font-size: 11px; color: #555555;
+      line-height: 1.5; font-variant-numeric: tabular-nums;
+    }
+
+    /* ---------- 开通时间轴动画浮动控制台（2026-11-28 增） ---------- */
+    #timelineDock {
+      position: absolute;
+      left: calc(336px + env(safe-area-inset-left, 0px));
+      right: calc(64px + env(safe-area-inset-right, 0px));
+      bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+      max-width: 820px; margin: 0 auto;
+      z-index: 15; padding: 10px 14px 9px;
+      border: 1px solid var(--panel-border); border-radius: 14px;
+      transition: left .3s ease, opacity .25s ease, transform .25s ease;
+    }
+    #timelineDock.panel-stowed { left: calc(56px + env(safe-area-inset-left, 0px)); }
+    #timelineDock[hidden] { display: none; }
+    .tl-head {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    .tl-date-box { display: flex; align-items: baseline; gap: 7px; }
+    #tlDateLabel {
+      font-size: 19px; font-weight: 700; color: #000; line-height: 1.1;
+      font-variant-numeric: tabular-nums; letter-spacing: 0.5px; min-width: 96px;
+    }
+    #tlStageBadge {
+      font-size: 11px; padding: 2px 8px; border-radius: 999px;
+      background: #111; color: #fff; white-space: nowrap;
+    }
+    #tlStageBadge.st-approved { background: #444; color: #fff; }
+    #tlStageBadge.st-future { background: rgba(0,0,0,.1); color: #000; }
+    #tlStageBadge.st-corridor { background: rgba(0,0,0,.06); color: #444; border: 1px dashed #888; }
+    .tl-kpis {
+      margin-left: auto; display: flex; align-items: baseline; gap: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    .tl-kpi { font-size: 12px; color: #555; white-space: nowrap; }
+    .tl-kpi b { font-size: 14.5px; font-weight: 600; color: #000; margin-right: 2px; }
+    .tl-kpi-build { color: #555; }
+    .tl-kpi-build b { color: #333; }
+    #tlClose {
+      flex: none; width: 24px; height: 24px; cursor: pointer;
+      border: 1px solid var(--control-border); border-radius: 8px;
+      background: rgba(255,255,255,.55); color: #000; font-size: 12.5px; line-height: 1;
+    }
+    #tlClose:hover { border-color: #000; background: var(--hover); }
+    .tl-milestone {
+      margin-top: 3px; font-size: 12px; color: #222; line-height: 1.35;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .tl-milestone b { color: #000; margin-right: 6px; }
+    .tl-controls {
+      margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    }
+    .tl-btn {
+      flex: none; height: 28px; padding: 0 9px; cursor: pointer;
+      border: 1px solid var(--control-border); border-radius: 8px;
+      background: rgba(255,255,255,.6); color: #000; font-size: 12px;
+      display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+      white-space: nowrap;
+    }
+    .tl-btn:hover { border-color: #000; background: rgba(255,255,255,.88); }
+    #tlPlay { background: #000; color: #fff; border-color: #000; min-width: 64px; font-weight: 600; }
+    #tlPlay:hover { background: #222; }
+    .tl-btn.on { background: #000; color: #fff; border-color: #000; }
+    .tl-slider-wrap { flex: 1; min-width: 110px; display: flex; flex-direction: column; }
+    #tlSlider {
+      width: 100%; height: 6px; margin: 0; cursor: pointer;
+      accent-color: #000000;
+    }
+    .tl-eras {
+      margin-top: 5px; display: flex; align-items: center; gap: 4px;
+      overflow-x: auto; scrollbar-width: none;
+    }
+    .tl-eras::-webkit-scrollbar { display: none; }
+    .tl-era-btn {
+      flex: none; padding: 2px 6.5px; cursor: pointer; font-size: 10.5px; color: #333;
+      background: rgba(255,255,255,.5); border: 1px solid var(--panel-border); border-radius: 999px;
+      font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
+    .tl-era-btn:hover { border-color: #000; color: #000; }
+    .tl-era-btn.active { background: #000; color: #fff; border-color: #000; }
+
+    /* 各期建设规划批复顶部横幅（批复节点醒目展示 + 停顿） */
+    #tlPlanBanner {
+      position: absolute;
+      top: calc(16px + env(safe-area-inset-top, 0px));
+      left: calc(336px + env(safe-area-inset-left, 0px));
+      right: calc(310px + env(safe-area-inset-right, 0px));
+      z-index: 16; pointer-events: none;
+      display: flex; justify-content: center;
+      transition: left .3s ease, opacity .28s ease, transform .28s ease;
+    }
+    #tlPlanBanner.panel-stowed { left: calc(56px + env(safe-area-inset-left, 0px)); }
+    #tlPlanBanner[hidden] { display: none; }
+    .tl-plan-card {
+      max-width: 100%; padding: 9px 18px;
+      border-radius: 12px; border: 1.5px solid rgba(18, 28, 45, 0.32);
+      border-left: 4px solid #1e293b;
+      text-align: center;
+      box-shadow: 0 8px 26px rgba(15, 23, 42, 0.16);
+      animation: tl-banner-in .32s cubic-bezier(.22, 1, .36, 1);
+    }
+    @keyframes tl-banner-in {
+      from { opacity: 0; transform: translateY(-10px) scale(.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .tl-plan-title {
+      font-size: 16px; font-weight: 700; color: #0f172a; letter-spacing: 0.3px;
+      line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .tl-plan-sub {
+      margin-top: 2px; font-size: 11.5px; color: #334155;
+      line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    /* 右上角上海地铁关键事件列表（位于品牌徽标下方、右下缩放按钮上方） */
+    #tlEventFeed {
+      position: absolute;
+      top: calc(64px + env(safe-area-inset-top, 0px));
+      right: calc(14px + env(safe-area-inset-right, 0px));
+      width: 282px; max-height: min(350px, calc(100vh - 260px));
+      z-index: 15; display: flex; flex-direction: column;
+      border: 1px solid var(--panel-border); border-radius: 12px;
+      overflow: hidden;
+      transition: max-height .25s ease, opacity .22s ease;
+    }
+    #tlEventFeed[hidden] { display: none; }
+    #tlEventFeed.is-collapsed { max-height: 36px; }
+    .tl-ev-head {
+      flex: none; display: flex; align-items: center; gap: 6px;
+      padding: 7px 10px; border-bottom: 1px solid var(--panel-border);
+      background: rgba(255, 255, 255, 0.35);
+    }
+    #tlEventFeed.is-collapsed .tl-ev-head { border-bottom: none; }
+    .tl-ev-title { font-size: 12px; font-weight: 700; color: #000; letter-spacing: 0.3px; }
+    .tl-ev-count {
+      font-size: 10.5px; color: #555; font-variant-numeric: tabular-nums;
+      background: rgba(0,0,0,.06); padding: 1px 6px; border-radius: 999px;
+    }
+    #tlEventToggle {
+      margin-left: auto; flex: none; padding: 1px 7px; cursor: pointer;
+      font-size: 10.5px; color: #333; background: rgba(255,255,255,.6);
+      border: 1px solid var(--control-border); border-radius: 6px;
+    }
+    #tlEventToggle:hover { border-color: #000; color: #000; }
+    #tlEventList {
+      flex: 1; min-height: 0; overflow-y: auto; padding: 5px 6px;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    #tlEventFeed.is-collapsed #tlEventList { display: none; }
+    .tl-ev-item {
+      padding: 6px 8px; border-radius: 8px; cursor: pointer;
+      background: rgba(255, 255, 255, 0.42);
+      border: 1px solid rgba(0, 0, 0, 0.06);
+      transition: background .15s ease, border-color .15s ease;
+    }
+    .tl-ev-item:hover { background: rgba(255, 255, 255, 0.78); border-color: rgba(0,0,0,.18); }
+    .tl-ev-item.is-latest {
+      background: rgba(255, 255, 255, 0.88);
+      border-color: rgba(0, 0, 0, 0.28);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    }
+    .tl-ev-top { display: flex; align-items: center; gap: 5px; }
+    .tl-ev-badge {
+      flex: none; font-size: 10px; font-weight: 600; line-height: 1.3;
+      padding: 1px 5px; border-radius: 4px; color: #fff; white-space: nowrap;
+    }
+    .tl-ev-badge.ev-plan { background: #1e3a5f; }
+    .tl-ev-badge.ev-build { background: #b45309; }
+    .tl-ev-badge.ev-rename { background: #6d28d9; }
+    .tl-ev-badge.ev-station { background: #0f766e; }
+    .tl-ev-badge.ev-open { background: #111111; }
+    .tl-ev-date {
+      font-size: 10.5px; color: #555; font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
+    .tl-ev-name {
+      margin-top: 2px; font-size: 11.5px; font-weight: 600; color: #000; line-height: 1.35;
+    }
+    .tl-ev-detail {
+      margin-top: 1px; font-size: 10.5px; color: #555; line-height: 1.3;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    /* 已建未开（暂缓开通）站名灰态 */
+    .map-label.is-deferred { color: #7b818a; font-weight: 400; }
+    /* 车站更名特写：老站名先醒目渐隐、新站名随后突出浮现 */
+    .map-label.is-rename-old {
+      color: #b45309; font-weight: 700; z-index: 6;
+    }
+    .map-label.is-rename-old::before {
+      -webkit-text-stroke: 4px #fff;
+    }
+    .map-label.is-rename-new {
+      color: #6d28d9; font-weight: 700; z-index: 7;
+      text-shadow: 0 0 10px rgba(109, 40, 217, .28);
+    }
+    .map-label.is-rename-new::before {
+      -webkit-text-stroke: 4.2px #fff;
+    }
     .lp-foot { flex: none; padding: 12px 16px 14px; border-top: 1px solid var(--panel-border); }
     #btnKml {
       display: block; width: 100%; padding: 8px 0; cursor: pointer;
@@ -794,6 +1114,19 @@
       /* 经纬读数尺等图上小字同步放大一档（站名标签放大走 viewer.js labelScale 断点乘数，
          此处只管 SVG 静态字号） */
       #coordinateRuler text { font-size: 12.5px; }
+      /* 移动端时间轴控制条：浮在收起把手上方全宽排布 */
+      #timelineDock, #timelineDock.panel-stowed {
+        left: 8px; right: 8px;
+        bottom: calc(54px + env(safe-area-inset-bottom, 0px));
+        padding: 9px 10px 8px;
+      }
+      .tl-kpis { width: 100%; margin-left: 0; gap: 10px; margin-top: 4px; }
+      #tlDateLabel { font-size: 17px; min-width: 84px; }
+      .tl-controls { flex-wrap: wrap; gap: 6px; }
+      .tl-slider-wrap { order: -1; flex-basis: 100%; }
+      #tlPlanBanner, #tlPlanBanner.panel-stowed { left: 10px; right: 10px; top: calc(10px + env(safe-area-inset-top, 0px)); }
+      .tl-plan-title { font-size: 13px; white-space: normal; }
+      #tlEventFeed { top: calc(60px + env(safe-area-inset-top, 0px)); right: 8px; width: 220px; max-height: 185px; }
     }
   </style>
 </head>
@@ -813,7 +1146,7 @@
       <div class="splash-scroll">
         <img class="splash-logo" src="assets/logo.svg" alt="公众号 logo">
         <div class="splash-title">上海市城市轨道交通<br>远期线网规划示意图</div>
-        <div class="splash-sub"><span>制作 By Atabe（v3.12.0_20260219_1624）</span><span>移植 By IncimathCal</span></div>
+        <div class="splash-sub"><span>制作 By Atabe（v3.12.0_20260219_1624）</span><span>移植 By IncimathCal</span><span>增强 By 沙耶博士</span></div>
         <div class="splash-note">
           <div class="splash-note-cap">注意事项</div>
           <ol>
@@ -856,6 +1189,19 @@
       </div>
       <div id="mainSwap">
       <div id="mainBody">
+        <div id="netStatsBar" aria-label="全网里程与站点统计">
+          <div class="ns-grid">
+            <div class="ns-cell"><div class="ns-val"><span id="nsKm">--</span><span class="ns-unit">km</span></div><div class="ns-lbl" id="nsKmLbl">规划总里程</div></div>
+            <div class="ns-cell"><div class="ns-val"><span id="nsStations">--</span><span class="ns-unit">站</span></div><div class="ns-lbl">实体车站</div></div>
+            <div class="ns-cell"><div class="ns-val"><span id="nsLines">--</span><span class="ns-unit">条</span></div><div class="ns-lbl">线路</div></div>
+          </div>
+          <div class="ns-bar" id="nsBar">
+            <div class="ns-seg-ex" id="nsBarEx" style="width:33%"></div>
+            <div class="ns-seg-ap" id="nsBarAp" style="width:33%"></div>
+            <div class="ns-seg-fu" id="nsBarFu" style="width:34%"></div>
+          </div>
+          <div class="ns-legend" id="nsLegend"></div>
+        </div>
         <div id="lineList"></div>
         <div id="cycleBar">
           <div class="cycle-cell">
@@ -869,17 +1215,18 @@
           <div class="cycle-cell cell-basemap">
             <button id="btnCycleBasemap" type="button">高德</button>
             <div class="cycle-cap">底图</div>
-            <!-- 底图清单（2026-11-27 改版：按钮循环退役，单点展开全部 5 态；终态序
-                 高德→无字高德→用地→卫星→OSM；carto 源保留 viewer.js 后备不进清单。
-                 色块＝各底图外观低饱和示意色卡（功能色，同搜索结果线路色点性质，
-                 不属界面装饰色）；当前态 .active 由 viewer.js syncBasemapUI 同步 -->
+            <!-- 底图清单（高德→无字高德→用地→卫星→OpenStreetMap 共 5 态） -->
             <div id="basemapMenu" class="glass">
               <button type="button" data-basemap="gaode"><span class="bm-swatch" style="background:#EDE4CE"></span>高德</button>
-              <button type="button" data-basemap="gaode-plain"><span class="bm-swatch" style="background:#F7F4EC"></span>高德·无字</button>
+              <button type="button" data-basemap="gaode-plain"><span class="bm-swatch" style="background:#F7F4EC"></span>高德无字</button>
               <button type="button" data-basemap="planblock"><span class="bm-swatch" style="background:#C5CDA6"></span>用地</button>
               <button type="button" data-basemap="shanghai_W"><span class="bm-swatch" style="background:#46543F"></span>卫星</button>
-              <button type="button" data-basemap="osm"><span class="bm-swatch" style="background:#E8E8E6"></span>OSM</button>
+              <button type="button" data-basemap="osm"><span class="bm-swatch" style="background:#E8E8E6"></span>OpenStreetMap</button>
             </div>
+          </div>
+          <div class="cycle-cell">
+            <button id="btnTimeline" type="button">演变</button>
+            <div class="cycle-cap">时间轴</div>
           </div>
         </div>
       </div>
@@ -934,8 +1281,70 @@
     <div id="brandPop" class="glass">
       <span>制作 By Atabe（v3.12.0_20260219_1624）</span>
       <span>移植 By IncimathCal</span>
+      <span>增强 By 沙耶博士</span>
     </div>
   </div>
+
+  <!-- 各期建设规划批复顶部横幅（2026-11-28 增） -->
+  <div id="tlPlanBanner" hidden aria-live="polite">
+    <div class="tl-plan-card glass">
+      <div class="tl-plan-title" id="tlPlanTitle"></div>
+      <div class="tl-plan-sub" id="tlPlanSub"></div>
+    </div>
+  </div>
+
+  <!-- 右上角上海地铁关键事件列表（2026-11-28 增） -->
+  <aside id="tlEventFeed" class="glass" hidden aria-label="上海地铁关键事件列表">
+    <div class="tl-ev-head">
+      <span class="tl-ev-title">关键事件</span>
+      <span class="tl-ev-count" id="tlEventCount">0</span>
+      <button id="tlEventToggle" type="button">收起</button>
+    </div>
+    <div id="tlEventList"></div>
+  </aside>
+
+  <!-- 开通时间演变浮动控制台（2026-11-28 增） -->
+  <section id="timelineDock" class="glass" hidden aria-label="上海轨交开通时间轴动态演示">
+    <div class="tl-head">
+      <div class="tl-date-box">
+        <span id="tlDateLabel">1993年05月</span>
+        <span id="tlStageBadge">已开通</span>
+      </div>
+      <div class="tl-kpis">
+        <span class="tl-kpi"><b id="tlKm">0.0</b>km</span>
+        <span class="tl-kpi tl-kpi-build" id="tlApproveKpi" hidden title="已获批复但尚未开工的线路里程">已批<b id="tlApproveKm">0.0</b>km</span>
+        <span class="tl-kpi tl-kpi-build" id="tlBuildKpi" title="当前已开工在建但尚未开通的线路里程">在建<b id="tlBuildKm">0.0</b>km</span>
+        <span class="tl-kpi"><b id="tlStations">0</b>站</span>
+        <span class="tl-kpi"><b id="tlLines">0</b>线</span>
+      </div>
+      <button id="tlClose" type="button" aria-label="退出时间轴">✕</button>
+    </div>
+    <div class="tl-milestone" id="tlMilestone"><b>1990年3月</b>1号线一期正式开工</div>
+    <div class="tl-controls">
+      <button id="tlPlay" class="tl-btn" type="button">▶ 播放</button>
+      <button id="tlReplay" class="tl-btn" type="button">↺ 重播</button>
+      <div class="tl-slider-wrap">
+        <input id="tlSlider" type="range" min="1990" max="2040" step="0.02" value="1993">
+      </div>
+      <button id="tlSpeed" class="tl-btn" type="button">1×</button>
+      <button id="tlFollow" class="tl-btn" type="button" title="开启后自动先将目标线路起点平移至视口中央，再逐站平滑跟焦">聚焦更新</button>
+      <button id="tlBuild" class="tl-btn on" type="button" title="已批复线路以浅色预显，已开工线路以彩色虚线呈现">批复/在建</button>
+      <button id="tlGhost" class="tl-btn" type="button" title="叠加全网远期蓝图底影（默认关闭，未批复线路不提前展示）">蓝图</button>
+    </div>
+    <div class="tl-eras" id="tlEras">
+      <button type="button" class="tl-era-btn" data-year="1990.20">1990 开工</button>
+      <button type="button" class="tl-era-btn" data-year="1993.41">1993 起步</button>
+      <button type="button" class="tl-era-btn" data-year="2000.99">2000 越江</button>
+      <button type="button" class="tl-era-btn" data-year="2007.99">2007 成环</button>
+      <button type="button" class="tl-era-btn" data-year="2010.99">2010 世博</button>
+      <button type="button" class="tl-era-btn" data-year="2015.96">2015 扩网</button>
+      <button type="button" class="tl-era-btn" data-year="2021.99">2021 破800</button>
+      <button type="button" class="tl-era-btn" data-year="2025.99">2025 现状</button>
+      <button type="button" class="tl-era-btn" data-year="2028.95">2028 近期</button>
+      <button type="button" class="tl-era-btn" data-year="2034.00">远期规划</button>
+      <button type="button" class="tl-era-btn" data-year="2038.00">远景预控</button>
+    </div>
+  </section>
 
   <div id="centerMsg" class="glass" hidden>
     <div id="centerMsgText"></div>
