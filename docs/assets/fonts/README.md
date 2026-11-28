@@ -16,8 +16,8 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| `subset-pingfang-regular.woff2` | 苹方 Regular（400）子集，约 586 KB |
-| `subset-pingfang-semibold.woff2` | 苹方 Semibold（600）子集，约 576 KB |
+| `subset-pingfang-regular.woff2` | 苹方 Regular（400）子集，约 464 KB，**TrueType（glyf）轮廓** |
+| `subset-pingfang-semibold.woff2` | 苹方 Semibold（600）子集，约 464 KB，**TrueType（glyf）轮廓** |
 | `pingfang-chars.txt` | 苹方子集字符表存档，每行一个字符 |
 | `subset-regular.woff2` | 思源 Regular（400）子集，约 111 KB（回退轨） |
 | `subset-semibold.woff2` | 思源 SemiBold（600）子集，约 113 KB（回退轨） |
@@ -29,6 +29,12 @@
 - 源字体：用户 Windows 本机（仅本地、不入库）
   `C:/Users/18916/AppData/Local/Microsoft/Windows/Fonts/PingFangSC-Mod-15.0d2e5-Regular.otf`（usWeightClass 400）与
   `…/PingFangSC-Mod-15.0d2e5-Semibold.otf`（usWeightClass 600），静态 OTF、CFF 轮廓。
+- **轮廓转换（2026-11-28 部分安卓修复）**：生成时脚本自动把 CFF 轮廓转 TrueType（glyf）
+  二次曲线轮廓再落盘（fontTools cu2qu 路线，误差默认 0.1% em——实测全部字形转换前后
+  包围盒偏差 0 unit）——部分安卓 WebView 对 webfont 的 CFF 轮廓渲染有缺陷，转 glyf 后
+  兼容面更广。字形设计／字符集（cmap）／度量（hmtx）不变；体积比 CFF 版还小约 20%
+  （586→464 KB，woff2 对 glyf 坐标压缩更好）。源本身是 TrueType（思源 VF）则跳过转换，
+  思源轨产物不受影响。
 - 字符集（当前 4041 字，其中汉字 3782）：真数据用字（`build/net/*`，2026-11-28 用户工作区 82 线 1190 站，752 字，**硬校验逐字比对 cmap 零缺字**）＋ UI 文案（`index.html`＋`src/viewer*.js`，剥注释）＋符号兜底集＋ **GB2312 一级常用汉字 3755 字**（`--common-hanzi`，防数据更新后新站名缺字混排）。
 - ⚠ **版权**：苹方为 Apple 专有字体，子集化嵌入公网分发存在版权风险——用户 2026-11-28 明示「无视版权风险使用苹方，风险自担」并要求保留回退可能性。OFL.txt 不覆盖苹方（仅思源）。
 
@@ -52,7 +58,7 @@ python -X utf8 tools/make_font_subset.py \
   --common-hanzi
 ```
 
-脚本自校验：woff2 magic＋数据用字逐字比对 cmap（缺字非零退出）；单字重超 200KB 报警——思源口径的旧阈值，苹方带 3755 常用字后 570–590 KB 属预期，报警可忽略（如嫌吵可把阈值改到 800KB）。
+脚本自校验：woff2 magic＋数据用字逐字比对 cmap（缺字非零退出）＋轮廓转换断言（源为 CFF 时产物必须含 glyf 不含 CFF）；单字重超 200KB 报警——思源口径的旧阈值，苹方带 3755 常用字后约 464 KB 属预期，报警可忽略（如嫌吵可把阈值改到 800KB）。
 
 ## 思源黑体子集（回退轨）
 
