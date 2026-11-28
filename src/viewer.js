@@ -340,18 +340,20 @@
       currentTime: 1993.0,
       speedIdx: 2,                // TIMELINE_SPEEDS 档位（默认 1×＝慢速细腻观赏）
       followOn: false,            // 视口自动聚焦到当前更新区段开关
+      buildOn: true,              // 在建模式：已开工但未开通线路显示彩色虚线虚影
       ghostOn: true,              // 远期蓝图底影开关
       rafId: 0,
       lastFrameMs: 0,
-      lastDoneCount: -1,
-      lastPinCount: -1,
+      lastDoneSig: '',
+      lastBuildSig: '',
+      lastPinCount: '',
       lastLabelMs: 0,
       lastFollowMs: 0,
       lastFollowSig: '',
       userPanUntilMs: 0,
       segments: [],
-      pins: [],
-      pills: [],
+      batches: [],
+      stationUnits: [],
       layersBuilt: false,
     },
     // ---------- 新 UI demo 状态（会话内不持久化，刷新回初始界面；与底图/分期同策） ----------
@@ -3400,6 +3402,7 @@
     // 分期态标签＝期次匹配单元＋他省纯单元（2026-11-25 纠正裁定：他省站名照常显示——
     // 只按 zoom 门槛，见 visibleLabels 的 displayOnlyIds 放行）；混合单元按本地成员期次判
     // 时间轴态：按当前时刻 t 动态反映「站名历史更名」与「非换乘→换乘升级」状态
+    const tlDispT = S.tl.active ? timelineDisplayTimeAt(S.tl.currentTime) : 0;
     const baseLabels = S.tl.active
       ? S.dispLabels.reduce((acc, label) => {
           const ot = S.pinOpenTime && S.pinOpenTime.get(label.key);
@@ -3410,7 +3413,7 @@
           const openedLineIds = Array.isArray(arrivals)
             ? arrivals.filter((a) => a.openTime <= S.tl.currentTime + 0.02).map((a) => a.lineId)
             : (label.lineIds || []);
-          const histName = V.stationNameAt(S.timeline, label.name, openedLineIds.length ? openedLineIds : label.lineIds, S.tl.currentTime);
+          const histName = V.stationNameAt(S.timeline, label.name, openedLineIds.length ? openedLineIds : label.lineIds, tlDispT);
           acc.push(Object.assign({}, label, { group: isTransferNow, displayName: histName }));
           return acc;
         }, [])
@@ -3519,27 +3522,45 @@
   const TIMELINE_SPEEDS = [0.25, 0.5, 1, 2, 4];
   const TIMELINE_BASE_YPS = 0.65;   // 1× 速度＝每年约 1.54 秒（密集期再降速至 ~2.4 秒/年，便于细致观看）
   const TIMELINE_DRAW_SPAN = 0.42;  // 单区段平滑生长时长（小数年，线条伸展更舒缓流畅）
-  const TIMELINE_MIN_T = 1993.0;
+  const TIMELINE_MIN_T = 1990.0;
   const TIMELINE_MAX_T = 2040.0;
   const EMPTY_TL_FC = { type: 'FeatureCollection', features: [] };
   const TL_LAYER_IDS = [
-    'tl-ghost', 'tl-done', 'tl-done-dash', 'tl-active-glow', 'tl-active',
+    'tl-ghost', 'tl-building', 'tl-done', 'tl-done-dash', 'tl-active-glow', 'tl-active',
     'tl-pills-outer', 'tl-pills-inner', 'tl-stops', 'tl-stops-dark', 'tl-stops-big', 'tl-stops-fade',
   ];
+
+  // 线性巡航缓动：前 14% 柔和起速、中间 72% 纯匀速巡航、后 14% 柔和落停
+  function smoothLinearCruise(p) {
+    const t = Math.max(0, Math.min(1, p));
+    const a = 0.14;
+    const norm = 1 - a;
+    if (t < a) return (t * t) / (2 * a * norm);
+    if (t > 1 - a) {
+      const r = 1 - t;
+      return 1 - (r * r) / (2 * a * norm);
+    }
+    return (t - a / 2) / norm;
+  }
 
   function rebuildTimelinePrecomp() {
     const dc = S.dispCoord;
     const segsOut = [];
     const segOpenByLineIdx = new Map();
     const stopReachByLineIdx = new Map();
-    const recordStopReach = (lineId, stopIdx, t) => {
+    const stopHandoverByLineIdx = new Map();
+    const recordStopReach = (lineId, stopIdx, t, handover) => {
       const k = lineId + ':' + stopIdx;
       const prev = stopReachByLineIdx.get(k);
       if (prev == null || t < prev) stopReachByLineIdx.set(k, t);
+      if (handover) {
+        const prevH = stopHandoverByLineIdx.get(k);
+        if (!prevH || handover.beforeTime > prevH.beforeTime) stopHandoverByLineIdx.set(k, handover);
+      }
     };
 
-    const lineSortRank = (line) => {
-      const nm = (line && line.name) ? String(line.name) : '';
+    const lineSortRank = (line, overrideName) => {
+      const nm = overrideName || ((line && line.name) ? String(line.name) : '');
       const m = nm.match(/^(\d+)/);
       if (m) return [0, parseInt(m[1], 10), nm];
       if (line && line.layer === '市区线') return [1, 0, nm];
@@ -3547,15 +3568,14 @@
       return [3, 0, nm];
     };
 
-    // ① 先按每条线切出所有连续施工/开通批次，再将同日/同月开通的多条线按序逐条排布，
-    //    让「聚焦更新」镜头逐线跟随、一条一条丝滑拉出，而非多线同时拉出抢镜头。
+    // ① 按每条线切出所有连续施工/开通批次，同日多线严格逐条排开；
+    //    支持历史移交段（如原5号线支线在2003-2028以5号线形态运营，2028-12才移交23号线）。
     const rawBatches = [];
     for (const line of S.linesMap.values()) {
       const rank = V.lineLayerRank(line);
       const isLocal = rank !== 'displayOnly' && rank !== 'hidden';
       const mainId = S.lineGroups.mainOf.get(line.lineId) || line.lineId;
       const mainLine = S.linesMap.get(mainId) || line;
-      const lineName = (mainLine && mainLine.name) || line.name || line.lineId;
       const dash = V.lineDashed(line);
       const segList = line.segments;
       const metas = segList.map((sg) => V.segmentOpenMeta(S.timeline, line.lineId, sg.segIndex, sg.segStatus));
@@ -3563,11 +3583,18 @@
       let i = 0;
       while (i < segList.length) {
         let j = i;
-        while (j + 1 < segList.length && Math.abs(metas[j + 1].time - metas[i].time) < 1e-4) j++;
+        while (j + 1 < segList.length
+          && Math.abs(metas[j + 1].time - metas[i].time) < 1e-4
+          && Boolean(metas[j + 1].handover) === Boolean(metas[i].handover)) j++;
         const batchLen = j - i + 1;
         const prevEarlier = i > 0 && metas[i - 1].time < metas[i].time - 1e-4;
         const nextEarlier = j + 1 < segList.length && metas[j + 1].time < metas[i].time - 1e-4;
         const reverseGrow = !prevEarlier && nextEarlier;
+
+        const ho = metas[i].handover || null;
+        const effMainId = (ho && ho.mainId) || mainId;
+        const effLineName = (ho && ho.lineName) || (mainLine && mainLine.name) || line.name || line.lineId;
+        const effLabel = (ho && ho.label) || metas[i].label || '';
 
         const items = [];
         let batchTotalKm = 0;
@@ -3595,15 +3622,17 @@
             key: line.lineId + ':' + i + '-' + j,
             lineId: line.lineId,
             mainId,
-            lineName,
-            sortKey: lineSortRank(mainLine),
+            effMainId,
+            lineName: effLineName,
+            sortKey: lineSortRank(mainLine, effLineName),
             color: line.color || '#888888',
             dash,
             isLocal,
             openTime: metas[i].time,
             openText: metas[i].open || '',
-            label: metas[i].label || '',
+            label: effLabel,
             stage: metas[i].stage || 'future',
+            handover: ho,
             reverseGrow,
             items,
             batchTotalKm,
@@ -3614,12 +3643,12 @@
       }
     }
 
-    // 将同一开通时刻（±0.025 年内）的批次归组并按线路序号排序，组内本地线严格首尾顺次排开
     rawBatches.sort((a, b) => a.openTime - b.openTime
       || (a.isLocal === b.isLocal ? 0 : (a.isLocal ? -1 : 1))
       || (a.sortKey[0] - b.sortKey[0])
       || (a.sortKey[1] - b.sortKey[1])
       || a.sortKey[2].localeCompare(b.sortKey[2], 'zh')
+      || (a.handover ? 1 : 0) - (b.handover ? 1 : 0)
       || (a.items[0].idx - b.items[0].idx));
 
     const openGroups = [];
@@ -3633,7 +3662,6 @@
     }
 
     const batchesOut = [];
-    const easeBatch = (u) => 1 - Math.pow(1 - u, 1.55);
     for (let gi = 0; gi < openGroups.length; gi++) {
       const grp = openGroups[gi];
       const T0 = grp.anchor;
@@ -3652,7 +3680,6 @@
         if (b.isLocal) {
           slotStart = T0 + localIdx * slotStep;
           const slotEnd = slotStart + slotDur;
-          // 前 76% 用于逐站丝滑绘制，后 24% 为线末专属停顿展示窗（停顿约 1.15s 后再飞往下一条线）
           drawEndTime = slotStart + Math.max(0.010, slotDur * 0.76);
           dwellEndTime = slotEnd;
           localIdx++;
@@ -3669,13 +3696,14 @@
           const f0 = b.batchTotalKm > 0 ? accKm / b.batchTotalKm : 0;
           accKm += wKm;
           const f1 = b.batchTotalKm > 0 ? accKm / b.batchTotalKm : 1;
-          const startTime = slotStart + easeBatch(f0) * drawSpan;
-          const endTime = Math.max(startTime + 0.002, slotStart + easeBatch(f1) * drawSpan);
+          // 严格匀速里程映射：整条线路从起点到终点速度恒定流畅
+          const startTime = slotStart + f0 * drawSpan;
+          const endTime = Math.max(startTime + 0.002, slotStart + f1 * drawSpan);
           segOpenByLineIdx.set(b.lineId + ':' + item.sg.segIndex, startTime);
           const startStopIdx = b.reverseGrow ? (item.idx + 1) : item.idx;
           const endStopIdx = b.reverseGrow ? item.idx : (item.idx + 1);
-          recordStopReach(b.lineId, startStopIdx, startTime);
-          recordStopReach(b.lineId, endStopIdx, endTime);
+          recordStopReach(b.lineId, startStopIdx, startTime, item.meta.handover);
+          recordStopReach(b.lineId, endStopIdx, endTime, item.meta.handover);
           if (!batchStopReaches.has(startStopIdx) || startTime < batchStopReaches.get(startStopIdx)) {
             batchStopReaches.set(startStopIdx, startTime);
           }
@@ -3689,9 +3717,12 @@
             color: b.color,
             dash: b.dash,
             isLocal: b.isLocal,
-            stage: b.stage,
+            stage: item.meta.stage || b.stage,
             sharedOffset: Number.isFinite(item.sg.sharedOffset) ? item.sg.sharedOffset : 0,
             openTime: b.openTime,
+            buildTime: Number.isFinite(item.meta.buildTime) ? item.meta.buildTime : null,
+            buildText: item.meta.build || '',
+            handover: item.meta.handover || null,
             startTime,
             endTime,
             coords: item.coords,
@@ -3702,7 +3733,6 @@
         if (b.isLocal && b.bbox) {
           const firstCoords = b.items[0].coords;
           const lastCoords = b.items[b.items.length - 1].coords;
-          // 采集本批次沿线各站抵达时刻与坐标（供逐站站名播报与站级聚焦）
           const ordStops = S.stops.filter((s) => s.kind !== 'arrow' && s.lineId === b.lineId)
             .sort((a, b2) => (a.stopIndex != null && b2.stopIndex != null ? a.stopIndex - b2.stopIndex : (a.t || 0) - (b2.t || 0)));
           const batchStops = [];
@@ -3722,6 +3752,7 @@
             key: b.key,
             lineId: b.lineId,
             mainId: b.mainId,
+            effMainId: b.effMainId,
             lineName: b.lineName,
             label: b.label,
             openText: b.openText,
@@ -3744,17 +3775,20 @@
     segsOut.sort((a, b) => a.endTime - b.endTime || a.startTime - b.startTime);
     batchesOut.sort((a, b) => a.startTime - b.startTime);
 
-    // ② 预处理每个站点 pin 与药丸的各线抵达时刻（支持「非换乘单线站 → 换乘站」动态升级与历史站名演变）
+    // ② 预处理每个叶站的开通时刻与历史移交信息（含 5号线支线 → 23号线交接）
     S.pinOpenTime = new Map();
     S.pinTransferTime = new Map();
     S.pinLineArrivals = new Map();
     const stopTimeBySid = new Map();
+    const stopHandoverBySid = new Map();
     for (const line of S.linesMap.values()) {
       const ord = S.stops.filter((s) => s.kind !== 'arrow' && s.lineId === line.lineId)
         .sort((a, b) => (a.stopIndex != null && b.stopIndex != null ? a.stopIndex - b.stopIndex : (a.t || 0) - (b.t || 0)));
       const segs = line.segments;
       for (let i = 0; i < ord.length; i++) {
         const s = ord[i];
+        const ho = stopHandoverByLineIdx.get(line.lineId + ':' + i);
+        if (ho) stopHandoverBySid.set(s.sid, ho);
         const reached = stopReachByLineIdx.get(line.lineId + ':' + i);
         if (Number.isFinite(reached)) {
           stopTimeBySid.set(s.sid, reached);
@@ -3778,47 +3812,6 @@
       }
     }
 
-    const stationLineArrivals = (pin) => {
-      if (!pin) return [];
-      const mStops = S.groupTree ? V.stationMemberStops(pin, S.groupTree) : [];
-      const byMain = new Map();
-      const ingest = (lineId, t, lon, lat) => {
-        const lid = String(lineId || '');
-        const ln = S.linesMap.get(lid);
-        if (ln && (V.HIDDEN_LIST_LAYERS.indexOf(ln.layer) >= 0 || (Array.isArray(ln.connects) && ln.connects.length > 0))) return;
-        const mainId = (S.lineGroups && S.lineGroups.mainOf.get(lid)) || lid;
-        const mainLn = S.linesMap.get(mainId) || ln;
-        const color = (mainLn && mainLn.color) || (ln && ln.color) || '#999999';
-        const prev = byMain.get(mainId);
-        if (!prev || t < prev.openTime) {
-          const c = (Number.isFinite(lon) && Number.isFinite(lat)) ? dc(lon, lat) : null;
-          byMain.set(mainId, { mainId, lineId: lid, openTime: t, color, coord: c });
-        }
-      };
-      for (const s of mStops) {
-        const t = stopTimeBySid.get(s.sid);
-        if (Number.isFinite(t)) ingest(s.lineId, t, s.lon, s.lat);
-      }
-      if (!byMain.size && pin.sid) {
-        const t = stopTimeBySid.get(pin.sid);
-        if (Number.isFinite(t)) ingest(pin.lineId, t, pin.lon, pin.lat);
-      }
-      if (!byMain.size) {
-        const lids = (pin.kind === 'group' && Array.isArray(pin.lineIds) && pin.lineIds.length)
-          ? pin.lineIds : (pin.lineId ? [pin.lineId] : []);
-        for (const lid of lids) {
-          const ln = S.linesMap.get(String(lid));
-          if (ln && ln.segments.length) {
-            const t = segOpenByLineIdx.get(ln.lineId + ':' + ln.segments[0].segIndex);
-            if (Number.isFinite(t)) ingest(ln.lineId, t, pin.lon, pin.lat);
-          }
-        }
-      }
-      const arr = Array.from(byMain.values());
-      arr.sort((a, b) => a.openTime - b.openTime);
-      return arr;
-    };
-
     const mergeLabelMeta = (key, openTime, transferTime, arrivals) => {
       const prevOpen = S.pinOpenTime.get(key);
       if (prevOpen == null || openTime < prevOpen) S.pinOpenTime.set(key, openTime);
@@ -3830,116 +3823,210 @@
       if (!prevArr || arrivals.length > prevArr.length) S.pinLineArrivals.set(key, arrivals);
     };
 
-    const pinsOut = [];
-    for (const pin of S.view.pins) {
-      let finalStroke, finalDark = 0;
-      if (pin.kind === 'group' && pin.groupType === 'junction') finalStroke = junctionStroke(pin.lineIds);
-      else if (pin.kind === 'group' || pin.groupType === 'out-of-station') { finalStroke = '#000000'; finalDark = 1; }
-      else {
-        const line = S.linesMap.get(pin.lineId);
-        finalStroke = pin.stroke || (line ? line.color : '#999999');
+    // 针对任意站/换乘组构建「按线路抵达逐步演变」的多阶段图形序列：
+    //   1线开通 → 本色普通单线圆；2线开通 → 黑边换乘大圆（或显式pill双站药丸）；
+    //   3线/4线/N线开通 → 仅对已开通站台实时调用 V.planGroupPillChain 生成逐步生长的药丸！
+    const buildUnitTimeline = (unitKey, pinObj, isPillGroup) => {
+      const rawMembers = S.groupTree ? V.stationMemberStops(pinObj, S.groupTree) : [];
+      const stopEntries = [];
+      for (const s of rawMembers) {
+        const lid = String(s.lineId || '');
+        const ln = S.linesMap.get(lid);
+        if (ln && (V.HIDDEN_LIST_LAYERS.indexOf(ln.layer) >= 0 || (Array.isArray(ln.connects) && ln.connects.length > 0))) continue;
+        const t = stopTimeBySid.get(s.sid);
+        if (!Number.isFinite(t)) continue;
+        const mainId = (S.lineGroups && S.lineGroups.mainOf.get(lid)) || lid;
+        const mainLn = S.linesMap.get(mainId) || ln;
+        const color = (mainLn && mainLn.color) || (ln && ln.color) || '#999999';
+        const ho = stopHandoverBySid.get(s.sid) || null;
+        stopEntries.push({
+          sid: s.sid,
+          lineId: lid,
+          mainId,
+          color,
+          lon: s.lon,
+          lat: s.lat,
+          openTime: t,
+          handover: ho,
+        });
       }
-      const finalBig = pin.big ? 1 : 0;
-      const p = dc(pin.lon, pin.lat);
-      const arrivals = stationLineArrivals(pin);
-      const openTime = arrivals.length ? arrivals[0].openTime : 2035.0;
-      const transferTime = arrivals.length >= 2 ? arrivals[1].openTime : Infinity;
-      const isTransferCapable = (pin.kind === 'group' || pin.groupType === 'out-of-station') && arrivals.length >= 2;
-      const singleStroke = (arrivals.length && arrivals[0].color) ? arrivals[0].color : finalStroke;
-
-      mergeLabelMeta(pin.key, openTime, transferTime, arrivals);
-      if (pin.groupType === 'out-of-station' && pin.groupId != null) {
-        mergeLabelMeta('g:' + pin.groupId, openTime, transferTime, arrivals);
+      if (!stopEntries.length) {
+        const lid = String(pinObj.lineId || (Array.isArray(pinObj.lineIds) && pinObj.lineIds[0]) || '');
+        const ln = S.linesMap.get(lid);
+        const mainId = (S.lineGroups && S.lineGroups.mainOf.get(lid)) || lid;
+        const mainLn = S.linesMap.get(mainId) || ln;
+        const t = (pinObj.sid && stopTimeBySid.get(pinObj.sid))
+          || (ln && ln.segments.length ? segOpenByLineIdx.get(ln.lineId + ':' + ln.segments[0].segIndex) : 2035.0);
+        const ho = (pinObj.sid && stopHandoverBySid.get(pinObj.sid)) || null;
+        stopEntries.push({
+          sid: pinObj.sid || unitKey,
+          lineId: lid,
+          mainId,
+          color: (mainLn && mainLn.color) || pinObj.stroke || '#999999',
+          lon: pinObj.lon,
+          lat: pinObj.lat,
+          openTime: Number.isFinite(t) ? t : 2035.0,
+          handover: ho,
+        });
       }
 
-      const lids = (pin.kind === 'group' && Array.isArray(pin.lineIds) && pin.lineIds.length)
-        ? pin.lineIds : (pin.lineId ? [pin.lineId] : []);
+      // 收集所有离散演变时刻（各叶站开通时刻 + 任何历史移交时刻如 2028.95）
+      const timeSet = new Set();
+      for (const se of stopEntries) {
+        timeSet.add(se.openTime);
+        if (se.handover && Number.isFinite(se.handover.beforeTime) && se.handover.beforeTime > se.openTime) {
+          timeSet.add(se.handover.beforeTime);
+        }
+      }
+      const eventTimes = Array.from(timeSet).sort((a, b) => a - b);
+
+      // 合并相近事件（< 0.004 年视为同一批）
+      const mergedTimes = [];
+      for (const et of eventTimes) {
+        if (!mergedTimes.length || et - mergedTimes[mergedTimes.length - 1] > 0.004) mergedTimes.push(et);
+      }
+
+      const gid = pinObj.groupId || (typeof unitKey === 'string' && unitKey.indexOf('g:') === 0 ? unitKey.slice(2) : null);
+      const gn = (gid && S.groupTree && S.groupTree.byId) ? S.groupTree.byId.get(gid) : null;
+      const gType = pinObj.groupType || (gid && S.groupTree ? S.groupTree.typeOf(gid) : null);
+      const explicitPill = Boolean(gn && gn.shape === 'pill' && gType === 'same-station');
+      const isOutOfStationPin = gType === 'out-of-station' && pinObj.kind === 'stop';
+
+      const stages = [];
+      const arrivalsByMain = new Map();
+      let firstTransferTime = Infinity;
+
+      for (let ti = 0; ti < mergedTimes.length; ti++) {
+        const t = mergedTimes[ti];
+        const opened = [];
+        const activeLinesMap = new Map();
+        for (const se of stopEntries) {
+          if (se.openTime > t + 0.004) continue;
+          const useHo = se.handover && t + 0.004 < se.handover.beforeTime;
+          const effMain = useHo ? se.handover.mainId : se.mainId;
+          const effLid = useHo ? se.handover.lineId : se.lineId;
+          const effColor = useHo ? se.handover.color : se.color;
+          opened.push({ lon: se.lon, lat: se.lat, mainId: effMain, lineId: effLid, color: effColor });
+          if (!activeLinesMap.has(effMain)) {
+            activeLinesMap.set(effMain, { mainId: effMain, lineId: effLid, color: effColor });
+          }
+          if (!arrivalsByMain.has(effMain)) {
+            arrivalsByMain.set(effMain, { mainId: effMain, lineId: effLid, openTime: t, color: effColor });
+          }
+        }
+        if (!opened.length) continue;
+        const distinctCount = activeLinesMap.size;
+        const activeList = Array.from(activeLinesMap.values());
+        if (distinctCount >= 2 && !Number.isFinite(firstTransferTime)) firstTransferTime = t;
+
+        // 计算该阶段在地图上的精确图形（普通小圆 / 2线大圆 / 逐级生长的N线药丸）
+        let kind = 'pin';
+        let feature = null;
+        if (isOutOfStationPin) {
+          // 出闸换乘直属站：单线期画线色小圆，组内开通≥2条不同线后变黑边小圆
+          const mySe = stopEntries.find((s) => s.sid === pinObj.sid) || stopEntries[0];
+          if (mySe.openTime > t + 0.004) continue;
+          const useHo = mySe.handover && t + 0.004 < mySe.handover.beforeTime;
+          const myColor = useHo ? mySe.handover.color : mySe.color;
+          const p = dc(pinObj.lon, pinObj.lat);
+          const dark = distinctCount >= 2 ? 1 : 0;
+          feature = {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [p[0], p[1]] },
+            properties: { key: unitKey, name: pinObj.name, big: 0, dark, stroke: dark ? '#000000' : myColor },
+          };
+        } else if (distinctCount <= 1) {
+          const singleLon = opened.reduce((a, s) => a + s.lon, 0) / opened.length;
+          const singleLat = opened.reduce((a, s) => a + s.lat, 0) / opened.length;
+          const p = dc(singleLon, singleLat);
+          feature = {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [p[0], p[1]] },
+            properties: { key: unitKey, name: pinObj.name, big: 0, dark: 0, stroke: activeList[0].color },
+          };
+        } else if (gType === 'junction') {
+          const avgLon = opened.reduce((a, s) => a + s.lon, 0) / opened.length;
+          const avgLat = opened.reduce((a, s) => a + s.lat, 0) / opened.length;
+          const p = dc(avgLon, avgLat);
+          const jStroke = junctionStroke(opened.map((s) => s.lineId));
+          feature = {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [p[0], p[1]] },
+            properties: { key: unitKey, name: pinObj.name, big: 0, dark: 0, stroke: jStroke },
+          };
+        } else {
+          // 同站换乘组：2线先变黑边大圆（显式 shape='pill' 且有展宽才出2站药丸）；
+          // 3线及更多线时，仅对【当前已开通站台】实时计算药丸折线，让换乘药丸随新线接入逐步长大！
+          const avgLon = opened.reduce((a, s) => a + s.lon, 0) / opened.length;
+          const avgLat = opened.reduce((a, s) => a + s.lat, 0) / opened.length;
+          const wantPill = (distinctCount >= 3 || (explicitPill && distinctCount >= 2) || (isPillGroup && distinctCount >= 3));
+          let builtPill = false;
+          if (wantPill && opened.length >= 2) {
+            const pts = opened.map((s) => V.planarOf(s.lon, s.lat, avgLat));
+            const cxy = V.planarOf(avgLon, avgLat, avgLat);
+            const hasSpread = pts.some((pt) => Math.hypot(pt[0] - cxy[0], pt[1] - cxy[1]) * 111320 > 0.5);
+            if (hasSpread) {
+              const order = V.planGroupPillChain(pts);
+              const chainCoords = order.map((idx) => dc(opened[idx].lon, opened[idx].lat));
+              if (chainCoords.length >= 2) {
+                kind = 'pill';
+                feature = {
+                  type: 'Feature',
+                  geometry: { type: 'LineString', coordinates: chainCoords },
+                  properties: { key: unitKey, lines: distinctCount },
+                };
+                builtPill = true;
+              }
+            }
+          }
+          if (!builtPill) {
+            const p = dc(avgLon, avgLat);
+            feature = {
+              type: 'Feature',
+              geometry: { type: 'Point', coordinates: [p[0], p[1]] },
+              properties: { key: unitKey, name: pinObj.name, big: 1, dark: 1, stroke: '#000000' },
+            };
+          }
+        }
+        if (feature) {
+          stages.push({ fromTime: t, distinctCount, kind, feature });
+        }
+      }
+
+      if (!stages.length) return null;
+      const arrivals = Array.from(arrivalsByMain.values()).sort((a, b) => a.openTime - b.openTime);
+      const openTime = stages[0].fromTime;
+      mergeLabelMeta(unitKey, openTime, firstTransferTime, arrivals);
+      if (isOutOfStationPin && pinObj.groupId != null) {
+        mergeLabelMeta('g:' + pinObj.groupId, openTime, firstTransferTime, arrivals);
+      }
+
+      const lids = (pinObj.kind === 'group' && Array.isArray(pinObj.lineIds) && pinObj.lineIds.length)
+        ? pinObj.lineIds : (pinObj.lineId ? [pinObj.lineId] : []);
       const isLocal = lids.some((lid) => {
         const ln = S.linesMap.get(String(lid));
         return ln && V.lineLayerRank(ln) !== 'displayOnly' && V.lineLayerRank(ln) !== 'hidden';
       });
-      const geom = { type: 'Point', coordinates: [p[0], p[1]] };
-      pinsOut.push({
-        key: pin.key,
-        openTime,
-        transferTime,
-        hideAt: Infinity,
-        isTransferCapable,
-        isLocal,
-        singleStroke,
-        finalStroke,
-        finalBig,
-        finalDark,
-        singleFeat: {
-          type: 'Feature',
-          geometry: geom,
-          properties: { key: pin.key, name: pin.name, big: 0, dark: 0, stroke: singleStroke },
-        },
-        transferFeat: {
-          type: 'Feature',
-          geometry: geom,
-          properties: { key: pin.key, name: pin.name, big: finalBig, dark: finalDark, stroke: finalStroke },
-        },
-      });
-    }
+      return { key: unitKey, openTime, isLocal, stages };
+    };
 
-    const pillsOut = [];
-    for (const pill of S.view.pills || []) {
-      const coords = (pill.chain || [])
-        .filter((c) => c && Number.isFinite(c[0]) && Number.isFinite(c[1]))
-        .map((c) => dc(c[0], c[1]));
-      if (coords.length < 2) continue;
-      const arrivals = pill.pin ? stationLineArrivals(pill.pin) : [];
-      const firstOpenTime = arrivals.length ? arrivals[0].openTime : 2035.0;
-      const transferTime = arrivals.length >= 2 ? arrivals[1].openTime : firstOpenTime;
-      mergeLabelMeta(pill.key, firstOpenTime, transferTime, arrivals);
-      const isLocal = (pill.lineIds || []).some((lid) => {
-        const ln = S.linesMap.get(String(lid));
-        return ln && V.lineLayerRank(ln) !== 'displayOnly' && V.lineLayerRank(ln) !== 'hidden';
-      });
-      // 药丸仅在第二条不同线路到达时才升级出现；此前先按普通单线站圈渲染首条线路车站
-      if (arrivals.length >= 2 && firstOpenTime + 1e-4 < transferTime) {
-        const proxyCoord = arrivals[0].coord || coords[0];
-        const proxyGeom = { type: 'Point', coordinates: [proxyCoord[0], proxyCoord[1]] };
-        const proxyFeat = {
-          type: 'Feature',
-          geometry: proxyGeom,
-          properties: { key: pill.key + ':pre', name: (pill.pin && pill.pin.name) || '', big: 0, dark: 0, stroke: arrivals[0].color },
-        };
-        pinsOut.push({
-          key: pill.key + ':pre',
-          openTime: firstOpenTime,
-          transferTime: Infinity,
-          hideAt: transferTime,
-          isTransferCapable: false,
-          isLocal,
-          singleStroke: arrivals[0].color,
-          finalStroke: arrivals[0].color,
-          finalBig: 0,
-          finalDark: 0,
-          singleFeat: proxyFeat,
-          transferFeat: proxyFeat,
-        });
-      }
-      pillsOut.push({
-        key: pill.key,
-        openTime: transferTime,
-        isLocal,
-        feature: {
-          type: 'Feature',
-          geometry: { type: 'LineString', coordinates: coords },
-          properties: { key: pill.key },
-        },
-      });
+    const unitsOut = [];
+    for (const pin of S.view.pins) {
+      const u = buildUnitTimeline(pin.key, pin, false);
+      if (u) unitsOut.push(u);
     }
-    pinsOut.sort((a, b) => a.openTime - b.openTime);
-    pillsOut.sort((a, b) => a.openTime - b.openTime);
+    for (const pill of S.view.pills || []) {
+      if (!pill || !pill.pin) continue;
+      const u = buildUnitTimeline(pill.key, pill.pin, true);
+      if (u) unitsOut.push(u);
+    }
+    unitsOut.sort((a, b) => a.openTime - b.openTime);
 
     S.tl.segments = segsOut;
     S.tl.batches = batchesOut;
-    S.tl.pins = pinsOut;
-    S.tl.pills = pillsOut;
-    S.tl.lastDoneCount = -1;
+    S.tl.stationUnits = unitsOut;
+    S.tl.lastDoneSig = '';
+    S.tl.lastBuildSig = '';
     S.tl.lastPinCount = '';
 
     // 同步更新蓝图底影数据（如已建层）
@@ -3960,7 +4047,7 @@
     if (!map || S.tl.layersBuilt) return;
     S.tl.layersBuilt = true;
     const before = map.getLayer('focus-veil') ? 'focus-veil' : undefined;
-    for (const id of ['tl-ghost', 'tl-done', 'tl-active', 'tl-pills', 'tl-stops', 'tl-stops-fade']) {
+    for (const id of ['tl-ghost', 'tl-building', 'tl-done', 'tl-active', 'tl-pills', 'tl-stops', 'tl-stops-fade']) {
       if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: EMPTY_TL_FC });
     }
     map.addLayer({
@@ -3970,6 +4057,18 @@
         'line-color': ['get', 'color'],
         'line-opacity': 0.13,
         'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX * 0.8), V.LINE_WIDTH_PX * 0.8),
+        'line-offset': ['coalesce', ['get', 'sharedOffset'], 0],
+      },
+    }, before);
+    // 在建模式虚影层：已开工但尚未开通的线路以本色半透明虚线呈现
+    map.addLayer({
+      id: 'tl-building', type: 'line', source: 'tl-building',
+      layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
+      paint: {
+        'line-color': ['get', 'color'],
+        'line-dasharray': [2.2, 1.8],
+        'line-opacity': 0.50,
+        'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX * 0.92), V.LINE_WIDTH_PX * 0.92),
         'line-offset': ['coalesce', ['get', 'sharedOffset'], 0],
       },
     }, before);
@@ -4072,21 +4171,27 @@
     if (!map || !S.tl.layersBuilt) return;
     for (const id of TL_LAYER_IDS) {
       if (!map.getLayer(id)) continue;
-      const on = visible && (id !== 'tl-ghost' || S.tl.ghostOn);
+      const on = visible
+        && (id !== 'tl-ghost' || S.tl.ghostOn)
+        && (id !== 'tl-building' || S.tl.buildOn);
       map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
     }
   }
 
   function tlCameraPadding() {
     const dock = $('timelineDock');
-    const dockH = (dock && !dock.hidden) ? (dock.getBoundingClientRect().height + 24) : 140;
+    let dockClear = 156;
+    if (dock && !dock.hidden) {
+      const r = dock.getBoundingClientRect();
+      if (r.height > 0) dockClear = Math.max(120, (G.innerHeight - r.top) + 48);
+    }
     if (isMobileViewport()) {
-      return { top: 44, bottom: Math.min(260, dockH + 54), left: 28, right: 28 };
+      return { top: 48, bottom: Math.min(310, dockClear + 44), left: 28, right: 28 };
     }
     const base = cameraPadding();
     return {
-      top: Math.max(48, base.top),
-      bottom: Math.max(dockH + 20, base.bottom),
+      top: Math.max(54, base.top),
+      bottom: Math.max(dockClear + 36, base.bottom),
       left: base.left,
       right: base.right,
     };
@@ -4149,23 +4254,38 @@
     if (!trackCoord) return;
 
     const pad = tlCameraPadding();
-    const offset = [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2];
-    const closeZoom = targetBatch.segCount <= 3 ? 13.0 : 12.6;
+    // 南北向线路附加轻微上偏留白，确保向南延伸的站点始终完整暴露在底部时间轴面板之上
+    const bb = targetBatch.bbox;
+    const isNS = bb && (bb[3] - bb[1]) > (bb[2] - bb[0]) * 1.15;
+    const headingSouth = targetBatch.startCoord && targetBatch.endCoord
+      && (targetBatch.endCoord[1] < targetBatch.startCoord[1] - 0.01);
+    const nsBiasY = isNS ? (headingSouth ? -26 : -14) : 0;
+    const offset = [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2 + nsBiasY];
+    const closeZoom = targetBatch.segCount <= 3 ? 12.8 : 12.4;
     const isNewBatch = targetBatch.key !== S.tl.lastFollowSig;
 
-    // ① 切换到新一条线或手动拖滑块：先平滑飞抵该线起始/当前车站（站级特写缩放 z12.6~13.0）
+    // ① 切换到新一条线或手动拖滑块：按实际地理距离定匀速巡航时长，以线性巡航缓动平滑飞抵目标站
     if (force || isNewBatch) {
       S.tl.lastFollowMs = now;
       S.tl.lastFollowSig = targetBatch.key;
-      const dur = force ? 720 : 880;
-      S.tl.flyInUntilMs = now + dur + 30;
+      let distKm = 12;
+      try {
+        const c = S.map.getCenter();
+        if (c && Number.isFinite(c.lng) && Number.isFinite(c.lat)) {
+          distKm = V.haversineKm([c.lng, c.lat], trackCoord);
+        }
+      } catch (e) { /* fallback */ }
+      const dur = force
+        ? 720
+        : Math.round(Math.max(680, Math.min(1650, 480 + distKm * 36)));
+      S.tl.flyInUntilMs = now + dur + 20;
       S.map.easeTo({
         center: trackCoord,
         zoom: closeZoom,
         offset,
         duration: dur,
         essential: true,
-        easing: (p) => 1 - Math.pow(1 - p, 3),
+        easing: smoothLinearCruise,
       });
       return;
     }
@@ -4173,7 +4293,7 @@
     // ② 线末停顿展示期：保持镜头安静停驻在完工站点上，不提前飞走
     if (!active || t >= active.drawEndTime) return;
 
-    // ③ 沿线逐站推进期：60fps 阻尼平推镜头紧跟正在到达的每一个具体车站（不改动持久 padding）
+    // ③ 沿线逐站推进期：60fps 平稳匀速跟焦，紧跟当前到达的具体车站并避让底部时间轴
     if (now < (S.tl.flyInUntilMs || 0)) return;
     let xy = null;
     try { xy = S.map.project(trackCoord); } catch (e) { xy = null; }
@@ -4182,12 +4302,12 @@
     const w = canvas ? canvas.clientWidth : G.innerWidth;
     const h = canvas ? canvas.clientHeight : G.innerHeight;
     const openCx = (w + pad.left - pad.right) / 2;
-    const openCy = (h + pad.top - pad.bottom) / 2;
+    const openCy = (h + pad.top - pad.bottom) / 2 + nsBiasY;
     const dx = xy.x - openCx;
     const dy = xy.y - openCy;
-    if (Math.hypot(dx, dy) > 1.5) {
+    if (Math.hypot(dx, dy) > 0.8) {
       const stepDt = Number.isFinite(dtSec) && dtSec > 0 ? Math.min(0.05, dtSec) : 0.016;
-      const alpha = 1 - Math.exp(-stepDt * 5.2);
+      const alpha = 1 - Math.exp(-stepDt * 4.4);
       S.map.panBy([dx * alpha, dy * alpha], { animate: false });
     }
   }
@@ -4195,153 +4315,167 @@
   function renderTimelineFrame(force, dtSec) {
     if (!S.tl.active || !S.map || !S.tl.layersBuilt) return;
     const t = S.tl.currentTime;
+    const displayT = timelineDisplayTimeAt(t);
     const segs = S.tl.segments;
     const doneFeats = [];
     const activeFeats = [];
+    const buildingFeats = [];
     let liveKm = 0;
+    let buildKm = 0;
     const liveLines = new Set();
     let doneCount = 0;
+    let handoverSwitched = 0;
+    let buildCount = 0;
     let activeTipCoord = null;
+
+    const effOfSeg = (sg) => {
+      if (sg.handover && displayT + 1e-4 < sg.handover.beforeTime) {
+        return { color: sg.handover.color, mainId: sg.handover.mainId, switched: 0 };
+      }
+      return { color: sg.color, mainId: sg.mainId, switched: sg.handover ? 1 : 0 };
+    };
 
     for (let i = 0; i < segs.length; i++) {
       const sg = segs[i];
-      if (sg.startTime > t) continue;
-      if (sg.endTime <= t) {
-        doneCount++;
-        if (sg.isLocal) {
-          liveKm += sg.totalKm;
-          liveLines.add(sg.mainId);
-        }
-        if (force || doneCount !== S.tl.lastDoneCount) {
-          doneFeats.push({
+      const eff = effOfSeg(sg);
+      if (sg.startTime > t) {
+        // 在建模式：已开工（buildTime != null && buildTime <= displayT）但尚未开通的区段进入在建虚影层
+        if (S.tl.buildOn && sg.isLocal && sg.buildTime != null && sg.buildTime <= displayT + 0.01) {
+          buildCount++;
+          buildKm += sg.totalKm;
+          buildingFeats.push({
             type: 'Feature',
             geometry: { type: 'LineString', coordinates: sg.coords },
-            properties: { color: sg.color, dash: sg.dash, local: sg.isLocal ? 1 : 0, sharedOffset: sg.sharedOffset },
+            properties: { color: eff.color, sharedOffset: sg.sharedOffset },
           });
         }
+        continue;
+      }
+      if (sg.endTime <= t) {
+        doneCount++;
+        handoverSwitched += eff.switched;
+        if (sg.isLocal) {
+          liveKm += sg.totalKm;
+          liveLines.add(eff.mainId);
+        }
+        doneFeats.push({
+          type: 'Feature',
+          geometry: { type: 'LineString', coordinates: sg.coords },
+          properties: { color: eff.color, dash: sg.dash, local: sg.isLocal ? 1 : 0, sharedOffset: sg.sharedOffset },
+        });
       } else {
         const rawP = Math.max(0, Math.min(1, (t - sg.startTime) / Math.max(0.002, sg.endTime - sg.startTime)));
-        // 批次整体已做缓出，单区段内线性推进确保跨站接头速度完全连续不断裂
         const sliced = V.slicePolylineByRatio(sg.coords, sg.cumDist, sg.totalKm, rawP);
         if (sliced && sliced.coords.length >= 2) {
           if (sg.isLocal) {
             liveKm += sg.totalKm * rawP;
-            liveLines.add(sg.mainId);
+            liveLines.add(eff.mainId);
             if (sliced.tip) activeTipCoord = sliced.tip;
           }
           activeFeats.push({
             type: 'Feature',
             geometry: { type: 'LineString', coordinates: sliced.coords },
-            properties: { color: sg.color, sharedOffset: sg.sharedOffset },
+            properties: { color: eff.color, sharedOffset: sg.sharedOffset },
+          });
+        }
+        // 在建模式下，当前区段尚未画到的余段继续以在建虚影承接，观感丝滑衔接
+        if (S.tl.buildOn && sg.isLocal && sg.buildTime != null && sg.buildTime <= displayT + 0.01) {
+          buildCount++;
+          buildKm += sg.totalKm * (1 - rawP);
+          buildingFeats.push({
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: sg.coords },
+            properties: { color: eff.color, sharedOffset: sg.sharedOffset },
           });
         }
       }
     }
     S.tl.activeTipCoord = activeTipCoord;
 
-    // 仅当已完工区段数变化时重设 tl-done（每秒仅 0~3 次，避免每帧全量上传）
-    if (force || doneCount !== S.tl.lastDoneCount) {
-      if (doneFeats.length !== doneCount) {
-        doneFeats.length = 0;
-        for (let i = 0; i < segs.length; i++) {
-          const sg = segs[i];
-          if (sg.endTime <= t) {
-            doneFeats.push({
-              type: 'Feature',
-              geometry: { type: 'LineString', coordinates: sg.coords },
-              properties: { color: sg.color, dash: sg.dash, local: sg.isLocal ? 1 : 0, sharedOffset: sg.sharedOffset },
-            });
-          }
-        }
-      }
-      S.tl.lastDoneCount = doneCount;
+    const doneSig = doneCount + ':' + handoverSwitched;
+    if (force || doneSig !== S.tl.lastDoneSig) {
+      S.tl.lastDoneSig = doneSig;
       S.map.getSource('tl-done').setData({ type: 'FeatureCollection', features: doneFeats });
     }
     S.map.getSource('tl-active').setData({ type: 'FeatureCollection', features: activeFeats });
+    const buildSig = (S.tl.buildOn ? '1:' : '0:') + buildCount + ':' + handoverSwitched;
+    if (force || buildSig !== S.tl.lastBuildSig) {
+      S.tl.lastBuildSig = buildSig;
+      S.map.getSource('tl-building').setData({ type: 'FeatureCollection', features: buildingFeats });
+    }
 
-    // 站点与药丸：动态反映「非换乘单线站 → 换乘站」形态升级，新到站与升级瞬间均做柔和缩放渐显
-    const stableFeats = [];
+    // 站点与换乘图标（按线路数逐步演变：单线小圆 → 2线大圆 → 3线/4线逐步生长的药丸）
+    const stablePins = [];
+    const openPills = [];
     const fadeFeats = [];
     let liveStations = 0;
-    let transferNowCount = 0;
+    let stageSigHash = 0;
     const FADE_WINDOW = 0.035;
     const zScale = V.labelScale(S.map.getZoom());
     const bigDef = STOP_LAYER_DEFS.find((d) => d.id === 'stops-big') || { radius: 6, strokeW: 2.2 };
     const normDef = STOP_LAYER_DEFS.find((d) => d.id === 'stops') || { radius: 3.5, strokeW: 1.8 };
+    const units = S.tl.stationUnits || [];
 
-    for (let i = 0; i < S.tl.pins.length; i++) {
-      const p = S.tl.pins[i];
-      if (p.openTime > t) break;
-      if (t >= p.hideAt) continue;   // 药丸站已升级为药丸本体，隐藏单线临时站圈
-      if (p.isLocal) liveStations++;
-      const isTransferNow = p.isTransferCapable && p.transferTime <= t;
-      if (isTransferNow) transferNowCount++;
-      const openAge = t - p.openTime;
-      const upAge = isTransferNow ? (t - p.transferTime) : Infinity;
-      const feat = isTransferNow ? p.transferFeat : p.singleFeat;
+    for (let i = 0; i < units.length; i++) {
+      const u = units[i];
+      if (u.openTime > t) break;
+      if (u.isLocal) liveStations++;
+      const stgList = u.stages;
+      let si = 0;
+      while (si + 1 < stgList.length && stgList[si + 1].fromTime <= t + 1e-4) si++;
+      const cur = stgList[si];
+      stageSigHash += (si + 1) * ((i % 97) + 1);
+      const age = t - cur.fromTime;
 
-      if (openAge < FADE_WINDOW) {
-        const k = Math.max(0, Math.min(1, openAge / FADE_WINDOW));
+      if (cur.kind === 'pill') {
+        openPills.push(cur.feature);
+      } else if (age >= 0 && age < FADE_WINDOW) {
+        const k = Math.max(0, Math.min(1, age / FADE_WINDOW));
         const ease = 1 - Math.pow(1 - k, 3);
-        const def = feat.properties.big ? bigDef : normDef;
+        const targetDef = cur.feature.properties.big ? bigDef : normDef;
+        const fromR = si > 0 ? normDef.radius : targetDef.radius * 0.35;
+        const fromSW = si > 0 ? normDef.strokeW : targetDef.strokeW * 0.5;
         fadeFeats.push({
           type: 'Feature',
-          geometry: feat.geometry,
+          geometry: cur.feature.geometry,
           properties: {
-            r: def.radius * zScale * (0.35 + 0.65 * ease),
-            sw: def.strokeW * zScale * (0.5 + 0.5 * ease),
-            op: ease,
-            stroke: feat.properties.stroke || '#000000',
-          },
-        });
-      } else if (upAge >= 0 && upAge < FADE_WINDOW) {
-        // 换乘站升级过渡：从单线小站圈柔和放大为黑圈换乘枢纽
-        const k = Math.max(0, Math.min(1, upAge / FADE_WINDOW));
-        const ease = 1 - Math.pow(1 - k, 3);
-        const targetDef = feat.properties.big ? bigDef : normDef;
-        fadeFeats.push({
-          type: 'Feature',
-          geometry: feat.geometry,
-          properties: {
-            r: (normDef.radius + (targetDef.radius - normDef.radius) * ease) * zScale,
-            sw: (normDef.strokeW + (targetDef.strokeW - normDef.strokeW) * ease) * zScale,
-            op: 0.45 + 0.55 * ease,
-            stroke: feat.properties.stroke || '#000000',
+            r: (fromR + (targetDef.radius - fromR) * ease) * zScale,
+            sw: (fromSW + (targetDef.strokeW - fromSW) * ease) * zScale,
+            op: si > 0 ? (0.5 + 0.5 * ease) : ease,
+            stroke: cur.feature.properties.stroke || '#000000',
           },
         });
       } else {
-        stableFeats.push(feat);
+        stablePins.push(cur.feature);
       }
     }
-    let openPillCount = 0;
-    for (let i = 0; i < S.tl.pills.length; i++) {
-      const pl = S.tl.pills[i];
-      if (pl.openTime <= t) {
-        openPillCount++;
-        if (pl.isLocal) liveStations++;
-      } else break;
-    }
-    const pinSig = stableFeats.length + ':' + transferNowCount + ':' + openPillCount;
+
+    const pinSig = stablePins.length + ':' + openPills.length + ':' + stageSigHash;
     if (force || pinSig !== S.tl.lastPinCount) {
       S.tl.lastPinCount = pinSig;
-      S.map.getSource('tl-stops').setData({
-        type: 'FeatureCollection',
-        features: stableFeats,
-      });
-      S.map.getSource('tl-pills').setData({
-        type: 'FeatureCollection',
-        features: S.tl.pills.slice(0, openPillCount).map((p) => p.feature),
-      });
+      S.map.getSource('tl-stops').setData({ type: 'FeatureCollection', features: stablePins });
+      S.map.getSource('tl-pills').setData({ type: 'FeatureCollection', features: openPills });
     }
     S.map.getSource('tl-stops-fade').setData({ type: 'FeatureCollection', features: fadeFeats });
 
-    // 更新 HUD 实时数字、大字真实日期、阶段徽章、大事件/当前车站字幕与滑块
+    // 更新 HUD 实时数字、大字真实日期（未审批远期/远景不编造具体年份）、在建里程、阶段徽章、大事件/当前车站字幕与滑块
     const activeBatch = timelineActiveBatchAt(t);
-    const displayT = timelineDisplayTimeAt(t);
     const dtEl = $('tlDateLabel');
-    if (dtEl) dtEl.textContent = V.formatDecimalYear(displayT);
+    if (dtEl) {
+      if ((activeBatch && activeBatch.stage === 'corridor') || (!activeBatch && displayT >= 2037.5)) {
+        dtEl.textContent = '远景预控';
+      } else if ((activeBatch && activeBatch.stage === 'future') || (!activeBatch && displayT >= 2033.2)) {
+        dtEl.textContent = '远期规划';
+      } else {
+        dtEl.textContent = V.formatDecimalYear(displayT);
+      }
+    }
     const kmEl = $('tlKm');
     if (kmEl) kmEl.textContent = V.formatKm(liveKm);
+    const bKpi = $('tlBuildKpi');
+    if (bKpi) bKpi.hidden = !S.tl.buildOn;
+    const bKmEl = $('tlBuildKm');
+    if (bKmEl && S.tl.buildOn) bKmEl.textContent = V.formatKm(buildKm);
     const stEl = $('tlStations');
     if (stEl) stEl.textContent = String(liveStations);
     const lnEl = $('tlLines');
@@ -4447,6 +4581,8 @@
     if (spdBtn) spdBtn.textContent = (TIMELINE_SPEEDS[S.tl.speedIdx] || 1) + '×';
     const flBtn = $('tlFollow');
     if (flBtn) flBtn.classList.toggle('on', S.tl.followOn);
+    const bdBtn = $('tlBuild');
+    if (bdBtn) bdBtn.classList.toggle('on', S.tl.buildOn);
     const ghBtn = $('tlGhost');
     if (ghBtn) ghBtn.classList.toggle('on', S.tl.ghostOn);
     const entryBtn = $('btnTimeline');
@@ -4546,6 +4682,15 @@
       S.map.on('dragstart', noteUserPan);
       S.map.on('wheel', noteUserPan);
     }
+    const bdBtn = $('tlBuild');
+    if (bdBtn) bdBtn.addEventListener('click', () => {
+      S.tl.buildOn = !S.tl.buildOn;
+      syncTimelineButtons();
+      if (S.tl.active) {
+        setTimelineLayersVisible(true);
+        renderTimelineFrame(true);
+      }
+    });
     const ghBtn = $('tlGhost');
     if (ghBtn) ghBtn.addEventListener('click', () => {
       S.tl.ghostOn = !S.tl.ghostOn;

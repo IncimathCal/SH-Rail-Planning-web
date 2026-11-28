@@ -82,6 +82,21 @@ assert.strictEqual(V.stationNameAt(timeline, '浦电路', ['l0018'], 2025.0), '�
 assert.strictEqual(V.stationNameAt(timeline, '浦电路', ['l0020'], 2025.0), '浦电路');
 assert.strictEqual(V.stationNameAt(timeline, '人民广场', ['l0015'], 1995.0), '人民广场');
 
+// Line 5 branch -> Line 23 handover metadata, groundbreaking buildTime, and unapproved future/corridor ordering
+const segL5Branch = V.segmentOpenMeta(timeline, 'l0038', 18);
+assert(segL5Branch.handover && segL5Branch.handover.mainId === 'l0019' && segL5Branch.handover.beforeTime === 2028.95,
+  'Line 5 branch (l0038 seg 18) should hand over from l0019 at 2028.95');
+assert.strictEqual(segL5Branch.handover.color, '#944D9A');
+assert.strictEqual(V.segmentOpenMeta(timeline, 'l0015', 20).buildTime, 1990.18, 'Line 1 groundbreaking should be 1990.18');
+assert.strictEqual(V.segmentOpenMeta(timeline, 'l0036', 6).buildTime, 2022.02, 'Line 21 groundbreaking should be 2022.02');
+const seg20Mid = V.segmentOpenMeta(timeline, 'l0035', 10);
+const seg26 = V.segmentOpenMeta(timeline, 'l0001', 0);
+assert.strictEqual(seg20Mid.open, '预计2032-12');
+assert.strictEqual(seg26.open, '远期规划', 'Line 26 should be 远期规划 without fabricated completion year');
+assert.strictEqual(seg26.stage, 'future');
+assert.strictEqual(seg26.buildTime, null, 'Unstarted Line 26 must not have a buildTime');
+assert(seg26.time > seg20Mid.time, 'Line 26 must come strictly after all under-construction lines (20中段)');
+
 console.log('ALL ENHANCEMENT TESTS PASSED!');
 console.log(JSON.stringify({
   totalKm: Number(netAll.total.km.toFixed(1)),
