@@ -62,6 +62,10 @@
 // 透传声明；lineStopSections 增 section.loop 与 row.shared——sharedTrackRowRange 纯函数
 // ＝flatten shared_track_decls 同构的站区间口径：非环闭区间/环线沿站序前进弧跨环绕、
 // 两端边界站含在内；对方线归一主线、组名优先主线色，共线≠换乘但取名取色同口径）。
+// 2026-11-28 增：相关链接（parseLinks——links.md 用户手填的独立链接文件解析；链接从
+// lineinfo.md 剥离成独立文件。一条链接一行＋若干「#<线路id>」tag、一链可挂多线；绑定
+// 口径与 lineinfo 相同＝线组 id 优先、未建组单线用线自身 id——lineLinksOf 兜底查找同
+// lineInfoEntryOf 语义。HTML 注释块整体跳过〔模板说明区安全〕；URL 白名单同 safeLinkUrl）。
 
 (function (G) {
   'use strict';
@@ -2521,6 +2525,86 @@
     return null;
   }
 
+  // ---------- 相关链接（2026-11-28 增：links.md 独立文件——链接从 lineinfo.md 剥离） ----------
+  // 数据链：数据目录的 links.md（用户手填）→ flatten 原样透传进 net/ → 查看器按
+  // lines.geojson 同款回退链拉取。parseLinks 只做解析：
+  //   parseLinks(md) → { items: [{ text, url }]（文件原序）, byTag: { [tag]: [items 索引…] } }
+  // md 约定（格式模板见 data/links.md）：
+  //   - [链接文字](https://…) #l0017 #l0018    一行一条链接；链接结构后随若干「#<id>」tag
+  //（行首 -/* 可省）；一条链接可 tag 多条线（一链多挂）。tag 绑定口径与 lineinfo 相同：
+  //   建了组的线路打线组 id（groups.json lineGroups.id），没建组的单线打线自身 id
+  //（lines/*.json 的 id）——查看器兜底查找 lineLinksOf 同 lineInfoEntryOf 语义。
+  //   HTML 注释块（<!-- … -->，可跨行）整体跳过——模板说明区可随意写示例不误收；
+  //   行首 # 的 markdown 标题行跳过（防御）；无链接结构或无 tag 的行忽略（说明文字不炸）；
+  //   空 tag／重复 tag 同行去重；URL 过 safeLinkUrl 白名单（同 lineinfo 安全口径），
+  //   被拒（javascript:/data: 等带 scheme 形态）整条剔除、空串剔除。
+  // 非字符串/空文件 → { items: [], byTag: {} }（查看器一切线路无链接区，不报错）。
+  function parseLinks(md) {
+    const items = [], byTag = {};
+    if (typeof md !== 'string') return { items, byTag };
+    const lines = md.replace(/\r\n?/g, '\n').split('\n');
+    const linkRe = /\[([^\]]+)\]\(([^)]*)\)/;   // 局部实例（无 lastIndex 状态，与行内 LINK_MARKDOWN_RE 互不干扰）
+    let inComment = false;                       // HTML 注释块状态（<!-- 开 … --> 关）
+    for (const raw of lines) {
+      let line = String(raw);
+      if (inComment) {
+        const end = line.indexOf('-->');
+        if (end < 0) continue;                   // 块内整行吞掉
+        line = line.slice(end + 3);
+        inComment = false;
+      }
+      const open = line.indexOf('<!--');
+      if (open >= 0) {
+        const after = line.slice(open + 4);
+        const end = after.indexOf('-->');
+        if (end < 0) { inComment = true; line = line.slice(0, open); }   // 跨行注释：截到开符前
+        else line = line.slice(0, open) + after.slice(end + 3);          // 同行开闭：抠掉注释段
+      }
+      line = line.trim();
+      if (!line || line.charAt(0) === '#') continue;   // 空行与 markdown 标题行（说明性内容）
+      const m = line.match(linkRe);
+      if (!m) continue;                          // 无链接结构的说明行忽略（不丢字也不收）
+      // tag 只认链接结构之后的 # token（链接文字在 [ ] 内、URL 锚点 # 在 ( ) 内，均不误收）
+      const tags = [];
+      for (const t of line.slice(m.index + m[0].length).match(/#[^\s#]+/g) || []) {
+        const k = t.slice(1);
+        if (k && tags.indexOf(k) < 0) tags.push(k);   // 同行重复 tag 去重
+      }
+      if (!tags.length) continue;                // 无 tag 的链接无处归属，忽略
+      const url = safeLinkUrl(m[2]);
+      if (!url) continue;                        // 恶意/空 URL 整条剔除（同 lineinfo 链接区口径）
+      const idx = items.length;
+      items.push({ text: m[1], url });
+      for (const t of tags) (byTag[t] || (byTag[t] = [])).push(idx);
+    }
+    return { items, byTag };
+  }
+  // 链接 tag 命中解析（lineLinksOf——lineInfoEntryOf 同语义兜底）：给定一条线，先按其所属
+  // 线组的 id 查 tag（组命中即返回，不再叠加线 id tag——与 lineinfo「组节优先」同口径），
+  // 组无命中再按该线自身 id 查（没建组的单线主口径）。返回 [{ text, url }…]（文件原序）；
+  // links 缺失/null/结构不符 → []（显示侧完全无痕）。
+  function lineLinksOf(lineId, linesMap, lineGroups, links) {
+    const id = lineId != null ? String(lineId) : '';
+    if (!id) return [];
+    const L = links && typeof links === 'object' ? links : null;
+    const items = L && Array.isArray(L.items) ? L.items : [];
+    const byTag = L && L.byTag && typeof L.byTag === 'object' && !Array.isArray(L.byTag) ? L.byTag : {};
+    const pick = (tag) => {
+      const out = [];
+      for (const i of byTag[tag] || []) {
+        const it = items[i];
+        if (it && typeof it === 'object' && typeof it.url === 'string' && it.url) out.push(it);
+      }
+      return out;
+    };
+    const lg = lineGroups && lineGroups.ofLine instanceof Map ? lineGroups.ofLine.get(id) : null;
+    if (lg) {
+      const hit = pick(String(lg.id));
+      if (hit.length) return hit;   // 组 id 优先（组命中即止）
+    }
+    return pick(id);                // 组无命中 → 线自身 id 兜底
+  }
+
   // ---------- 单线导出 ----------
   // 嵌套节点补注（2026-11-23）：导出函数的 tree 入参可选——传入且该站所属组处在嵌套节点
   //（有上级，或有带输出站点的子组）时，GeoJSON 站属性补 nodeGroupId/nodeGroupType（最外层组
@@ -2624,7 +2708,7 @@
     lineStopSections, stopNodeGlyph, nearestOnLineGeom, lineEndpointsOf,
     stopsOfLineOrdered, junctionBuckets, branchDestLabel, sharedTrackRowRange, STATION_SNAP_M,
     matchEntries, filterLabels, visibleLabels, stopUnitMatchesPhase,
-    parseLineInfo, safeLinkUrl, lineInfoEntryOf,
+    parseLineInfo, safeLinkUrl, lineInfoEntryOf, parseLinks, lineLinksOf,
     buildLineGeoJSON, buildLineKML,
     outOfChina, wgs84ToGcj02, gcj02ToWgs84, makeDispCoord,
     niceTickStep, formatCoordinate, coordinateTicks, edgeTickPositions,

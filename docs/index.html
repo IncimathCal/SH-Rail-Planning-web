@@ -2,7 +2,10 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- viewport-fit=cover（2026-11-28 iOS 刘海/灵动岛适配）：页面铺满全屏（地图 canvas
+       延伸进刘海/灵动岛/home 指示条区域，顶端不再露白条）；贴边 UI 的避让改走
+       env(safe-area-inset-*)（桌面/无刘海设备 env()＝0，零影响） -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>上海市城市轨道交通远期线网规划示意图</title>
   <meta name="description" content="上海轨道交通远期线网规划示意图：线路走向、设站与换乘节点、分段建设状态（既有 / 近期 / 远期），数据纯手工录入。">
   <meta name="color-scheme" content="light">
@@ -112,6 +115,15 @@
 
     /* ---------- HTML 中文标签叠加层（沿旧实现；opacity 渐隐渐显属高亮渐变一环） ---------- */
     #labelLayer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 1; }
+    /* --safe-* 四变量＝env() 桥（2026-11-28 iOS 安全区适配）：viewer.js 读 computed
+       值得像素偏移，读数尺刻度/读数自视口物理边缘内缩到安全区边缘（无刘海设备＝0px
+       与原行为逐位一致；SVG 不能用 padding 避让——padding 不改 SVG 内部坐标系） */
+    #coordinateRuler {
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-right: env(safe-area-inset-right, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-left: env(safe-area-inset-left, 0px);
+    }
     #coordinateRuler { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; overflow: hidden; }
     #coordinateRuler text { fill: #6b7280; font-family: var(--font-stack); font-size: 11px; font-variant-numeric: tabular-nums; }
     .map-label {
@@ -158,9 +170,15 @@
       100% { transform: scale(1); opacity: 0; }
     }
 
-    /* ---------- 唯一左侧面板：垂直占满全高（上下留 12px），宽 236×1.25≈295px ---------- */
+    /* ---------- 唯一左侧面板：垂直占满全高（上下留 12px），宽 236×1.25≈295px ----------
+       2026-11-28 iOS 安全区：top/left/bottom 三向加 env()（iPad/iPhone Max 横屏 ≥768px
+       走本桌面形态，左/下缘可能贴刘海侧与 home 条；env()＝0 设备零影响） */
     #panel {
-      position: absolute; top: 12px; left: 12px; bottom: 12px; width: 295px; z-index: 10;
+      position: absolute;
+      top: calc(12px + env(safe-area-inset-top, 0px));
+      left: calc(12px + env(safe-area-inset-left, 0px));
+      bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+      width: 295px; z-index: 10;
       display: flex; flex-direction: column;
       border: 1px solid var(--panel-border); border-radius: 14px;
       overflow: hidden;
@@ -423,11 +441,12 @@
       border: 1px solid var(--control-border); border-radius: 999px;
       padding: 2px 9px; white-space: nowrap;
     }
-    .lp-none {
-      margin-top: 14px; color: #000; font-size: 13px;
-      border: 1px dashed var(--control-border); border-radius: 10px;
-      padding: 18px 12px; text-align: center;
-    }
+    /* 相关链接区（2026-11-28：链接从 lineinfo.md 剥离为独立 links.md，用户手填）：列表
+       复用 .lineinfo-links；链接色沿用 lineinfo 的 Wikipedia 深蓝例外（唯一 <a> 蓝色口径，
+       两处同进退）。标题行＝低调小字灰（与 .lp-layer-chip 同灰阶语言）；无命中不建区块 */
+    .lp-links { margin-top: 12px; }
+    .lp-links-cap { font-size: 12px; color: #555555; margin-bottom: 2px; }
+    .lp-links a { color: #3366CC; text-decoration: underline; }
     .lp-foot { flex: none; padding: 12px 16px 14px; border-top: 1px solid var(--panel-border); }
     #btnKml {
       display: block; width: 100%; padding: 8px 0; cursor: pointer;
@@ -585,8 +604,8 @@
     .lineinfo-body ul { margin: 0 0 8px; padding-left: 18px; }
     .lineinfo-body li { margin: 2px 0; }
     /* lineinfo 链接色（2026-11-27 用户显式裁定）：Wikipedia 链接深蓝 #3366CC——全 UI
-       黑白灰钉死规则的唯一超链接例外（仅 lineinfo 内容里的 <a>，下划线保持）；其他
-       UI 元素仍黑白灰不动 */
+       黑白灰钉死规则的唯一超链接例外（lineinfo 内容里的 <a> 与线路页相关链接区 .lp-links
+       里的 <a>，两处同口径同进退，下划线保持）；其他 UI 元素仍黑白灰不动 */
     .lineinfo a { color: #3366CC; text-decoration: underline; }
     .lineinfo-links { margin: 8px 0 0; padding: 0; list-style: none; }
     .lineinfo-links li { margin: 2px 0; word-break: break-all; }
@@ -603,7 +622,11 @@
        溢出摆放（right:-17px）会被裁掉不可见。位置跟随面板（left=12+295），收起时随
        .stowed 移出屏（transition 与面板同步）。 */
     #panelCollapse {
-      position: absolute; left: 307px; top: 12px; bottom: 12px;
+      /* left＝12＋295（贴 #panel 右缘）＋同向安全区（2026-11-28 iOS 适配，随 #panel 内缩） */
+      position: absolute;
+      left: calc(307px + env(safe-area-inset-left, 0px));
+      top: calc(12px + env(safe-area-inset-top, 0px));
+      bottom: calc(12px + env(safe-area-inset-bottom, 0px));
       width: 17px; cursor: pointer; z-index: 11;
       border: 1px solid var(--panel-border); border-left: none;
       border-radius: 0 10px 10px 0;
@@ -620,7 +643,12 @@
 
     /* 收起态左缘展开条（二轮⑪：全高条形态）：上部 » 把手＋下方竖排小字底图署名 */
     #panelTab {
-      position: absolute; left: 0; top: 12px; bottom: 12px; z-index: 10;
+      /* 贴屏左缘（含横屏刘海侧安全区内缩，2026-11-28 iOS 适配） */
+      position: absolute;
+      left: env(safe-area-inset-left, 0px);
+      top: calc(12px + env(safe-area-inset-top, 0px));
+      bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+      z-index: 10;
       display: flex; flex-direction: column; align-items: center;
       border: 1px solid var(--panel-border); border-left: none;
       border-radius: 0 10px 10px 0;
@@ -639,7 +667,14 @@
     /* ---------- 右上角常驻公众号 logo（二轮⑭：真素材——品牌配色不受黑白灰约束；
        半透明常态＋hover 亮起保留，作用于真 logo）＋hover 小面板两行署名（二轮⑧）；
        2026-11-27：logo 包链接新标签页打开公众号文章页 ---------- */
-    #brandBadge { position: absolute; top: 14px; right: 14px; z-index: 10; }
+    /* 2026-11-28 iOS 安全区：logo 留在原位（top 14px）但整体下移/右移安全区——不被
+       灵动岛/刘海遮挡（env()＝0 设备零影响，桌面位次不变） */
+    #brandBadge {
+      position: absolute;
+      top: calc(14px + env(safe-area-inset-top, 0px));
+      right: calc(14px + env(safe-area-inset-right, 0px));
+      z-index: 10;
+    }
     #brandBadge a { display: block; text-decoration: none; }   /* 消除 inline 包 block img 的行高空隙 */
     #brandLogo {
       display: block; width: 46px; height: 46px;
@@ -683,7 +718,11 @@
     @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
       .maplibregl-ctrl-group { background: rgba(248,249,251,.97) !important; -webkit-backdrop-filter: none; backdrop-filter: none; box-shadow: 0 2px 10px rgba(0,0,0,.06) !important; }
     }
-    .maplibregl-ctrl-bottom-right { right: 8px; bottom: 8px; }
+    /* 右下缩放控件避让 home 指示条/横屏圆角（2026-11-28 iOS 安全区，env()＝0 零影响） */
+    .maplibregl-ctrl-bottom-right {
+      right: calc(8px + env(safe-area-inset-right, 0px));
+      bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    }
     .maplibregl-ctrl-bottom-right .maplibregl-ctrl { margin: 0; }
 
     /* ---------- 移动端（窄屏 <768px）bottom sheet（2026-11-28 适配第一批＋真机反馈修复；桌面零改动） ----------
@@ -700,6 +739,11 @@
       #panel {
         top: auto; left: 0; right: 0; bottom: 0; width: auto;
         height: 80vh; height: 80dvh;   /* 无 JS 兜底＝五分之四屏；JS 接管后 inline px 为准 */
+        /* 2026-11-28 iOS 安全区：sheet 贴底全宽，padding-bottom 让署名行/确认按钮浮在
+           home 指示条之上（玻璃底延伸到屏幕最底不留白缝）；把手可视区在 padding 之上
+           不被遮。viewer.js sheetSafeBottom 读本值（computed px）计入 hidden 档高度。
+           桌面态本规则不生效（padding-bottom＝0，桌面面板自带 12px 底边距）。 */
+        padding-bottom: env(safe-area-inset-bottom, 0px);
         border-radius: 14px 14px 0 0;
         border-left: none; border-right: none; border-bottom: none;
         transform: none;   /* 桌面 .collapsed 的 translateX 形态不适用（跨断点类清理见 viewer.js syncViewportMode） */
@@ -717,6 +761,10 @@
       }
       .sheet-handle-bar { width: 44px; height: 5px; border-radius: 2.5px; background: rgba(0, 0, 0, 0.22); }
       #panelCollapse, #panelTab { display: none !important; }
+      /* 右下缩放控件让位收起把手（2026-11-28 真机反馈）：收起档＝面板只露把手（44px，
+         sheetSnapHeights hidden 档同值）横跨全宽贴底，桌面 bottom:8px 会被挡——移动端上提至
+         把手之上，余量沿用桌面 8px（44+8=52）；桌面回归零改动（本规则只在窄屏 media 内生效） */
+      .maplibregl-ctrl-bottom-right { bottom: 52px; }
       /* 初始页二维码双列（sheet 档高度下省纵向空间；卡片自身全宽设计适配半格） */
       .splash-cards { grid-template-columns: 1fr 1fr; gap: 8px; }
       /* 经纬读数尺等图上小字同步放大一档（站名标签放大走 viewer.js labelScale 断点乘数，
@@ -815,7 +863,7 @@
       </div>
     </div>
 
-    <!-- 线路页：顶条返回＋lineinfo（无信息＝名称＋色块＋「无信息」）＋KML 下载 -->
+    <!-- 线路页：顶条返回＋lineinfo／相关链接（各有则显、无则不占空；2026-11-28 起「无信息」占位取消）＋KML 下载 -->
     <div id="viewLine" class="pview" hidden>
       <div id="lineTop">
         <button id="btnLineBack" type="button">←</button>
@@ -889,7 +937,7 @@
 <div id="betaNotice" role="dialog" aria-modal="true" aria-label="提示">
   <div id="betaNoticeCard">
     <div id="betaNoticeTitle">提示</div>
-    <div id="betaNoticeText">测试版网页，南枫线、苏淀沪线信息过时，未做移动端适配</div>
+    <div id="betaNoticeText">测试版网页，南枫线、苏淀沪线信息过时</div>
     <button id="betaNoticeConfirm" type="button">确认</button>
   </div>
 </div>

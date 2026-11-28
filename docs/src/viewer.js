@@ -181,6 +181,13 @@
 // 信息节（固定字段区→正文→相关链接区，appendLineInfo），无数据的线完全无痕。同日放宽
 // 节绑定＝「线组 id 或线 id」（VIEWER_CORE.lineInfoEntryOf 解析：先按所属线组 id 查节、
 // 查不到再落线自身 id——没建组的单线按线 id 写的介绍同样显示）。
+// 2026-11-28 增：相关链接 links.md（链接从 lineinfo.md 剥离成独立文件，用户手填——一行
+// 一链＋若干「#<线路id>」tag、一链多挂）：fetch 同回退链（net/links.md → build/net/
+// links.md，缺失/失败＝静默无链接区），解析在 VIEWER_CORE.parseLinks（URL 白名单同
+// safeLinkUrl＋HTML 注释块跳过）；线路页（openLinePage）在信息区位置（lineinfo 之后、
+// 车站列表之前）显示 lineLinksOf 命中的链接（组 id 优先、未建组单线落线自身 id——
+// lineInfoEntryOf 同语义），链接样式＝既有 Wikipedia 深蓝下划线；同日取消无 lineinfo
+// 时的「无信息」占位提示（线路名/色块/KML 照旧，链接区独立于 lineinfo 显示）。
 // 2026-11-23 省级界线底图（用户明示授权外部地理底图数据——省界属底图范畴，不受地铁数据
 // 外部源禁令约束）：长三角省级界线（沪苏浙皖 bbox 裁剪，不要全国/九段线）常驻细灰线层。
 // source 'provinces'（初始空 FC，loadProvinces 异步读仓库静态件 basemap/provinces-wgs84.json
@@ -323,6 +330,7 @@
     fadeConnPlan: [],
     connLayerIds: [],
     lineInfo: {},                 // 线组id或线id → { fields, bodyHtml, links }（lineinfo.md 解析结果；boot 填充，缺失＝空表＝一切线路无信息节）
+    links: null,                  // { items, byTag }（links.md 相关链接解析结果；2026-11-28 链接从 lineinfo.md 剥离成独立文件；boot 填充，缺失/null＝一切线路无链接区）
     // ---------- 新 UI demo 状态（会话内不持久化，刷新回初始界面；与底图/分期同策） ----------
     ui: {
       view: 'splash',             // 'splash' 初始界面 | 'main' 主界面（列表） | 'station' 车站页 | 'line' 线路页（滑动层级见 VIEW_RANK）
@@ -396,7 +404,13 @@
       try {
         lineInfo = V.parseLineInfo(await fetchText(base + '/lineinfo.md', opts));
       } catch (e) { /* 无 lineinfo.md＝一切线组无信息节 */ }
-      return { linesFC, stopsFC, base, indexOrder, lineGroups, stationGroups, lineInfo };
+      // links.md（相关链接，2026-11-28：链接从 lineinfo.md 剥离成独立文件，用户手填；
+      // 一链多 tag）：缺失/失败＝静默无链接区（同 lineinfo 口径——没写是常态不是异常）
+      let links = null;
+      try {
+        links = V.parseLinks(await fetchText(base + '/links.md', opts));
+      } catch (e) { /* 无 links.md＝一切线路无链接区 */ }
+      return { linesFC, stopsFC, base, indexOrder, lineGroups, stationGroups, lineInfo, links };
     }
     throw lastErr || new Error('net/lines.geojson 与 build/net/lines.geojson 均不可用');
   }
@@ -2061,12 +2075,24 @@
   const MQ_MOBILE = G.matchMedia ? G.matchMedia('(max-width: 767px)') : null;
   function isMobileViewport() { return !!(MQ_MOBILE && MQ_MOBILE.matches); }
   const SHEET_HANDLE_H = 44;
-  // 两档标准高度（px）：hidden＝只露把手、expanded＝视口五分之四（2026-11-28 二轮 75%→80%）；
-  // 视口高取 innerHeight（documentElement 兜底）。core 纯函数防御返回 null 时就地兜两档。
+  // iOS 安全区底高（2026-11-28 刘海/灵动岛适配）：读 #panel 的 computed padding-bottom——
+  // index.html 移动端 media 里该值＝env(safe-area-inset-bottom)（浏览器已解析为 px），
+  // 桌面态/无刘海设备＝0px。解析失败一律 0（不抬高档位、行为同旧版）。
+  function sheetSafeBottom() {
+    const panel = $('panel');
+    if (!panel || !G.getComputedStyle) return 0;
+    const v = parseFloat(G.getComputedStyle(panel).paddingBottom);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  }
+  // 两档标准高度（px）：hidden＝只露把手（含安全区底——面板贴底、把手可视区浮在 home
+  // 指示条之上，2026-11-28 iOS 适配）、expanded＝视口五分之四（面板高度语义不变，底部
+  // 内容避让由 #panel padding-bottom 承担）；视口高取 innerHeight（documentElement 兜底）。
+  // core 纯函数防御返回 null 时就地兜两档。
   function sheetHeightsNow() {
     const vh = G.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 0;
-    const h = V.sheetSnapHeights(vh, SHEET_HANDLE_H);
-    return h || { hidden: SHEET_HANDLE_H, expanded: Math.round(vh * 4 / 5) || SHEET_HANDLE_H };
+    const sab = sheetSafeBottom();
+    const h = V.sheetSnapHeights(vh, SHEET_HANDLE_H + sab);
+    return h || { hidden: SHEET_HANDLE_H + sab, expanded: Math.round(vh * 4 / 5) || SHEET_HANDLE_H + sab };
   }
   // 两档应用：写 #panel inline 高度＋data-sheetSnap（冒烟断言/CSS 钩子）；hidden ⇔
   // S.panelCollapsed 同步 true（相机让位与可见性判定消费同一「收起」语义）。instant＝直设
@@ -2367,29 +2393,55 @@
       head.appendChild(chip);
     }
     body.appendChild(head);
-    // lineinfo（既有口径 lineInfoEntryOf：先线组 id、落线自身 id）；无信息＝只显示名称＋
-    // 标志色色块＋「无信息」提示（标题区即名称与色块）
+    // lineinfo（既有口径 lineInfoEntryOf：先线组 id、落线自身 id）；2026-11-28 起「无信息」
+    // 提示取消——无 lineinfo 时不再显示占位字样（线路名/色块/KML 照旧），相关链接区独立于
+    // lineinfo 显示（见下 lp-links），两区块各自有则显、无则不占空
     const hit = V.lineInfoEntryOf(lineId, S.linesMap, S.lineGroups, S.lineInfo);
     if (hit) {
       const sec = document.createElement('div');
       sec.className = 'lineinfo';
       appendLineInfo(sec, [hit.id], null);
       body.appendChild(sec);
-    } else {
-      const tip = document.createElement('div');
-      tip.className = 'lp-none';
-      tip.textContent = '无信息';
-      body.appendChild(tip);
     }
-    // 车站列表（2026-11-27）：信息（或「无信息」提示）下方——竖直线站序样式，主线段
+    // 相关链接（2026-11-28 links.md 独立文件，用户手填——链接从 lineinfo.md 剥离）：无论
+    // 有无 lineinfo 都显示；位置＝信息区（lineinfo 之后、车站列表分割线之前）。绑定口径同
+    // lineinfo（lineLinksOf＝lineInfoEntryOf 语义：组 id 优先、未建组单线落线自身 id）。
+    // 链接样式＝既有 Wikipedia 深蓝下划线（.lp-links a，与 .lineinfo a 同例外口径）；
+    // 无命中不建区块（不占空）。URL 渲染前 safeHref 再过一道（纵深防御，同 appendLineInfo）。
+    const lineLinks = V.lineLinksOf(lineId, S.linesMap, S.lineGroups, S.links);
+    if (lineLinks.length) {
+      const box = document.createElement('div');
+      box.className = 'lp-links';
+      const cap = document.createElement('div');
+      cap.className = 'lp-links-cap';
+      cap.textContent = '相关链接';
+      const ul = document.createElement('ul');
+      ul.className = 'lineinfo-links';
+      for (const lk of lineLinks) {
+        if (!lk || !safeHref(lk.url)) continue;
+        const li = document.createElement('li');
+        const a = document.createElement('a');
+        a.textContent = typeof lk.text === 'string' && lk.text ? lk.text : lk.url;
+        a.href = lk.url;   // 解析侧 safeLinkUrl 已限 http/https/相对路径
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        li.appendChild(a);
+        ul.appendChild(li);
+      }
+      if (ul.children.length) {
+        box.append(cap, ul);
+        body.appendChild(box);
+      }
+    }
+    // 车站列表（2026-11-27）：信息（lineinfo／相关链接，各有则显）下方——竖直线站序样式，主线段
     // ＋分割线＋每条支线一段；arrow 出省端画线端箭头＋「出省」小字；接入标注（往支线去向/
     // 往主线/联络对方线）＝V.lineStopSections 模型。lineinfo 有无与本列表无耦合。
     // 2026-11-27 增：站行 transfers（换乘信息，lineOrder 序与车站页一致）。
     const stopModel = V.lineStopSections(lineId, S.linesMap, S.stops, S.lineGroups, S.groupTree, S.lineOrder);
     if (stopModel) {
-      // 信息区与车站列表之间的分割线（2026-11-27 用户需求）：lineinfo／「无信息」态
-      //（名称＋色块＋虚线提示框）与下方列表目前无缝——复用 .lp-divider（支线分割同款
-      // 灰色语言，与整体黑白灰一致）。
+      // 信息区与车站列表之间的分割线（2026-11-27 用户需求）：lineinfo／相关链接（2026-11-28
+      // 起「无信息」占位取消，两区块无则不占空）与下方列表目前无缝——复用 .lp-divider
+      //（支线分割同款灰色语言，与整体黑白灰一致）。
       const dv = document.createElement('div');
       dv.className = 'lp-divider';
       body.appendChild(dv);
@@ -2973,16 +3025,29 @@
       return;
     }
 
+    // iOS 安全区（2026-11-28 刘海/灵动岛适配）：读 index.html #coordinateRuler 的 --safe-*
+    // 变量（env() 浏览器已解析为 px；无刘海/桌面＝0，全部算式退化为旧值）。四边留白
+    // 20px 与安全区相加——刻度/读数自视口物理边缘内缩到安全区边缘（顶避灵动岛、底避
+    // home 指示条、横屏两侧避刘海侧）。SVG 不能用 CSS padding 避让（不改内部坐标系）。
+    const svgStyle = G.getComputedStyle ? G.getComputedStyle(svg) : null;
+    const safePx = (prop) => {
+      const v = parseFloat(svgStyle ? svgStyle.getPropertyValue(prop) : '');
+      return Number.isFinite(v) && v > 0 ? v : 0;
+    };
+    const sat = safePx('--safe-top'), sab = safePx('--safe-bottom');
+    const sal = safePx('--safe-left'), sar = safePx('--safe-right');
+    const padT = 20 + sat, padB = 20 + sab, padL = 20 + sal, padR = 20 + sar;
+
     // map.unproject 返回当前底图显示坐标；高德态用既有 GCJ02 逆变换恢复 WGS84 读数。
     // 每条边分别采样，旋转/倾斜后经纬度沿单边可能非单调，不能用全视口跨度估步长。
     const inverseDisplay = (S.basemap === 'gaode' || S.basemap === 'gaode-plain') ? V.gcj02ToWgs84 : (lon, lat) => [lon, lat];
     const sampleEdge = (name, count = 64) => Array.from({ length: count + 1 }, (_, i) => {
       const t = i / count;
       let point;
-      if (name === 'top') point = [20 + (width - 40) * t, 0];
-      else if (name === 'bottom') point = [20 + (width - 40) * t, height];
-      else if (name === 'left') point = [0, 20 + (height - 40) * t];
-      else point = [width, 20 + (height - 40) * t];
+      if (name === 'top') point = [padL + (width - padL - padR) * t, sat];
+      else if (name === 'bottom') point = [padL + (width - padL - padR) * t, height - sab];
+      else if (name === 'left') point = [sal, padT + (height - padT - padB) * t];
+      else point = [width - sar, padT + (height - padT - padB) * t];
       const displayed = map.unproject(point);
       const [lon, lat] = inverseDisplay(displayed.lng, displayed.lat);
       return { t, value: name === 'top' || name === 'bottom' ? lon : lat };
@@ -2996,8 +3061,8 @@
     const edgeSpan = (samples) => Math.max(...samples.map((sample) => sample.value)) - Math.min(...samples.map((sample) => sample.value));
     const longitudeSpan = Math.max(edgeSpan(edges.top), edgeSpan(edges.bottom));
     const latitudeSpan = Math.max(edgeSpan(edges.left), edgeSpan(edges.right));
-    const longitudeStep = V.niceTickStep(longitudeSpan, width - 40, 95);
-    const latitudeStep = V.niceTickStep(latitudeSpan, height - 40, 62);
+    const longitudeStep = V.niceTickStep(longitudeSpan, width - padL - padR, 95);
+    const latitudeStep = V.niceTickStep(latitudeSpan, height - padT - padB, 62);
     const longitudeTicks = V.coordinateTicks(Math.min(...longitudes), Math.max(...longitudes), longitudeStep);
     const latitudeTicks = V.coordinateTicks(Math.min(...latitudes), Math.max(...latitudes), latitudeStep);
     const labels = [];
@@ -3007,21 +3072,23 @@
       const horizontal = name === 'top' || name === 'bottom';
       const positions = V.edgeTickPositions(edges[name], values);
       for (const { value, t } of positions) {
-        const x = horizontal ? 20 + (width - 40) * t : (name === 'left' ? 0 : width);
-        const y = horizontal ? (name === 'top' ? 0 : height) : 20 + (height - 40) * t;
+        const x = horizontal ? padL + (width - padL - padR) * t : (name === 'left' ? sal : width - sar);
+        const y = horizontal ? (name === 'top' ? sat : height - sab) : padT + (height - padT - padB) * t;
         const tick = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
         if (horizontal) {
           const direction = name === 'top' ? 1 : -1;
-          tick.setAttribute('d', `M${x},${name === 'top' ? 1 : height - 1}v${direction * 5}`);
+          const edge = name === 'top' ? sat + 1 : height - sab - 1;
+          tick.setAttribute('d', `M${x},${edge}v${direction * 5}`);
           label.setAttribute('x', x);
-          label.setAttribute('y', (name === 'top' ? 1 : height - 1) + direction * 8);
+          label.setAttribute('y', edge + direction * 8);
           label.setAttribute('text-anchor', 'middle');
           label.setAttribute('dominant-baseline', direction > 0 ? 'hanging' : 'auto');
         } else {
           const direction = name === 'left' ? 1 : -1;
-          tick.setAttribute('d', `M${name === 'left' ? 1 : width - 1},${y}h${direction * 5}`);
-          label.setAttribute('x', (name === 'left' ? 1 : width - 1) + direction * 8);
+          const edge = name === 'left' ? sal + 1 : width - sar - 1;
+          tick.setAttribute('d', `M${edge},${y}h${direction * 5}`);
+          label.setAttribute('x', edge + direction * 8);
           label.setAttribute('y', y);
           label.setAttribute('text-anchor', direction > 0 ? 'start' : 'end');
           label.setAttribute('dominant-baseline', 'middle');
@@ -3303,6 +3370,7 @@
     S.linesMap = V.normalizeLines(net.linesFC);
     S.stops = V.stopList(net.stopsFC);
     S.lineInfo = net.lineInfo || {};   // 线路手填介绍（线组id → 信息；缺失＝空表＝全部无信息节）
+    S.links = net.links || null;       // 相关链接（links.md 解析结果；缺失＝null＝全部无链接区，lineLinksOf 防御直通）
     S.lineOrder = net.indexOrder || null;   // 线路列表自定义显示序（无则组内 id 升序）
     // 主支线线组归并（2026-11-22 用户裁定）：net/index.json lineGroups × line.groupId
     // 双向并集；无组信息（旧快照 @1）＝空结构，一切逐线独立＝旧行为
