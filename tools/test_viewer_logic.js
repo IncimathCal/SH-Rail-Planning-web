@@ -238,7 +238,7 @@ eq(V.matchEntries('人民', null).length, 0, 'null 索引不崩');
 
 // ---------- filterLabels（换乘组/站 z≥10，普通单线站 z≥11） ----------
 console.log('filterLabels:');
-ok(V.LABEL_ZOOM_STOP === 11 && V.LABEL_ZOOM_GROUP === 10, '门槛常量：换乘组/站 10，普通单线站 11');
+ok(V.LABEL_ZOOM_STOP === 11.5 && V.LABEL_ZOOM_GROUP === 10.5, '门槛常量：换乘组/站 10.5，普通单线站 11.5（2026-11-28 降半级）');
 
 ok(!('LABEL_CAP' in V) && V.filterLabels.length === 2 && V.visibleLabels.length === 3,
   '标签总数上限已删：无 LABEL_CAP 导出，filterLabels/visibleLabels 不再收 cap 入参（2026-11-22 真数据抓包）');
