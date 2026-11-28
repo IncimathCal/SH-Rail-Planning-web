@@ -2749,6 +2749,7 @@
   const TIMELINE_STAGE_ZH = {
     opened: '已开通',
     approved: '近期在建/获批',
+    near_term: '近期规划',
     future: '远期规划',
     corridor: '远景预控',
   };

@@ -359,7 +359,7 @@
       eventPauseId: '',
       activePlanBanner: null,
       renameAnim: null,
-      buildHighlight: null,
+      showcaseHighlight: null,
       lastBuildHiSig: '',
       l24MergeT: Infinity,
       triggeredEventIds: new Set(),
@@ -3803,12 +3803,12 @@
     'tl-pills-outer', 'tl-pills-inner', 'tl-stops', 'tl-stops-dark', 'tl-stops-big', 'tl-stops-fade',
   ];
 
-  // 兼顾站数与线路总里程的目标绘制时长（1× 秒数）：
-  // 市区密站线按每站 ~0.28s 推进；16/17/22/机场联络线等长距离大站距线路按总里程放缓，避免视口平移过快！
-  function tlBatchTargetDrawSec(segCount, totalKm) {
-    const bySeg = 1.0 + 0.28 * Math.max(1, segCount || 1);
-    const byKm = 1.4 + (Number.isFinite(totalKm) ? totalKm : 0) * 0.145;
-    return Math.max(1.8, Math.min(10.5, Math.max(bySeg, byKm)));
+  // 恒定线路里程推进速度（约 5.2 km/s @ 1×），取代按站数恒定：
+  // 无论市区密站线、大站距市域快线（16/17/22/机场联络线/南枫线等）还是无站点远景预控通道，
+  // 线头与视口均保持一致的物理移动速率，彻底杜绝大站距及无站点线路视口飞速掠过！
+  function tlBatchTargetDrawSec(_segCount, totalKm) {
+    const km = Number.isFinite(totalKm) ? Math.max(0.5, totalKm) : 5;
+    return Math.max(1.5, Math.min(14.0, 0.55 + km / 5.2));
   }
 
   // 线性巡航缓动：前 14% 柔和起速、中间 72% 纯匀速巡航、后 14% 柔和落停
@@ -3878,9 +3878,16 @@
     };
 
     // ① 按每条线切出所有连续施工/开通批次，同日多线严格逐条排开（同线主线必先于支线）；
-    //    支持历史移交段（如原5号线支线→23号线、13西延南段→29号线）。
+    //    支持历史移交段（如原5号线支线→23号线、13西延南段→29号线）；
+    //    联络线不单独排在最后队列中，而是在本线排程完成后挂载到所连后开通主线的同一时段同步出现！
     const rawBatches = [];
+    const connectorLines = [];
     for (const line of S.linesMap.values()) {
+      const isConnector = (Array.isArray(line.connects) && line.connects.length > 0) || line.layer === '联络线';
+      if (isConnector) {
+        connectorLines.push(line);
+        continue;
+      }
       const rank = V.lineLayerRank(line);
       const isLocal = rank !== 'displayOnly' && rank !== 'hidden';
       const mainId = S.lineGroups.mainOf.get(line.lineId) || line.lineId;
@@ -3895,6 +3902,7 @@
         let j = i;
         while (j + 1 < segList.length
           && Math.abs(metas[j + 1].time - metas[i].time) < 1e-4
+          && (metas[j + 1].label || '') === (metas[i].label || '')
           && Boolean(metas[j + 1].handover) === Boolean(metas[i].handover)) j++;
         const batchLen = j - i + 1;
         const prevEarlier = i > 0 && metas[i - 1].time < metas[i].time - 1e-4;
@@ -4096,6 +4104,93 @@
             endCoord: lastCoords[lastCoords.length - 1],
             stops: batchStops,
             labelReach,
+          });
+        }
+      }
+    }
+    // 联络线跟随所属主线同步出现（取所连各主线邻接区段中较晚开通者的批次时段，不单独占队也不抢镜头）
+    if (connectorLines.length) {
+      const segsByLineId = new Map();
+      const segsByMainId = new Map();
+      for (const s of segsOut) {
+        if (!segsByLineId.has(s.lineId)) segsByLineId.set(s.lineId, []);
+        segsByLineId.get(s.lineId).push(s);
+        if (!segsByMainId.has(s.mainId)) segsByMainId.set(s.mainId, []);
+        segsByMainId.get(s.mainId).push(s);
+      }
+      const batchByKey = new Map();
+      for (const b of batchesOut) batchByKey.set(b.key, b);
+      const nearestSegOf = (pool, midPt) => {
+        if (!pool || !pool.length) return null;
+        let best = pool[0], bestD = Infinity;
+        for (const cand of pool) {
+          const cs = cand.coords;
+          if (!cs || !cs.length) continue;
+          const p0 = cs[0], p1 = cs[cs.length - 1], pm = cs[cs.length >> 1];
+          const d = Math.min(
+            Math.hypot(p0[0] - midPt[0], p0[1] - midPt[1]),
+            Math.hypot(p1[0] - midPt[0], p1[1] - midPt[1]),
+            Math.hypot(pm[0] - midPt[0], pm[1] - midPt[1])
+          );
+          if (d < bestD) { bestD = d; best = cand; }
+        }
+        return best;
+      };
+      for (const conn of connectorLines) {
+        const connects = Array.isArray(conn.connects) ? conn.connects : [];
+        const dash = V.lineDashed(conn);
+        const rank = V.lineLayerRank(conn);
+        const isLocal = rank !== 'displayOnly' && rank !== 'hidden';
+        for (const sg of conn.segments) {
+          const coords = [];
+          for (const pt of sg.coords) {
+            if (pt && Number.isFinite(pt[0]) && Number.isFinite(pt[1])) coords.push(dc(pt[0], pt[1]));
+          }
+          if (coords.length < 2) continue;
+          const midPt = coords[coords.length >> 1];
+          let hostSeg = null;
+          for (const cid of connects) {
+            const cMain = (S.lineGroups && S.lineGroups.mainOf.get(cid)) || cid;
+            const pool = segsByLineId.get(cid) || segsByMainId.get(cMain) || [];
+            const ns = nearestSegOf(pool, midPt);
+            if (ns && (!hostSeg || ns.endTime > hostSeg.endTime)) hostSeg = ns;
+          }
+          const hostBatch = hostSeg ? batchByKey.get(hostSeg.batchKey) : null;
+          const startTime = hostBatch ? hostBatch.startTime : (hostSeg ? hostSeg.startTime : 2035.0);
+          const endTime = hostBatch ? hostBatch.drawEndTime : (hostSeg ? hostSeg.endTime : 2035.1);
+          const openTime = hostSeg ? hostSeg.openTime : 2035.0;
+          const approveTime = hostSeg ? hostSeg.approveTime : null;
+          const buildTime = hostSeg ? hostSeg.buildTime : null;
+          const cumDist = V.polylineCumDistKm(coords);
+          const totalKm = cumDist[cumDist.length - 1] || 0;
+          segOpenByLineIdx.set(conn.lineId + ':' + sg.segIndex, startTime);
+          const stStart = matchNearestStop(conn.lineId, coords[0]);
+          const stEnd = matchNearestStop(conn.lineId, coords[coords.length - 1]);
+          const fadeS = Math.max(0.0005, Math.min(0.012, (endTime - startTime) * 0.25));
+          if (stStart) recordStopReachSid(stStart.sid, endTime, null, fadeS);
+          if (stEnd) recordStopReachSid(stEnd.sid, endTime, null, fadeS);
+          segsOut.push({
+            batchKey: hostSeg ? hostSeg.batchKey : (conn.lineId + ':conn'),
+            lineId: conn.lineId,
+            mainId: conn.lineId,
+            segIndex: sg.segIndex,
+            color: conn.color || '#888888',
+            dash,
+            isLocal,
+            isConnector: true,
+            stage: hostSeg ? hostSeg.stage : 'future',
+            sharedOffset: Number.isFinite(sg.sharedOffset) ? sg.sharedOffset : 0,
+            openTime,
+            approveTime,
+            approveText: hostSeg ? hostSeg.approveText : '',
+            buildTime,
+            buildText: hostSeg ? hostSeg.buildText : '',
+            handover: null,
+            startTime,
+            endTime,
+            coords,
+            cumDist,
+            totalKm,
           });
         }
       }
@@ -4846,13 +4941,14 @@
     const openCy = (h + pad.top - pad.bottom) / 2 + nsBiasY;
     return { pad, nsBiasY, offset, closeZoom, openCx, openCy };
   }
-  function tlBuildEventBbox(evTime) {
+  function tlShowcaseEventBbox(evType, evTime) {
     const segs = S.tl.segments || [];
     let bb = null;
     for (let i = 0; i < segs.length; i++) {
       const sg = segs[i];
-      if (!sg.isLocal || !Number.isFinite(sg.buildTime)) continue;
-      if (Math.abs(sg.buildTime - evTime) > 0.12) continue;
+      if (!sg.isLocal) continue;
+      const cmpT = evType === 'plan' ? sg.approveTime : sg.buildTime;
+      if (!Number.isFinite(cmpT) || Math.abs(cmpT - evTime) > 0.12) continue;
       for (let k = 0; k < sg.coords.length; k++) {
         const pt = sg.coords[k];
         if (!pt || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
@@ -4866,22 +4962,21 @@
       }
     }
     if (!bb) return null;
-    // 确保拉远全貌视角，至少留出适度地理呼吸范围
-    const dx = Math.max(0.04, (bb[2] - bb[0]) * 0.12);
-    const dy = Math.max(0.03, (bb[3] - bb[1]) * 0.12);
+    const dx = Math.max(0.05, (bb[2] - bb[0]) * 0.14);
+    const dy = Math.max(0.04, (bb[3] - bb[1]) * 0.14);
     return [bb[0] - dx, bb[1] - dy, bb[2] + dx, bb[3] + dy];
   }
-  function panToBuildOverview(evTime) {
+  function panToShowcaseOverview(evType, evTime) {
     if (!S.map) return 0;
-    const bb = tlBuildEventBbox(evTime);
+    const bb = tlShowcaseEventBbox(evType, evTime);
     if (!bb) return 0;
     const pad = tlCameraPadding();
     let cam = null;
     try {
-      cam = S.map.cameraForBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: pad, maxZoom: 11.4 });
+      cam = S.map.cameraForBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: pad, maxZoom: 11.2 });
     } catch (e) { cam = null; }
     if (!cam || !cam.center) return 0;
-    const targetZoom = Math.max(9.4, Math.min(11.4, Number.isFinite(cam.zoom) ? cam.zoom : 10.8));
+    const targetZoom = Math.max(9.2, Math.min(11.2, Number.isFinite(cam.zoom) ? cam.zoom : 10.6));
     let distKm = 12;
     try {
       const c = S.map.getCenter();
@@ -4899,6 +4994,11 @@
       easing: smoothLinearCruise,
     });
     return panDur;
+  }
+  function resetShowcaseFlashPaint() {
+    if (!S.map) return;
+    if (S.map.getLayer('tl-build-hi')) S.map.setPaintProperty('tl-build-hi', 'line-opacity', 0.92);
+    if (S.map.getLayer('tl-build-hi-glow')) S.map.setPaintProperty('tl-build-hi-glow', 'line-opacity', 0.30);
   }
   // 切换至下一条线路前的「先就位再开行」视口门控：先把目标线路起点平稳平移到可见视口中央，
   // 返回需要等待相机就位的时长（ms）；若起点已在可见中心附近则返回 0 立即开行。
@@ -5022,7 +5122,9 @@
     const approvedFeats = [];
     const buildingFeats = [];
     const buildHiFeats = [];
-    const buildHiTime = (S.tl.buildHighlight && Number.isFinite(S.tl.buildHighlight.time)) ? S.tl.buildHighlight.time : null;
+    const shHi = S.tl.showcaseHighlight;
+    const shHiType = shHi ? shHi.type : '';
+    const shHiTime = (shHi && Number.isFinite(shHi.time)) ? shHi.time : null;
     let liveKm = 0;
     let approveKm = 0;
     let buildKm = 0;
@@ -5047,13 +5149,16 @@
       const sg = segs[i];
       const eff = effOfSeg(sg);
       if (sg.startTime > t) {
-        // 线路开工拉远展示态：高亮该开工事件对应的新动工线路全貌（即使「批复/在建」临时关闭也清晰展现）
-        if (buildHiTime != null && sg.isLocal && Number.isFinite(sg.buildTime) && Math.abs(sg.buildTime - buildHiTime) <= 0.12) {
-          buildHiFeats.push({
-            type: 'Feature',
-            geometry: { type: 'LineString', coordinates: sg.coords },
-            properties: { color: eff.color, sharedOffset: sg.sharedOffset },
-          });
+        // 线路批复 / 线路开工拉远闪动展示态：高亮对应新批复或新开工线路全貌（即使「批复/在建」关闭也清晰展现）
+        if (shHiTime != null && sg.isLocal) {
+          const cmpT = shHiType === 'plan' ? sg.approveTime : sg.buildTime;
+          if (Number.isFinite(cmpT) && Math.abs(cmpT - shHiTime) <= 0.12) {
+            buildHiFeats.push({
+              type: 'Feature',
+              geometry: { type: 'LineString', coordinates: sg.coords },
+              properties: { color: eff.color, sharedOffset: sg.sharedOffset },
+            });
+          }
         }
         // 严格四态演进：未批复不展示 → 已批复待开工浅色预显（tl-approved）→ 已开工虚线展示（tl-building）→ 已开通实线
         if (S.tl.buildOn && sg.isLocal) {
@@ -5082,7 +5187,7 @@
         handoverSwitched += eff.switched;
         if (sg.isLocal) {
           liveKm += sg.totalKm;
-          liveLines.add(eff.mainId);
+          if (!sg.isConnector) liveLines.add(eff.mainId);
         }
         doneFeats.push({
           type: 'Feature',
@@ -5093,13 +5198,13 @@
         const segDur = Math.max(1e-6, sg.endTime - sg.startTime);
         const rawP = Math.max(0, Math.min(1, (t - sg.startTime) / segDur));
         const sliced = V.slicePolylineByRatio(sg.coords, sg.cumDist, sg.totalKm, rawP);
-        if (sg.isLocal && (!activeBatch || sg.batchKey === activeBatch.key)) {
+        if (sg.isLocal && !sg.isConnector && (!activeBatch || sg.batchKey === activeBatch.key)) {
           activeTipCoord = (sliced && sliced.tip) ? sliced.tip : sg.coords[0];
         }
         if (sliced && sliced.coords.length >= 2) {
           if (sg.isLocal) {
             liveKm += sg.totalKm * rawP;
-            liveLines.add(eff.mainId);
+            if (!sg.isConnector) liveLines.add(eff.mainId);
           }
           activeFeats.push({
             type: 'Feature',
@@ -5139,7 +5244,7 @@
       S.tl.lastBuildSig = buildSig;
       S.map.getSource('tl-building').setData({ type: 'FeatureCollection', features: buildingFeats });
     }
-    const buildHiSig = (buildHiTime != null ? String(buildHiTime) : '') + ':' + buildHiFeats.length;
+    const buildHiSig = (shHiTime != null ? (shHiType + ':' + shHiTime) : '') + ':' + buildHiFeats.length;
     if (force || buildHiSig !== S.tl.lastBuildHiSig) {
       S.tl.lastBuildHiSig = buildHiSig;
       if (S.map.getSource('tl-build-hi')) {
@@ -5209,13 +5314,15 @@
     }
     S.map.getSource('tl-stops-fade').setData({ type: 'FeatureCollection', features: fadeFeats });
 
-    // 更新 HUD 实时数字、大字真实日期（未审批远期/远景不编造具体年份）、在建里程、阶段徽章、大事件/当前车站字幕与滑块
+    // 更新 HUD 实时数字、大字真实日期（无明确时间表近期/远期/远景不编造具体年份）、在建里程、阶段徽章、大事件/当前车站字幕与滑块
     const dtEl = $('tlDateLabel');
     if (dtEl) {
-      if ((activeBatch && activeBatch.stage === 'corridor') || (!activeBatch && displayT >= 2037.5)) {
+      if ((activeBatch && activeBatch.stage === 'corridor') || (!activeBatch && displayT >= 2038.2)) {
         dtEl.textContent = '远景预控';
-      } else if ((activeBatch && activeBatch.stage === 'future') || (!activeBatch && displayT >= 2033.2)) {
+      } else if ((activeBatch && activeBatch.stage === 'future') || (!activeBatch && displayT >= 2034.85)) {
         dtEl.textContent = '远期规划';
+      } else if ((activeBatch && activeBatch.stage === 'near_term') || (!activeBatch && displayT >= 2033.2)) {
+        dtEl.textContent = '近期规划';
       } else {
         dtEl.textContent = V.formatDecimalYear(displayT);
       }
@@ -5239,7 +5346,7 @@
 
     const stage = activeBatch
       ? (activeBatch.stage || 'approved')
-      : (displayT < 2026.5 ? 'opened' : (displayT < 2033.1 ? 'approved' : (displayT < 2036.8 ? 'future' : 'corridor')));
+      : (displayT < 2026.5 ? 'opened' : (displayT < 2033.2 ? 'approved' : (displayT < 2034.85 ? 'near_term' : (displayT < 2038.2 ? 'future' : 'corridor'))));
     const sb = $('tlStageBadge');
     if (sb) {
       sb.textContent = V.TIMELINE_STAGE_ZH[stage] || '规划';
@@ -5393,12 +5500,13 @@
         S.tl.eventPauseUntilMs = 0;
         S.tl.eventPauseId = '';
         S.tl.activePlanBanner = (ev.type === 'plan' || ev.type === 'rename' || ev.type === 'station' || ev.type === 'build') ? ev : null;
-        S.tl.buildHighlight = ev.type === 'build' ? { time: ev.time } : null;
+        S.tl.showcaseHighlight = (ev.type === 'build' || ev.type === 'plan') ? { type: ev.type, time: ev.time, panDoneMs: 0, endMs: 0 } : null;
+        resetShowcaseFlashPaint();
         pruneTriggeredEventsAfter(ev.time);
         const ab = timelineActiveBatchAt(targetT);
         S.tl.arrivedBatchKey = ab ? ab.key : '';
-        if (S.tl.followOn && ev.type === 'build' && S.map) {
-          panToBuildOverview(ev.time);
+        if (S.tl.followOn && (ev.type === 'build' || ev.type === 'plan') && S.map) {
+          panToShowcaseOverview(ev.type, ev.time);
           renderTimelineFrame(true, 0, true);
         } else if (S.tl.followOn && Array.isArray(ev.coord) && ev.coord.length >= 2 && S.map) {
           const pad = tlCameraPadding();
@@ -5464,6 +5572,20 @@
     // 更名事件到达后先让老站名渐隐退场、停顿一拍、再突出浮现新站名并同步切换换乘图标！
     if (S.tl.eventPauseUntilMs > 0) {
       if (nowMs < S.tl.eventPauseUntilMs) {
+        if (S.tl.showcaseHighlight && S.map) {
+          const sh = S.tl.showcaseHighlight;
+          if (nowMs < sh.panDoneMs) {
+            if (S.map.getLayer('tl-build-hi')) S.map.setPaintProperty('tl-build-hi', 'line-opacity', 0.72);
+            if (S.map.getLayer('tl-build-hi-glow')) S.map.setPaintProperty('tl-build-hi-glow', 'line-opacity', 0.20);
+          } else {
+            // 镜头拉远就位后，让新批复 / 新开工线路清脆闪动 3 个脉冲，醒目呈现覆盖范围
+            const dwellTotal = Math.max(400, sh.endMs - sh.panDoneMs);
+            const frac = Math.max(0, Math.min(1, (nowMs - sh.panDoneMs) / dwellTotal));
+            const pulse = 0.5 - 0.5 * Math.cos(frac * Math.PI * 6);
+            if (S.map.getLayer('tl-build-hi')) S.map.setPaintProperty('tl-build-hi', 'line-opacity', 0.18 + 0.82 * pulse);
+            if (S.map.getLayer('tl-build-hi-glow')) S.map.setPaintProperty('tl-build-hi-glow', 'line-opacity', 0.06 + 0.56 * pulse);
+          }
+        }
         if (S.tl.renameAnim) {
           if (!S.tl.renameAnim.swapped && nowMs >= S.tl.renameAnim.swapMs) {
             S.tl.renameAnim.swapped = true;
@@ -5478,14 +5600,15 @@
         return;
       }
       const hadRename = Boolean(S.tl.renameAnim);
-      const hadBuildHi = Boolean(S.tl.buildHighlight);
+      const hadShowcase = Boolean(S.tl.showcaseHighlight);
       S.tl.eventPanUntilMs = 0;
       S.tl.eventPauseUntilMs = 0;
       S.tl.eventPauseId = '';
       S.tl.activePlanBanner = null;
       S.tl.renameAnim = null;
-      S.tl.buildHighlight = null;
-      if (hadRename || hadBuildHi) renderTimelineFrame(true, 0, true);
+      S.tl.showcaseHighlight = null;
+      if (hadShowcase) resetShowcaseFlashPaint();
+      if (hadRename || hadShowcase) renderTimelineFrame(true, 0, true);
       dt = 0.016;
     }
 
@@ -5541,30 +5664,30 @@
       if (!ev.pauseMs || ev.pauseMs <= 0) continue;
       if (S.tl.triggeredEventIds.has(ev.id)) continue;
       const isCloseup = (ev.type === 'rename' || ev.type === 'station') && Array.isArray(ev.coord) && ev.coord.length >= 2;
-      const isBuildShowcase = ev.type === 'build';
+      const isShowcase = ev.type === 'build' || ev.type === 'plan';
       const prevCmp = ev.useSlotTime ? ct : prevDisp;
       const nextCmp = ev.useSlotTime ? nextCt : nextDisp;
-      const minWin = (isCloseup || isBuildShowcase) ? (prevCmp - 0.55) : (prevCmp - 0.004);
+      const minWin = (isCloseup || isShowcase) ? (prevCmp - 0.55) : (prevCmp - 0.004);
       if (ev.time > minWin && ev.time <= nextCmp + 0.004) {
-        // 正在画线过程中：更名/暂缓站开通/线路开工不丢弃，顺延到当前线画完立刻拉镜头展示
-        if (ev.type !== 'plan' && activeBatch && ct < activeBatch.drawEndTime) {
-          if (!isCloseup && !isBuildShowcase) S.tl.triggeredEventIds.add(ev.id);
+        // 正在画线过程中：更名/暂缓站开通/批复/开工不丢弃，顺延到当前线画完立刻拉远闪动或拉近特写
+        if (activeBatch && ct < activeBatch.drawEndTime) {
+          if (!isCloseup && !isShowcase) S.tl.triggeredEventIds.add(ev.id);
           continue;
         }
         S.tl.triggeredEventIds.add(ev.id);
         const pauseScale = Math.sqrt(Math.max(0.5, speed));
         const dwellMs = ev.type === 'plan'
-          ? Math.round(Math.max(1200, ev.pauseMs / pauseScale))
+          ? Math.round(Math.max(1650, ev.pauseMs / pauseScale))
           : (ev.type === 'rename'
             ? Math.round(Math.max(1850, (ev.pauseMs || 2200) / pauseScale))
-            : (isBuildShowcase
-              ? Math.round(Math.max(1150, (ev.pauseMs || 1300) / pauseScale))
+            : (ev.type === 'build'
+              ? Math.round(Math.max(1350, (ev.pauseMs || 1450) / pauseScale))
               : (isCloseup
                 ? Math.round(Math.max(950, ev.pauseMs / pauseScale))
                 : Math.round(Math.max(450, ev.pauseMs / pauseScale)))));
         let panDur = 0;
-        if (isBuildShowcase && S.tl.followOn && S.map && nowMs >= (S.tl.userPanUntilMs || 0)) {
-          panDur = panToBuildOverview(ev.time);
+        if (isShowcase && S.tl.followOn && S.map && nowMs >= (S.tl.userPanUntilMs || 0)) {
+          panDur = panToShowcaseOverview(ev.type, ev.time);
           S.tl.lastFollowSig = '';
           S.tl.arrivedBatchKey = '';
         } else if (isCloseup && S.tl.followOn && S.map && nowMs >= (S.tl.userPanUntilMs || 0)) {
@@ -5605,8 +5728,10 @@
         S.tl.eventPauseId = ev.id;
         S.tl.eventPanUntilMs = panDur > 0 ? (nowMs + panDur) : 0;
         S.tl.eventPauseUntilMs = nowMs + panDur + dwellMs;
-        S.tl.activePlanBanner = (ev.type === 'plan' || isCloseup || isBuildShowcase) ? ev : null;
-        S.tl.buildHighlight = isBuildShowcase ? { time: ev.time } : null;
+        S.tl.activePlanBanner = (isShowcase || isCloseup) ? ev : null;
+        S.tl.showcaseHighlight = isShowcase
+          ? { type: ev.type, time: ev.time, panDoneMs: nowMs + panDur, endMs: nowMs + panDur + dwellMs }
+          : null;
         if (ev.type === 'rename') {
           const rkKey = resolveRenameLabelKey(ev);
           const panDoneMs = nowMs + panDur;
@@ -5747,7 +5872,8 @@
     S.tl.eventPauseUntilMs = 0;
     S.tl.eventPauseId = '';
     S.tl.activePlanBanner = null;
-    S.tl.buildHighlight = null;
+    S.tl.showcaseHighlight = null;
+    resetShowcaseFlashPaint();
     pruneTriggeredEventsAfter(timelineDisplayTimeAt(S.tl.currentTime));
     syncTimelineButtons();
     renderTimelineFrame(true);
@@ -5765,7 +5891,8 @@
     S.tl.eventPanUntilMs = 0;
     S.tl.eventPauseUntilMs = 0;
     S.tl.activePlanBanner = null;
-    S.tl.buildHighlight = null;
+    S.tl.showcaseHighlight = null;
+    resetShowcaseFlashPaint();
     if (S.tl.rafId) { G.cancelAnimationFrame(S.tl.rafId); S.tl.rafId = 0; }
     setTimelineLayersVisible(false);
     setNormalLayersVisible(true);
@@ -5817,7 +5944,8 @@
       S.tl.eventPauseId = '';
       S.tl.activePlanBanner = null;
       S.tl.renameAnim = null;
-      S.tl.buildHighlight = null;
+      S.tl.showcaseHighlight = null;
+    resetShowcaseFlashPaint();
       S.tl.triggeredEventIds = new Set();
       S.tl.lastFollowSig = '';
       syncTimelineButtons();
@@ -5879,7 +6007,8 @@
         S.tl.eventPauseId = '';
         S.tl.activePlanBanner = null;
         S.tl.renameAnim = null;
-        S.tl.buildHighlight = null;
+        S.tl.showcaseHighlight = null;
+    resetShowcaseFlashPaint();
         pruneTriggeredEventsAfter(timelineDisplayTimeAt(S.tl.currentTime));
         const ab = timelineActiveBatchAt(S.tl.currentTime);
         S.tl.arrivedBatchKey = ab ? ab.key : '';
@@ -5899,7 +6028,8 @@
           S.tl.eventPauseId = '';
           S.tl.activePlanBanner = null;
           S.tl.renameAnim = null;
-          S.tl.buildHighlight = null;
+          S.tl.showcaseHighlight = null;
+    resetShowcaseFlashPaint();
           pruneTriggeredEventsAfter(timelineDisplayTimeAt(S.tl.currentTime));
           const ab = timelineActiveBatchAt(S.tl.currentTime);
           S.tl.arrivedBatchKey = ab ? ab.key : '';

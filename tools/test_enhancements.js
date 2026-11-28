@@ -105,9 +105,25 @@ assert.strictEqual(seg26.approveTime, null, 'Unapproved Line 26 must not have an
 assert.strictEqual(seg26.buildTime, null, 'Unstarted Line 26 must not have a buildTime');
 assert(seg26.time > seg20Mid.time, 'Line 26 must come strictly after all under-construction lines (20中段)');
 
-// Plan approvals, deferred stations, and chronological key events contracts
-assert(Array.isArray(timeline.planApprovals) && timeline.planApprovals.length >= 6, 'Should include all major construction plan approvals');
+// Plan approvals, near-term undated zone, deferred stations, and chronological key events contracts
+assert(Array.isArray(timeline.planApprovals) && timeline.planApprovals.length >= 7, 'Should include all major construction plan approvals including 3rd-round re-adjustment');
 assert(timeline.planApprovals.some((p) => p.title === '《上海轨道交通第三期建设规划》（2018年~2023年）'), 'Should include 3rd construction plan banner title');
+assert(timeline.planApprovals.some((p) => p.title === '《上海轨道交通第三期建设规划再调整》（2018年~2032年）'), 'Should include 3rd construction plan re-adjustment (2018-2032)');
+// Near-term undated planning zone strictly between 2032-12 (2032.95) and 远期规划 (2035.0)
+for (const [lid, si, desc] of [
+  ['l0016', 30, '2号线南延伸（T1/T2—T3）'],
+  ['l0056', 22, '嘉闵线南延伸（银都路—旗忠网球中心）'],
+  ['l0064', 2, '浦南线（上海科技馆—国际创新协同区）'],
+  ['l0051', 4, '奉贤线一期'],
+  ['l0062', 0, '南枫线 亭林—四团段'],
+  ['l0062', 7, '南枫线 亭林—省界段'],
+  ['l0065', 5, '南枫线 四团—滴水湖北段'],
+]) {
+  const sm = V.segmentOpenMeta(timeline, lid, si);
+  assert.strictEqual(sm.stage, 'near_term', `${desc} should be in near_term stage`);
+  assert.strictEqual(sm.open, '近期规划', `${desc} should display 近期规划`);
+  assert(sm.time > seg20Mid.time && sm.time < seg26.time, `${desc} (${sm.time}) must be strictly between 2032-12 and 远期规划`);
+}
 assert(timeline.deferredStations && timeline.deferredStations['l0030-s08'] && timeline.deferredStations['l0026-s06'] && timeline.deferredStations['l0013-s32'],
   'Should include real deferred stations (14号线龙居路, 11号线陈翔公路, 15号线桂林路)');
 // Line 19 north先行段 (2027-07) with 4 deferred intermediate stations (泰和路/兰岗路/铁山路/铁通路)
