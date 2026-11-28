@@ -679,35 +679,37 @@
     .maplibregl-ctrl-bottom-right { right: 8px; bottom: 8px; }
     .maplibregl-ctrl-bottom-right .maplibregl-ctrl { margin: 0; }
 
-    /* ---------- 移动端（窄屏 <768px）bottom sheet（2026-11-28 适配第一批；桌面零改动） ----------
-       左侧 295px 面板在窄屏改全宽贴底三档（隐藏[只露把手]/半屏[默认]/全屏），档高由 viewer.js
-       applySheetSnap 写 inline px 接管（此处 50dvh＝无 JS 兜底与初始帧）；拖拽（pointer 事件挂
-       把手，.dragging 禁 transition、松手按 V.nearestSheetSnap 吸附最近档）。桌面抽屉把手/
-       展开条在移动端退役（#panelCollapse/#panelTab display none，收展语义由 sheet 把手承担，
-       高亮状态不受影响——只动面板高度不碰 S.focus/分期）。断点 768 与 viewer_core
-       MOBILE_BREAKPOINT 同值（768px 平板竖屏归桌面）。 */
+    /* ---------- 移动端（窄屏 <768px）bottom sheet（2026-11-28 适配第一批＋真机反馈修复；桌面零改动） ----------
+       左侧 295px 面板在窄屏改全宽贴底两档（隐藏[只露把手]/四分之三屏[默认]——2026-11-28 真机
+       反馈改版，半屏/全屏退役），档高由 viewer.js applySheetSnap 写 inline px 接管（此处 75dvh＝
+       无 JS 兜底与初始帧）；拖拽（touch＋pointer 双轨挂把手，.dragging 禁 transition、松手按
+       V.nearestSheetSnap 吸附最近档；touchstart/touchmove {passive:false}＋preventDefault＝真机
+       滚动阻止主防线）。桌面抽屉把手/展开条在移动端退役（#panelCollapse/#panelTab display
+       none，收展语义由 sheet 把手承担，高亮状态不受影响——只动面板高度不碰 S.focus/分期）。
+       断点 768 与 viewer_core MOBILE_BREAKPOINT 同值（768px 平板竖屏归桌面）。 */
     #sheetHandle { display: none; }   /* 桌面不显示（移动端 media 内亮出） */
     @media (max-width: 767px) {
       #panel {
         top: auto; left: 0; right: 0; bottom: 0; width: auto;
-        height: 50vh; height: 50dvh;   /* 无 JS 兜底＝半屏；JS 接管后 inline px 为准 */
+        height: 75vh; height: 75dvh;   /* 无 JS 兜底＝四分之三屏；JS 接管后 inline px 为准 */
         border-radius: 14px 14px 0 0;
         border-left: none; border-right: none; border-bottom: none;
         transform: none;   /* 桌面 .collapsed 的 translateX 形态不适用（跨断点类清理见 viewer.js syncViewportMode） */
-        transition: height .3s ease;   /* 三档吸附过渡；拖拽中 .dragging／直设 .noanim 禁 */
+        transition: height .3s ease;   /* 两档吸附过渡；拖拽中 .dragging／直设 .noanim 禁 */
       }
       #panel.collapsed { transform: none; }
       #panel.dragging, #panel.noanim { transition: none; }
-      /* 把手：全宽触摸热区 30px（≥拇指可命中）＋视觉短条；touch-action none＝拖拽独占触摸，
-         防浏览器把手势当页面滚动（面板内容滚动不受影响） */
+      /* 把手：全宽触摸热区 44px（2026-11-28 真机反馈 30→44＝Apple HIG 最小触摸目标；视觉
+         短条居中，上下留白均可命中——「点高点到地图」的热区外沿上移）＋视觉短条；
+         touch-action none＝拖拽独占触摸的辅助防线（真机主防线＝viewer.js touch 轨 preventDefault） */
       #sheetHandle {
         display: flex; flex: none;
         align-items: center; justify-content: center;
-        height: 30px; cursor: grab; touch-action: none; user-select: none;
+        height: 44px; cursor: grab; touch-action: none; user-select: none;
       }
       .sheet-handle-bar { width: 44px; height: 5px; border-radius: 2.5px; background: rgba(0, 0, 0, 0.22); }
       #panelCollapse, #panelTab { display: none !important; }
-      /* 初始页二维码双列（半屏高度下省纵向空间；卡片自身全宽设计适配半格） */
+      /* 初始页二维码双列（sheet 档高度下省纵向空间；卡片自身全宽设计适配半格） */
       .splash-cards { grid-template-columns: 1fr 1fr; gap: 8px; }
       /* 经纬读数尺等图上小字同步放大一档（站名标签放大走 viewer.js labelScale 断点乘数，
          此处只管 SVG 静态字号） */

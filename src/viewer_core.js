@@ -146,25 +146,40 @@
   // 站名标签移动端整体放大一档的乘数（复用 labelScale 机制：zf = labelScale(zoom) × 本乘数；
   // 12px→15px、13px→16.25px）。桌面端不乘（桌面回归零改动）。
   const MOBILE_LABEL_SCALE = 1.25;
-  // bottom sheet 三档标准高度（px）：hidden＝只露把手（把手条高度，胶水层 CSS 常量同值）；
-  // half＝视口一半（四舍五入）；full＝整个视口高。viewportH/handleH 非法输入返回 null（调用方兜底）。
+  // bottom sheet 两档标准高度（px，2026-11-28 真机反馈改版：四分之三屏[默认]＋收起，半屏/
+  // 全屏退役）：hidden＝只露把手（把手条高度，胶水层 CSS 常量同值）；expanded＝视口四分之
+  // 三（四舍五入）。viewportH/handleH 非法输入返回 null（调用方兜底）。
   function sheetSnapHeights(viewportH, handleH) {
     if (!Number.isFinite(viewportH) || viewportH <= 0 || !Number.isFinite(handleH) || handleH <= 0) return null;
-    return { hidden: handleH, half: Math.round(viewportH / 2), full: Math.round(viewportH) };
+    return { hidden: handleH, expanded: Math.round(viewportH * 3 / 4) };
   }
-  // 松手吸附：取距当前高度最近的档（等距平手按 hidden→half→full 定义序先到先得——
-  // 下拉略过半即吸 half 的手感由「就近」保证，平手罕见不刻意偏置）。heights 缺档跳过、
-  // 全缺/非法高度返回 null（调用方保持原档）。
+  // 松手吸附：取距当前高度最近的档（等距平手按 hidden→expanded 定义序先到先得）。heights
+  // 缺档跳过、全缺/非法高度返回 null（调用方保持原档）。
   function nearestSheetSnap(height, heights) {
     if (!Number.isFinite(height) || !heights) return null;
     let best = null, bestDist = Infinity;
-    for (const key of ['hidden', 'half', 'full']) {
+    for (const key of ['hidden', 'expanded']) {
       const v = heights[key];
       if (!Number.isFinite(v)) continue;
       const d = Math.abs(height - v);
       if (d < bestDist) { bestDist = d; best = key; }
     }
     return best;
+  }
+  // 移动端单击命中容差（CSS px，2026-11-28 真机反馈：手指点线路太难命中）：仅移动端把
+  // queryRenderedFeatures 的点查放宽为 ±buffer 盒查（手指命中精度差，取 12——任务书「约
+  // ±10-12px」上限档，站圈半径 5.5-7.5px 之上再给 4-6px 余量）；桌面保持点查不变。
+  const HIT_BUFFER_MOBILE = 12;
+  // 点查几何 → 盒查几何：[x, y] 数组或 maplibre PointLike {x, y}（onMapClick 的 e.point 是
+  //后者、胶水层 hoverPoint 是前者，两形态都收）→ [[x-b, y-b], [x+b, y+b]]（buffer=0 得零
+  // 尺寸盒＝等价点查）。非法点（缺坐标/非有限数）返回 null（调用方按无命中处理）。
+  function hitQueryBox(point, buffer) {
+    // Number(null)=0 的坑：null/undefined 先归 NaN（缺坐标一律非法），别喂给 Number
+    const x = Number(Array.isArray(point) ? point[0] : (point ? point.x : undefined));
+    const y = Number(Array.isArray(point) ? point[1] : (point ? point.y : undefined));
+    const b = Number(buffer);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(b) || b < 0) return null;
+    return [[x - b, y - b], [x + b, y + b]];
   }
 
   // ---------- GCJ02 偏移（测试阶段底图·高德对齐用） ----------
@@ -2582,6 +2597,7 @@
     LABEL_ZOOM_GROUP, LABEL_ZOOM_STOP,
     SIZE_ZOOM_MIN, SIZE_ZOOM_HOLD, SIZE_SCALE_EXP, labelScale,
     MOBILE_BREAKPOINT, viewportIsMobile, MOBILE_LABEL_SCALE, sheetSnapHeights, nearestSheetSnap,
+    HIT_BUFFER_MOBILE, hitQueryBox,
     UNNAMED_STOP_ZH, stopDisplayName, formatTerminals,
     xmlEscape, normalizeHex, hexToKmlColor,
     normalizeLines, lineBboxOf, stopList, buildStopView,

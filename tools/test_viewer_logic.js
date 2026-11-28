@@ -755,8 +755,9 @@ eq(V.labelScale(9), 0.25, 'labelScale(9)＝0.25');
 ok(Math.abs(V.labelScale(8) - 0.125) < 1e-12, 'labelScale(8)≈0.125（无下限地板，与元素同规则）');
 ok(V.labelScale('abc') === 1 && V.labelScale(null) === 1, 'labelScale 异常输入容错＝1');
 
-// ---------- 移动端视口纯逻辑（2026-11-28 适配第一批：断点判定/标签乘数/bottom sheet 档位） ----------
-console.log('viewportIsMobile / MOBILE_LABEL_SCALE / sheetSnapHeights / nearestSheetSnap:');
+// ---------- 移动端视口纯逻辑（2026-11-28 适配第一批＋真机反馈修复：断点判定/标签乘数/bottom
+// sheet 两档/移动端命中盒） ----------
+console.log('viewportIsMobile / MOBILE_LABEL_SCALE / sheetSnapHeights / nearestSheetSnap / hitQueryBox:');
 ok(V.MOBILE_BREAKPOINT === 768, '断点常量＝768（与 index.html @media (max-width: 767px) 同值）');
 ok(V.viewportIsMobile(767) === true, 'viewportIsMobile(767)＝移动端');
 ok(V.viewportIsMobile(768) === false, 'viewportIsMobile(768)＝桌面（平板竖屏归桌面）');
@@ -767,25 +768,32 @@ ok(V.viewportIsMobile(NaN) === false && V.viewportIsMobile(null) === false && V.
 ok(V.MOBILE_LABEL_SCALE === 1.25, '标签移动端乘数＝1.25（12px→15px、13px→16.25px「放大一档」）');
 ok(Math.abs(V.labelScale(11) * V.MOBILE_LABEL_SCALE - 1.25) < 1e-12, 'z≥11 移动端标签有效缩放＝1.25');
 ok(Math.abs(V.labelScale(9) * V.MOBILE_LABEL_SCALE - 0.3125) < 1e-12, 'z=9 移动端＝0.25×1.25（缩放与放大叠乘不封顶）');
-eq(V.sheetSnapHeights(844, 30), { hidden: 30, half: 422, full: 844 }, 'sheetSnapHeights：三档标准高（half 四舍五入）');
-eq(V.sheetSnapHeights(845, 30), { hidden: 30, half: 423, full: 845 }, '奇数视口高 half＝round(vh/2)');
-ok(V.sheetSnapHeights(0, 30) === null && V.sheetSnapHeights(-100, 30) === null, 'sheetSnapHeights 非正视口＝null');
+// 两档（2026-11-28 真机反馈改版：四分之三屏[默认]＋收起；半屏/全屏退役；把手高 30→44）
+eq(V.sheetSnapHeights(844, 44), { hidden: 44, expanded: 633 }, 'sheetSnapHeights：两档标准高（expanded＝round(vh×3/4)，844→633）');
+eq(V.sheetSnapHeights(845, 44), { hidden: 44, expanded: 634 }, '奇数视口高 expanded＝round(845×0.75)＝634（633.75 四舍五入）');
+eq(V.sheetSnapHeights(800, 30), { hidden: 30, expanded: 600 }, '844 真机视口外的一般值照算（800→600）');
+ok(V.sheetSnapHeights(0, 44) === null && V.sheetSnapHeights(-100, 44) === null, 'sheetSnapHeights 非正视口＝null');
 ok(V.sheetSnapHeights(844, 0) === null && V.sheetSnapHeights(844, NaN) === null, 'sheetSnapHeights 非法把手高＝null');
-ok(V.sheetSnapHeights(NaN, 30) === null && V.sheetSnapHeights(null, 30) === null, 'sheetSnapHeights 非法视口＝null');
-eq(V.nearestSheetSnap(422, { hidden: 30, half: 422, full: 844 }), 'half', '吸附：恰在档位上');
-eq(V.nearestSheetSnap(400, { hidden: 30, half: 422, full: 844 }), 'half', '吸附：半屏附近偏下→half');
-eq(V.nearestSheetSnap(60, { hidden: 30, half: 422, full: 844 }), 'hidden', '吸附：把手附近→hidden');
-eq(V.nearestSheetSnap(800, { hidden: 30, half: 422, full: 844 }), 'full', '吸附：接近全屏→full');
-eq(V.nearestSheetSnap(5, { hidden: 30, half: 422, full: 844 }), 'hidden', '吸附：越下界（拖拽已夹取，防御）');
-eq(V.nearestSheetSnap(900, { hidden: 30, half: 422, full: 844 }), 'full', '吸附：越上界（防御）');
-eq(V.nearestSheetSnap(226, { hidden: 30, half: 422, full: 844 }), 'hidden', '吸附：226 恰为 30/422 中点（等距平手）→按定义序取先 hidden');
-eq(V.nearestSheetSnap(226, { hidden: 30, half: 422 }), 'hidden', '吸附：缺 full 档的等距平手同样取 hidden');
+ok(V.sheetSnapHeights(NaN, 44) === null && V.sheetSnapHeights(null, 44) === null, 'sheetSnapHeights 非法视口＝null');
+eq(V.nearestSheetSnap(633, { hidden: 44, expanded: 633 }), 'expanded', '吸附：恰在档位上');
+eq(V.nearestSheetSnap(600, { hidden: 44, expanded: 633 }), 'expanded', '吸附：75% 档附近→expanded');
+eq(V.nearestSheetSnap(60, { hidden: 44, expanded: 633 }), 'hidden', '吸附：把手附近→hidden');
+eq(V.nearestSheetSnap(5, { hidden: 44, expanded: 633 }), 'hidden', '吸附：越下界（拖拽已夹取，防御）');
+eq(V.nearestSheetSnap(900, { hidden: 44, expanded: 633 }), 'expanded', '吸附：越上界（防御）');
+eq(V.nearestSheetSnap(338, { hidden: 44, expanded: 633 }), 'hidden', '吸附：338 距两档均 295（等距平手）→按定义序取先 hidden');
+eq(V.nearestSheetSnap(339, { hidden: 44, expanded: 633 }), 'expanded', '吸附：过中点 1px→expanded（就近）');
 eq(V.nearestSheetSnap(100, {}), null, '吸附：全缺档＝null（调用方保持原档）');
-ok(V.nearestSheetSnap(NaN, { hidden: 30, half: 422, full: 844 }) === null, '吸附：非法高度＝null');
-ok(V.nearestSheetSnap(422, null) === null && V.nearestSheetSnap(422, undefined) === null, '吸附：heights 缺省＝null');
-// 等距平手（如 hidden=30/half=430、h=230 距两档均 200）：按定义序 hidden→half→full 先到先得
-eq(V.nearestSheetSnap(230, { hidden: 30, half: 430, full: 844 }), 'hidden', '吸附：等距平手按定义序取先（hidden）');
-eq(V.nearestSheetSnap(637, { hidden: 30, half: 430, full: 844 }), 'half', '吸附：half/full 等距平手取 half（先到）');
+ok(V.nearestSheetSnap(NaN, { hidden: 44, expanded: 633 }) === null, '吸附：非法高度＝null');
+ok(V.nearestSheetSnap(633, null) === null && V.nearestSheetSnap(633, undefined) === null, '吸附：heights 缺省＝null');
+// 移动端命中盒（2026-11-28 真机反馈②：点查 → ±12px 盒查）
+ok(V.HIT_BUFFER_MOBILE === 12, '移动端命中容差＝12px（任务书「约 ±10-12px」上限档）');
+eq(V.hitQueryBox([100, 200], 12), [[88, 188], [112, 212]], 'hitQueryBox：数组点 → ±12px 盒');
+eq(V.hitQueryBox({ x: 100, y: 200 }, 12), [[88, 188], [112, 212]], 'hitQueryBox：maplibre PointLike {x,y}（onMapClick 的 e.point 形态）同样收');
+eq(V.hitQueryBox([100, 200], 0), [[100, 200], [100, 200]], 'hitQueryBox：buffer 0＝零尺寸盒（等价点查）');
+ok(V.hitQueryBox(null, 12) === null && V.hitQueryBox(undefined, 12) === null, 'hitQueryBox：空点＝null（按无命中处理）');
+ok(V.hitQueryBox([NaN, 200], 12) === null && V.hitQueryBox([100, undefined], 12) === null, 'hitQueryBox：缺坐标/非有限数＝null');
+ok(V.hitQueryBox({ x: 100 }, 12) === null, 'hitQueryBox：对象缺 y＝null');
+ok(V.hitQueryBox([100, 200], -1) === null && V.hitQueryBox([100, 200], NaN) === null, 'hitQueryBox：负/NaN buffer＝null');
 
 // ---------- stopDisplayName / formatTerminals（显示文案） ----------
 console.log('stopDisplayName / formatTerminals:');
