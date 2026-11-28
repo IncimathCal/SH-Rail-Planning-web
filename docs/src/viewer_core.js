@@ -146,12 +146,12 @@
   // 站名标签移动端整体放大一档的乘数（复用 labelScale 机制：zf = labelScale(zoom) × 本乘数；
   // 12px→15px、13px→16.25px）。桌面端不乘（桌面回归零改动）。
   const MOBILE_LABEL_SCALE = 1.25;
-  // bottom sheet 两档标准高度（px，2026-11-28 真机反馈改版：四分之三屏[默认]＋收起，半屏/
-  // 全屏退役）：hidden＝只露把手（把手条高度，胶水层 CSS 常量同值）；expanded＝视口四分之
-  // 三（四舍五入）。viewportH/handleH 非法输入返回 null（调用方兜底）。
+  // bottom sheet 两档标准高度（px，2026-11-28 真机反馈改版：大档[默认]＋收起，半屏/全屏
+  // 退役；同日二轮 75%→80%＝五分之四屏）：hidden＝只露把手（把手条高度，胶水层 CSS 常量
+  // 同值）；expanded＝视口五分之四（四舍五入）。viewportH/handleH 非法输入返回 null（调用方兜底）。
   function sheetSnapHeights(viewportH, handleH) {
     if (!Number.isFinite(viewportH) || viewportH <= 0 || !Number.isFinite(handleH) || handleH <= 0) return null;
-    return { hidden: handleH, expanded: Math.round(viewportH * 3 / 4) };
+    return { hidden: handleH, expanded: Math.round(viewportH * 4 / 5) };
   }
   // 松手吸附：取距当前高度最近的档（等距平手按 hidden→expanded 定义序先到先得）。heights
   // 缺档跳过、全缺/非法高度返回 null（调用方保持原档）。
@@ -165,6 +165,14 @@
       if (d < bestDist) { bestDist = d; best = key; }
     }
     return best;
+  }
+  // 移动端相机让位（2026-11-28 真机二轮用户裁定：全面取消）：任何方向零 padding——一切
+  // 相机动作（初始 fitAll、聚焦 zoom11 居中、车站聚焦、搜索定位）对**整个视口**居中/取景，
+  // 面板遮挡不考虑。全零语义：fitBounds 无留白贴满取景、flyTo 一次性 offset 公式
+  // [(left-right)/2,(top-bottom)/2] 得 [0,0]＝几何中心。桌面让位逻辑在胶水层（依赖面板
+  // rect 的 DOM 读取），不经此函数、逐位不变。
+  function mobileCameraPadding() {
+    return { top: 0, bottom: 0, left: 0, right: 0 };
   }
   // 移动端单击命中容差（CSS px，2026-11-28 真机反馈：手指点线路太难命中）：仅移动端把
   // queryRenderedFeatures 的点查放宽为 ±buffer 盒查（手指命中精度差，取 12——任务书「约
@@ -2597,6 +2605,7 @@
     LABEL_ZOOM_GROUP, LABEL_ZOOM_STOP,
     SIZE_ZOOM_MIN, SIZE_ZOOM_HOLD, SIZE_SCALE_EXP, labelScale,
     MOBILE_BREAKPOINT, viewportIsMobile, MOBILE_LABEL_SCALE, sheetSnapHeights, nearestSheetSnap,
+    mobileCameraPadding,
     HIT_BUFFER_MOBILE, hitQueryBox,
     UNNAMED_STOP_ZH, stopDisplayName, formatTerminals,
     xmlEscape, normalizeHex, hexToKmlColor,

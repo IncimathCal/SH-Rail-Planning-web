@@ -214,7 +214,8 @@
 // ②站名标签移动端整体放大一档（labelScale × V.MOBILE_LABEL_SCALE=1.25，桌面不乘）＋经纬
 // 读数尺 SVG 字号 CSS 放大（index.html media 块）；③移动端线路聚焦相机＝bbox 居中＋zoom
 // 直接 11（不 fitBounds、不算 padding/让位/站名余量；flyTo 900ms 保留；车站聚焦 zoom13 与
-// 其他相机照旧——cameraPadding 移动端改算 bottom 让位）；④viewport meta 已有无需补；
+// 其他相机照旧——cameraPadding 移动端改算 bottom 让位〔2026-11-28 二轮已推翻：移动端全面
+// 取消让位，全零 padding 对整个视口居中〕）；④viewport meta 已有无需补；
 // ⑤通用：线路页标题后加分类标签（主线 layer，.lp-layer-chip）。纯逻辑 V.viewportIsMobile/
 // V.sheetSnapHeights/V.nearestSheetSnap 单测覆盖（tools/test_viewer_logic.js）。
 // 2026-11-28 真机反馈三项修复（用户 390×844 真机验收抓包）：
@@ -231,6 +232,17 @@
 // 盒查只是喂给既有过滤器的候选变多——移动端站圈同步变易点是手指精度的自然收益）。
 // ③sheet 档位三改二：四分之三屏（默认）＋收起，半屏/全屏退役（V.sheetSnapHeights/
 // nearestSheetSnap 两档化，档名 'hidden'|'expanded'；点击把手＝两档互切；初始 75%）。
+// 2026-11-28 真机二轮三项修正（用户裁定）：
+// ①移动端全面取消相机让位——cameraPadding 移动端改回全零（V.mobileCameraPadding 纯函数，
+// 单测断言全零）：一切相机动作（初始 fitAll、聚焦 zoom11 居中、车站聚焦、搜索定位）对整个
+// 视口居中/取景，面板遮挡不考虑；本文件头注「cameraPadding 移动端改算 bottom 让位」一条
+// 随之作废（桌面让位逐位不变）。
+// ②sheet 大档 75%→80%＝五分之四屏（V.sheetSnapHeights＋sheetHeightsNow 兜底＋index.html
+// 无 JS 兜底 CSS 同步 80vh/80dvh）。
+// ③把手下拉误触浏览器 pull-to-refresh：index.html 挂 overscroll-behavior-y: contain
+//（html/body＋面板各滚动容器；iOS 15.4+／Chrome 均尊重，更老 iOS 靠 touch 轨 preventDefault
+// 兜底）＋touchmove preventDefault 全路径确认（见 wireSheetHandle 二轮注）；灵敏度＝tap
+// 判定阈值 6→10px（SHEET_TAP_SLOP，真机手指按压轻滑常超 6px 被误判拖拽＝点击没反应）。
 // 2026-11-25 分期态他省线纠正（用户裁定）：他省线在任何情况下不得被期次高亮（不进
 // 期次高亮集合、不被白罩压暗），也绝不因进入分期态而从图上消失——分期态照常显示，
 // 口径＝聚焦态既有「恒调光」。实现：①渲染特征带 province 0/1 数字位（线/站圈/药丸，
@@ -316,7 +328,7 @@
       view: 'splash',             // 'splash' 初始界面 | 'main' 主界面（列表） | 'station' 车站页 | 'line' 线路页（滑动层级见 VIEW_RANK）
       tab: '市区线',               // 主界面当前选项卡（市区线/市域线/预控通道；他省与联络线不进列表）
       searching: false,           // 搜索态：结果占据整个面板主体（顶条与署名行保留）
-      sheetSnap: 'expanded',      // 移动端 bottom sheet 档位 'hidden'|'expanded'（2026-11-28 真机反馈改两档：四分之三屏[默认]＋收起；桌面不消费，跨断点与 collapsed 互映射）
+      sheetSnap: 'expanded',      // 移动端 bottom sheet 档位 'hidden'|'expanded'（2026-11-28 真机反馈改两档：五分之四屏[默认，同日二轮 75%→80%]＋收起；桌面不消费，跨断点与 collapsed 互映射）
       linePageId: null,           // 线路页当前线路（主线 id；setFocus 同源）
       linePageFrom: 'list',       // 线路页进入来源（'list'|'search'|'station'|'line'）——搜索来源返回保留词与结果；车站来源返回回车站页（2026-11-27 逐级返回链）；'line'＝站行换乘项跳转来源，返回回原线路页（2026-11-27 换乘链）
       linePagePrev: null,         // 换乘链栈（from='line' 时有效）：{ id, from, prev }——点换乘项前所在线路页及其来源，逐级返回（见 backFromLinePage）
@@ -1952,6 +1964,7 @@
     // 移动端（2026-11-28 用户裁定）：高亮全线＝线路 bbox 居中＋zoom 直接 11——不 fitBounds、
     // 不算 padding/让位/站名余量（线两端超出屏幕无所谓，用户自己捏合看）；flyTo 动画保留
     //（900ms essential 同桌面）。仅线路聚焦如此——车站聚焦 zoom13 与其他相机行为照旧。
+    //（2026-11-28 二轮「移动端全面取消相机让位」后与其余相机口径统一：均对整个视口居中。）
     if (isMobileViewport()) {
       S.map.flyTo({ center: [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2], zoom: 11, duration: 900, essential: true });
       return;
@@ -1983,13 +1996,14 @@
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.right > 0;
   }
-  // 2026-11-27 相机让位 padding（推广到一切相机动作）：左＝面板展开时其右缘＋24（面板宽
-  // 295＋左边距 12 → 常态 331）；抽屉收起回落 24（与其他边同档的默认呼吸量，不给面板
-  // 留位）。上/下 24、右 64（右下有缩放控件）。每次调用实时取面板 rect——收/展后续相机
-  // 动作自动跟随。⚠ fitBounds 的 padding 选项是一次性几何输入（vendored 5.24.1 的实现
-  // 与 transform 持久 padding 分账，fitBounds 从不写它）；但 flyTo 的 padding 选项**会**
-  // 写持久 transform.padding，后续 fitBounds 几何会把两者叠扣——故搜索车站的 flyTo 用
-  // 等效一次性 offset，不碰 padding 选项。
+  // 2026-11-27 相机让位 padding（推广到一切相机动作）——**仅桌面**（2026-11-28 真机二轮
+  // 用户裁定：移动端全面取消让位，一切相机动作对整个视口居中/取景，见函数内移动端分支）：
+  // 左＝面板展开时其右缘＋24（面板宽 295＋左边距 12 → 常态 331）；抽屉收起回落 24（与其他
+  // 边同档的默认呼吸量，不给面板留位）。上/下 24、右 64（右下有缩放控件）。每次调用实时取
+  // 面板 rect——收/展后续相机动作自动跟随。⚠ fitBounds 的 padding 选项是一次性几何输入
+  //（vendored 5.24.1 的实现与 transform 持久 padding 分账，fitBounds 从不写它）；但 flyTo
+  // 的 padding 选项**会**写持久 transform.padding，后续 fitBounds 几何会把两者叠扣——故
+  // 搜索车站的 flyTo 用等效一次性 offset，不碰 padding 选项（移动端全零时 offset＝[0,0]）。
   // 2026-11-27 真机病灶②修复：站名标签余量。端点站名以站点居中左右伸展（HTML 标签
   // nowrap＋translate(-50%,-140%)，普通站 12px／组站 13px 加粗，zoom≥11 原尺寸——聚焦
   // 短线被 maxZoom 13 夹住时正是原尺寸），只给呼吸量会让西端点贴面板右缘、居中的站名被
@@ -2001,14 +2015,11 @@
   const LABEL_MARGIN_X = 70, LABEL_MARGIN_Y = 26;
   function cameraPadding() {
     const GAP = 24, RIGHT = 64;
-    // 移动端（2026-11-28）：面板贴底——让位改算 bottom（面板可见高＋24；hidden 档＝收起只
-    // 给呼吸量），其余边 24。消费方（车站聚焦 flyTo 的一次性 offset、fitAll 解算）随之把
-    // 目标抬进可见上半屏。桌面路径逐位不变。
-    if (isMobileViewport()) {
-      const p = $('panel');
-      const h = (S.ui.sheetSnap !== 'hidden' && p) ? p.getBoundingClientRect().height : 0;
-      return { top: GAP, bottom: h > 0 ? h + GAP : GAP, left: GAP, right: GAP };
-    }
+    // 移动端（2026-11-28 真机二轮用户裁定：全面取消相机让位）：任何方向零 padding——一切
+    // 相机动作（初始 fitAll、聚焦 zoom11 居中、车站聚焦、搜索定位）对整个视口居中/取景，
+    // 面板遮挡不考虑（fitBounds 无留白；flyTo 一次性 offset 公式得 [0,0]＝几何中心）。
+    // 纯函数在 core（V.mobileCameraPadding，单测断言全零）。桌面让位逻辑逐位不变。
+    if (isMobileViewport()) return V.mobileCameraPadding();
     const lp = $('panel');
     const left = panelVisible(lp) ? lp.getBoundingClientRect().right + GAP + LABEL_MARGIN_X
       : GAP + LABEL_MARGIN_X;
@@ -2050,12 +2061,12 @@
   const MQ_MOBILE = G.matchMedia ? G.matchMedia('(max-width: 767px)') : null;
   function isMobileViewport() { return !!(MQ_MOBILE && MQ_MOBILE.matches); }
   const SHEET_HANDLE_H = 44;
-  // 两档标准高度（px）：hidden＝只露把手、expanded＝视口四分之三；视口高取
-  // innerHeight（documentElement 兜底）。core 纯函数防御返回 null 时就地兜两档。
+  // 两档标准高度（px）：hidden＝只露把手、expanded＝视口五分之四（2026-11-28 二轮 75%→80%）；
+  // 视口高取 innerHeight（documentElement 兜底）。core 纯函数防御返回 null 时就地兜两档。
   function sheetHeightsNow() {
     const vh = G.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 0;
     const h = V.sheetSnapHeights(vh, SHEET_HANDLE_H);
-    return h || { hidden: SHEET_HANDLE_H, expanded: Math.round(vh * 3 / 4) || SHEET_HANDLE_H };
+    return h || { hidden: SHEET_HANDLE_H, expanded: Math.round(vh * 4 / 5) || SHEET_HANDLE_H };
   }
   // 两档应用：写 #panel inline 高度＋data-sheetSnap（冒烟断言/CSS 钩子）；hidden ⇔
   // S.panelCollapsed 同步 true（相机让位与可见性判定消费同一「收起」语义）。instant＝直设
@@ -2074,8 +2085,8 @@
     if (instant) { void panel.offsetWidth; panel.classList.remove('noanim'); }
   }
   // 把手拖拽（2026-11-28 真机反馈重写：touch＋pointer 双轨）：拖拽中 .dragging 禁 transition、
-  // 高度随手指直更（hidden～expanded 夹取）；松手按 V.nearestSheetSnap 吸附最近档并恢复过渡。
-  // 位移 <6px 视为点击＝两档互切（hidden⇄expanded）。
+  // 高度随手指直更（hidden～expanded 夹取，零启动死区＝首个 touchmove 即跟手）；松手按
+  // V.nearestSheetSnap 吸附最近档并恢复过渡。位移 <10px 视为点击＝两档互切（hidden⇄expanded）。
   // 根因背景：初版纯 pointer 单轨无头合成通过、真机 touch 完全不拖——真机上 pointer 流
   // 不稳（iOS 老 WebView 干脆不派发 Pointer Events；touch-action 失效时浏览器手势仲裁几帧
   // 后 pointercancel 收场）。修复＝双轨：
@@ -2090,9 +2101,21 @@
   // 环境 touchstart 自建会话。move/up 挂 document 级——手指滑出把手区仍跟踪（touch 的
   // 隐式指针捕获派发到 handle 再冒泡，无需 setPointerCapture）。仅移动端生效（桌面把手
   // display:none 不可达；防御上再判一次断点）。
+  // 2026-11-28 二轮（真机「下拉刷新误触＋更灵敏」）：
+  // · 下拉刷新：把手路径的 touchmove preventDefault 在所有路径生效（dragging 会话建立于
+  //   touchstart——含 iOS 橡皮筋在内的浏览器滚动/刷新手势从触摸首帧就被 touchstart 的
+  //   preventDefault 压掉；document 级 touchmove 仅在 dragging 中 preventDefault，非拖拽
+  //   触摸不拦、面板内列表滚动不受影响）；页面级兜底＝index.html 的
+  //   overscroll-behavior-y: contain（html/body＋面板各滚动容器——Chrome Android 的
+  //   pull-to-refresh 与 iOS 15.4+ Safari 的下拉刷新均 respect；更老 iOS 无该 CSS 支持，
+  //   主防线仍是本 touch 轨 preventDefault）。
+  // · 灵敏度（用户裁定「拖拽跟手更即时」）：tap 判定阈值 6→10px（SHEET_TAP_SLOP）——真机
+  //   手指按压轻滑常超 6px，旧阈值把点击误判成拖拽（松手弹回原档＝「点了没反应」）；放宽
+  //   到 10px＝Apple HIG 手势容差惯例，点击切档可靠、拖拽启动零死区（1px 即跟手）不变。
   function wireSheetHandle() {
     const handle = $('sheetHandle');
     if (!handle) return;
+    const SHEET_TAP_SLOP = 10;   // tap 判定位移阈值（px，2026-11-28 二轮 6→10＝真机手感调灵敏）
     let dragging = false, startX = 0, startY = 0, startH = 0, lastX = 0, lastY = 0;
     const startDrag = (x, y) => {
       if (dragging) return;   // 幂等：pointerdown/touchstart 先到者建会话
@@ -2112,10 +2135,10 @@
       if (!dragging) return;
       dragging = false;
       $('panel').classList.remove('dragging');
-      const tap = Math.abs(lastY - startY) < 6 && Math.abs(lastX - startX) < 6;
+      const tap = Math.abs(lastY - startY) < SHEET_TAP_SLOP && Math.abs(lastX - startX) < SHEET_TAP_SLOP;
       if (tap) {
-        // 点击把手＝两档互切（2026-11-28 真机反馈改版）：hidden→expanded（展开）、
-        // expanded→hidden（收起，等价桌面收起按钮）
+        // 点击把手＝两档互切（2026-11-28 真机反馈改版；二轮阈值 6→10）：hidden→expanded
+        //（展开）、expanded→hidden（收起，等价桌面收起按钮）
         applySheetSnap(S.ui.sheetSnap === 'hidden' ? 'expanded' : 'hidden');
         return;
       }
@@ -2176,8 +2199,8 @@
     }
     scheduleLabels();
   }
-  // 初始化（wireUI 头部）：移动端首帧即四分之三屏（instant 不闪；2026-11-28 真机反馈改
-  // 两档后的默认档）；MQ change＝跨断点同步；
+  // 初始化（wireUI 头部）：移动端首帧即五分之四屏（instant 不闪；2026-11-28 真机反馈改
+  // 两档后的默认档，同日二轮 75%→80%）；MQ change＝跨断点同步；
   // resize＝移动端视口高变（地址栏收展/旋转）重贴当前档标准高度（拖拽中不抢）。
   function initViewportMode() {
     wireSheetHandle();
@@ -3125,7 +3148,7 @@
   // 高亮状态不受收起影响（只动 CSS，不碰 S.focus/分期）。会话内不持久化，刷新回展开。
   function setLinePanelCollapsed(collapsed) {
     // 移动端（2026-11-28）：桌面抽屉把手/展开条已 display:none，本函数正常不可达；防御
-    // 转发到 sheet 档（hidden＝收起、expanded＝展开档 75%）。
+    // 转发到 sheet 档（hidden＝收起、expanded＝展开档 80%）。
     if (isMobileViewport()) { applySheetSnap(collapsed ? 'hidden' : 'expanded'); return; }
     S.panelCollapsed = collapsed;
     $('panel').classList.toggle('collapsed', collapsed);
@@ -3137,7 +3160,7 @@
   // ---------- 交互接线（demo 新 UI；二轮 1/2/7/13 改版） ----------
   function wireUI() {
     initViewPositions();   // 2026-11-27 动效：解除降级 [hidden]、四视图上滑轨（data-pos）
-    initViewportMode();    // 2026-11-28 移动端：sheet 把手接线＋初始半屏＋跨断点/resize 同步
+    initViewportMode();    // 2026-11-28 移动端：sheet 把手接线＋初始大档（80% 屏）＋跨断点/resize 同步
     // 视图切换：确认→主界面；主界面返回→（搜索态先清搜索回列表，二轮①）→清聚焦分期后回初始
     // 界面（二轮⑬）；线路页返回→main 视图（搜索来源自动恢复搜索态——二轮②，词与结果保留）
     $('btnConfirm').addEventListener('click', () => showView('main'));

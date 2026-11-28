@@ -82,6 +82,13 @@
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; background: var(--bg); }
     body { font-family: var(--font-stack); font-size: 14px; line-height: 1.5; color: var(--text); overflow: hidden; }
+    /* 下拉刷新拦截（2026-11-28 移动端真机二轮）：文档根 contain＝Chrome Android 的
+       pull-to-refresh 与 iOS 15.4+ Safari 的下拉刷新均被压掉；面板各滚动容器 contain＝
+       滚到顶/底的余量不链给文档根（scroll chaining 断链，iOS 橡皮筋不外溢）。更老 iOS
+       不认该属性——兜底主防线＝viewer.js 把手 touch 轨的 preventDefault（见 wireSheetHandle
+       二轮注）。桌面无碍：body 本就 overflow:hidden 无滚动。 */
+    html, body { overscroll-behavior-y: contain; }
+    .splash-scroll, #lineList, #searchResults, #lineBody, #stationBody { overscroll-behavior-y: contain; }
 
     #map { position: absolute; inset: 0; }
 
@@ -680,18 +687,19 @@
     .maplibregl-ctrl-bottom-right .maplibregl-ctrl { margin: 0; }
 
     /* ---------- 移动端（窄屏 <768px）bottom sheet（2026-11-28 适配第一批＋真机反馈修复；桌面零改动） ----------
-       左侧 295px 面板在窄屏改全宽贴底两档（隐藏[只露把手]/四分之三屏[默认]——2026-11-28 真机
-       反馈改版，半屏/全屏退役），档高由 viewer.js applySheetSnap 写 inline px 接管（此处 75dvh＝
-       无 JS 兜底与初始帧）；拖拽（touch＋pointer 双轨挂把手，.dragging 禁 transition、松手按
-       V.nearestSheetSnap 吸附最近档；touchstart/touchmove {passive:false}＋preventDefault＝真机
-       滚动阻止主防线）。桌面抽屉把手/展开条在移动端退役（#panelCollapse/#panelTab display
+       左侧 295px 面板在窄屏改全宽贴底两档（隐藏[只露把手]/大档[默认]——2026-11-28 真机
+       反馈改版，半屏/全屏退役；同日二轮 75%→80%＝五分之四屏），档高由 viewer.js
+       applySheetSnap 写 inline px 接管（此处 80dvh＝无 JS 兜底与初始帧）；拖拽（touch＋pointer
+       双轨挂把手，.dragging 禁 transition、松手按 V.nearestSheetSnap 吸附最近档；touchstart/
+       touchmove {passive:false}＋preventDefault＝真机滚动阻止主防线，tap 判定阈值 10px）。
+       桌面抽屉把手/展开条在移动端退役（#panelCollapse/#panelTab display
        none，收展语义由 sheet 把手承担，高亮状态不受影响——只动面板高度不碰 S.focus/分期）。
        断点 768 与 viewer_core MOBILE_BREAKPOINT 同值（768px 平板竖屏归桌面）。 */
     #sheetHandle { display: none; }   /* 桌面不显示（移动端 media 内亮出） */
     @media (max-width: 767px) {
       #panel {
         top: auto; left: 0; right: 0; bottom: 0; width: auto;
-        height: 75vh; height: 75dvh;   /* 无 JS 兜底＝四分之三屏；JS 接管后 inline px 为准 */
+        height: 80vh; height: 80dvh;   /* 无 JS 兜底＝五分之四屏；JS 接管后 inline px 为准 */
         border-radius: 14px 14px 0 0;
         border-left: none; border-right: none; border-bottom: none;
         transform: none;   /* 桌面 .collapsed 的 translateX 形态不适用（跨断点类清理见 viewer.js syncViewportMode） */
