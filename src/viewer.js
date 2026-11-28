@@ -2300,7 +2300,7 @@
       body.appendChild(tip);
     }
     // 车站列表（2026-11-27）：信息（或「无信息」提示）下方——竖直线站序样式，主线段
-    // ＋分割线＋每条支线一段；arrow 出省端画线端箭头不写站名；接入标注（往支线去向/
+    // ＋分割线＋每条支线一段；arrow 出省端画线端箭头＋「出省」小字；接入标注（往支线去向/
     // 往主线/联络对方线）＝V.lineStopSections 模型。lineinfo 有无与本列表无耦合。
     // 2026-11-27 增：站行 transfers（换乘信息，lineOrder 序与车站页一致）。
     const stopModel = V.lineStopSections(lineId, S.linesMap, S.stops, S.lineGroups, S.groupTree, S.lineOrder);
@@ -2425,10 +2425,11 @@
           interMarks.get(mk.at.after).push(mk);
         }
       }
-      // 环线表达（2026-11-28 用户需求，保持竖排不变）：回环指示＝主线段 rail 一侧的
-      // C 形细线（从底部回接到顶部、顶端箭头示意循环——环绕段＝末站开回首站，列表首末
-      // 站不重复）＋段顶「环线」小字。note 放 secEl 外（wrap 层、段之前）——secEl 内
-      // 首子元素会推低 rail 的绝对定位锚（rail top 按行区起算）。少于 2 行无环可示（防御）。
+      // 环线表达（2026-11-28 用户改版，真机目验裁定「C 形回环线诡异」）：只留段顶「环线」
+      // 小字＋rail 头尾与出省端同款的线端箭头（首端朝上、末端朝下，朝列表两端外侧示意
+      // 循环延续；复用 lp-rail-head/lp-rail-tail 三角，环线不出省，与 arrow 端并入同一
+      // class 判定）。note 放 secEl 外（wrap 层、段之前）——secEl 内首子元素会推低 rail
+      // 的绝对定位锚（rail top 按行区起算）。少于 2 行无环可示（防御）。
       const isLoop = !!sec.loop && sec.rows.length >= 2;
       if (isLoop) {
         const note = document.createElement('div');
@@ -2443,13 +2444,12 @@
       const rail = document.createElement('div');
       const headArrow = sec.rows.length && sec.rows[0].kind === 'arrow';
       const tailArrow = sec.rows.length && sec.rows[sec.rows.length - 1].kind === 'arrow';
-      rail.className = 'lp-rail' + (headArrow ? ' lp-rail-head' : '') + (tailArrow ? ' lp-rail-tail' : '');
+      // 箭头 class：出省端（arrow 行）与环线头尾同款三角——环线＝两端各一个，出省线＝仅
+      // 出省端（真出省端另有「出省」小字区分，见下方 arrow 行）。
+      rail.className = 'lp-rail'
+        + (headArrow || isLoop ? ' lp-rail-head' : '')
+        + (tailArrow || isLoop ? ' lp-rail-tail' : '');
       secEl.appendChild(rail);
-      if (isLoop) {
-        const lp = document.createElement('div');
-        lp.className = 'lp-loop';
-        secEl.appendChild(lp);
-      }
       sec.rows.forEach((row, ri) => {
         const inter = interMarks.get(ri - 1);   // at.after=ri-1：画在上一行与本行之间
         if (inter) {
@@ -2459,9 +2459,14 @@
           for (const mk of inter) iv.appendChild(markElOfStopList(mk));
           secEl.appendChild(iv);
         }
-        if (row.kind === 'arrow') {   // 出省端：只画线端箭头（rail 端三角），不写站名
+        if (row.kind === 'arrow') {   // 出省端：线端箭头（rail 端三角）＋「出省」小字
+          // （2026-11-28 防混淆：环线头尾也用同款箭头了，真出省端加二字标注区分；仍不写站名）
           const ar = document.createElement('div');
           ar.className = 'lp-row lp-row-arrow';
+          const an = document.createElement('span');
+          an.className = 'lp-arrow-note';
+          an.textContent = '出省';
+          ar.appendChild(an);
           secEl.appendChild(ar);
           return;
         }
