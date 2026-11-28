@@ -3904,9 +3904,9 @@
           const f0 = b.batchTotalKm > 0 ? accKm / b.batchTotalKm : 0;
           accKm += wKm;
           const f1 = b.batchTotalKm > 0 ? accKm / b.batchTotalKm : 1;
-          // 严格匀速里程映射：整条线路从起点到终点速度恒定流畅
+          // 严格匀速里程映射：整条线路相邻区段首尾严格衔接、零重叠，杜绝 activeTipCoord 来回跳动
           const startTime = slotStart + f0 * drawSpan;
-          const endTime = Math.max(startTime + 0.0004, slotStart + f1 * drawSpan);
+          const endTime = slotStart + f1 * drawSpan;
           segOpenByLineIdx.set(b.lineId + ':' + item.sg.segIndex, startTime);
           // 几何端点精确匹配站点（彻底杜绝含 arrow 端点线路的索引偏移）
           const stStart = matchNearestStop(b.lineId, item.coords[0]);
@@ -4666,9 +4666,11 @@
   }
   function timelineBatchLatestStop(batch, t) {
     if (!batch || !Array.isArray(batch.stops) || !batch.stops.length) return null;
+    const drawSpan = Math.max(0, (batch.drawEndTime || batch.endTime || 0) - (batch.startTime || 0));
+    const tol = Math.min(0.0004, drawSpan * 0.008);
     let best = batch.stops[0];
     for (let i = 0; i < batch.stops.length; i++) {
-      if (batch.stops[i].reachTime <= t + 0.004) best = batch.stops[i];
+      if (batch.stops[i].reachTime <= t + tol) best = batch.stops[i];
       else break;
     }
     return best;
@@ -4735,6 +4737,10 @@
     if (!force && S.tl.panGateUntilMs > 0 && now < S.tl.panGateUntilMs) return;
     const t = S.tl.currentTime;
     const active = timelineActiveBatchAt(t);
+    // 正常播放期间，仅在活跃线路「正在逐站绘制（t < drawEndTime）」时跟随；
+    // 线末停顿期与两线之间的空窗期（含更名/暂缓站特写结束后）绝不回拉到已画完的老线路终点，
+    // 杜绝 15号线/18号线/7号线/2号线 在特写或空窗期来回折返平移！
+    if (!force && (!active || t >= active.drawEndTime)) return;
     let targetBatch = active;
     if (!targetBatch) {
       const batches = S.tl.batches || [];
@@ -4865,13 +4871,16 @@
           properties: { color: eff.color, dash: sg.dash, local: sg.isLocal ? 1 : 0, sharedOffset: sg.sharedOffset },
         });
       } else {
-        const rawP = Math.max(0, Math.min(1, (t - sg.startTime) / Math.max(0.0004, sg.endTime - sg.startTime)));
+        const segDur = Math.max(1e-6, sg.endTime - sg.startTime);
+        const rawP = Math.max(0, Math.min(1, (t - sg.startTime) / segDur));
         const sliced = V.slicePolylineByRatio(sg.coords, sg.cumDist, sg.totalKm, rawP);
+        if (sg.isLocal && (!activeBatch || sg.batchKey === activeBatch.key)) {
+          activeTipCoord = (sliced && sliced.tip) ? sliced.tip : sg.coords[0];
+        }
         if (sliced && sliced.coords.length >= 2) {
           if (sg.isLocal) {
             liveKm += sg.totalKm * rawP;
             liveLines.add(eff.mainId);
-            if (sliced.tip && (!activeBatch || sg.batchKey === activeBatch.key)) activeTipCoord = sliced.tip;
           }
           activeFeats.push({
             type: 'Feature',
@@ -5240,7 +5249,6 @@
       S.tl.eventPauseUntilMs = 0;
       S.tl.eventPauseId = '';
       S.tl.activePlanBanner = null;
-      S.tl.renameAnim = null;
       S.tl.renameAnim = null;
       if (hadRename) renderTimelineFrame(true, 0, true);
       dt = 0.016;
