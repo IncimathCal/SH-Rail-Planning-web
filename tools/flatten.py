@@ -130,6 +130,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from svg_parse import path_from_d  # noqa: E402
 from ge_convert import load_calibration  # noqa: E402
+from validate import manifest_line_path  # noqa: E402
 
 # 经纬度输出小数位（7 位 ≈ 1 cm，远高于标定精度）
 LONLAT_DECIMALS = 7
@@ -182,14 +183,17 @@ def collect_line_files(data_dir):
         archived = {a if isinstance(a, str) else a.get("id")
                     for a in (mf_js.get("archived") or [])}
         for e in mf_js.get("lines") or []:
-            lid = e.get("id")
+            try:
+                lp = manifest_line_path(data, e)
+            except ValueError as exc:
+                sys.exit(f"错误：manifest.json：{exc}")
+            lid = e["id"]
             if lid in archived:
                 # 归档表与线文件矛盾（线文件说未归档）：按未归档输出并提示，不替用户丢掉一条
                 # 明明在用的线（2026-11-22 抓包：编辑器取消归档后没从归档表摘除，l0061 被
                 # 整条剔除、查看器不见）。此时 validate 会报「archived id is also an active
                 # line」——发布通道有 validate 把门，此处只是本地预览不静默丢线。
                 try:
-                    lp = data / e["file"]
                     live = not (json.loads(lp.read_text(encoding="utf-8")).get("meta") or {}).get("archived")
                 except (OSError, ValueError, KeyError, TypeError):
                     live = False
@@ -197,8 +201,7 @@ def collect_line_files(data_dir):
                     continue
                 print(f"警告：{lid} 同时列在 manifest.lines 与 manifest.archived（线文件为未归档）"
                       f"——按未归档输出；请在编辑器重新保存工作区（validate 会报错）")
-            if e.get("file"):
-                files.append(data / e["file"])
+            files.append(lp)
         if not files:
             print("警告：manifest.json 存在但 lines 为空（或全被剔除）")
     else:

@@ -28,6 +28,7 @@ import argparse
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -133,28 +134,8 @@ def inject_beta_notice(out_dir):
     print("已注入临时测试版弹窗（2026-11-28 用户令）→ " + (out_dir / "index.html").as_posix())
 
 
-def main():
-    ap = argparse.ArgumentParser(description="生成 docs/ 部署快照（校验门禁→地理化→白名单拷贝）")
-    ap.add_argument("--data", default="data", help="权威数据目录（默认 data；冒烟可指 tools/fixtures/sample）")
-    ap.add_argument("--out", default="docs", help="输出目录（默认 docs）")
-    args = ap.parse_args()
-
-    data_dir = (ROOT / args.data).resolve()
-    out_dir = (ROOT / args.out).resolve()
-    if not data_dir.is_dir():
-        print(f"数据目录不存在：{data_dir}", file=sys.stderr)
-        sys.exit(1)
-    # 安全护栏：输出目录不得是仓库根/工具目录，也不得含 .git
-    if out_dir in (ROOT, TOOLS) or (out_dir / ".git").exists():
-        print(f"输出目录不合法：{out_dir}", file=sys.stderr)
-        sys.exit(1)
-
-    # 1. 校验门禁
-    run([sys.executable, "-X", "utf8", TOOLS / "validate.py", data_dir])
-
+def build_snapshot(data_dir, out_dir):
     # 2. 地理化（flatten 自带 --calib 回退链：<data>/calibration.json → data/calibration.json）
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
     run([sys.executable, "-X", "utf8", TOOLS / "flatten.py",
          "--data", data_dir, "--out", out_dir / "net"])
     # flatten 产物自检：线路显示顺序索引（net/index.json，查看器左栏序）必须随 net/ 整体产出
@@ -178,8 +159,6 @@ def main():
         sys.exit(1)
 
     # 3. 白名单拷贝
-    copied = []
-
     def cp(src_rel):
         src = ROOT / src_rel
         if not src.exists():
@@ -190,7 +169,6 @@ def main():
             shutil.copytree(src, dst)
         else:
             shutil.copy2(src, dst)
-        copied.append(src_rel)
 
     cp("index.html")
     for js in sorted(TOOLS.parent.glob("src/viewer*.js")):
@@ -206,27 +184,65 @@ def main():
     # .nojekyll（GitHub Pages）：仓库根没有对应源文件，不走 cp——白名单段直接写空文件，
     # 汇总自检（下方 rglob）与其他产物同口径覆盖。防 Jekyll 把下划线开头文件当特殊件过滤。
     (out_dir / ".nojekyll").write_bytes(b"")
-    copied.append(".nojekyll")
 
     # ⚠ 临时测试版弹窗（2026-11-28 用户令）：往快照 index.html 注入弹窗段（见上方
     # inject_beta_notice 注释——下线＝删函数＋删本调用行后重跑 publish）
     inject_beta_notice(out_dir)
-
-    # 4. 汇总与自检
-    total = 0
-    print("\n=== 发布快照 ===")
-    for p in sorted(out_dir.rglob("*")):
-        if p.is_file():
-            n = p.stat().st_size
-            total += n
-            print(f"  {p.relative_to(out_dir).as_posix():48s} {n:>10,} B")
-    print(f"共 {sum(1 for p in out_dir.rglob('*') if p.is_file())} 个文件，{total:,} B → {out_dir}")
 
     # 部署红线自检：产物中不得出现编辑器引用
     for p in out_dir.rglob("*.html"):
         text = p.read_text(encoding="utf-8", errors="ignore")
         if "editor" in text.lower():
             print(f"警告：{p.name} 中出现 editor 引用，请检查是否误引编辑器代码。", file=sys.stderr)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="生成 docs/ 部署快照（校验门禁→地理化→白名单拷贝）")
+    ap.add_argument("--data", default="data", help="权威数据目录（默认 data；冒烟可指 tools/fixtures/sample）")
+    ap.add_argument("--out", default="docs", help="输出目录（默认 docs）")
+    args = ap.parse_args()
+
+    data_dir = (ROOT / args.data).resolve()
+    out_dir = (ROOT / args.out).resolve()
+    if not data_dir.is_dir():
+        ap.error(f"数据目录不存在：{data_dir}")
+    protected_dirs = (data_dir, TOOLS, ROOT / "data", ROOT / "src", ROOT / "assets", ROOT / "basemap")
+    if (out_dir == ROOT or out_dir in ROOT.parents or
+            any(out_dir == p or out_dir in p.parents or p in out_dir.parents for p in protected_dirs) or
+            (out_dir / ".git").exists() or (out_dir.exists() and not out_dir.is_dir())):
+        ap.error(f"输出目录不合法或覆盖了源数据：{out_dir}")
+
+    run([sys.executable, "-X", "utf8", TOOLS / "validate.py", data_dir])
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}-publish-", dir=out_dir.parent))
+    stage = scratch / "next"
+    previous = scratch / "previous"
+    installed = False
+    try:
+        build_snapshot(data_dir, stage)
+        if out_dir.exists():
+            out_dir.rename(previous)
+        stage.rename(out_dir)
+        installed = True
+    finally:
+        if not installed and previous.exists() and not out_dir.exists():
+            try:
+                previous.rename(out_dir)
+            except OSError as e:
+                print(f"无法自动恢复旧快照：{e}", file=sys.stderr)
+        if installed or not previous.exists():
+            shutil.rmtree(scratch)
+        else:
+            print(f"旧快照保存在 {previous}", file=sys.stderr)
+
+    print("\n=== 发布快照 ===")
+    files = [p for p in sorted(out_dir.rglob("*")) if p.is_file()]
+    total = 0
+    for p in files:
+        n = p.stat().st_size
+        total += n
+        print(f"  {p.relative_to(out_dir).as_posix():48s} {n:>10,} B")
+    print(f"共 {len(files)} 个文件，{total:,} B → {out_dir}")
 
 
 if __name__ == "__main__":

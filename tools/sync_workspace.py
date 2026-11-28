@@ -39,7 +39,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_SRC = Path.home() / "Documents" / "远期图测试"
-ROOT_FILES = ("groups.json", "manifest.json", "calibration.json", "lineinfo.md")   # 根下数据文件（存在才复制）
+OPTIONAL_NET_FILES = ("lineinfo.md", "links.md")
+ROOT_FILES = ("groups.json", "manifest.json", "calibration.json", *OPTIONAL_NET_FILES)
 NET_FILES = ("lines.geojson", "stops.geojson", "index.json")        # flatten 产物三件
 #（lineinfo.md＝用户手填线路介绍，2026-11-23 增：一并同步，由 flatten 原样透传进
 #  build/net——查看器「线路信息面板」的本地预览数据源。非 JSON 文件，复制自检免 json 解析）
@@ -79,7 +80,7 @@ def copy_data(src, dst):
             before = p.stat()
             data = p.read_bytes()
             after = p.stat()
-            # JSON 自检只对 .json 做（lineinfo.md 是手填 markdown，原样透传不解析——
+            # JSON 自检只对 .json 做（手填 Markdown 原样透传——
             # 但读前读后指纹比对照做，排除正在写盘的文件）
             if p.suffix == ".json":
                 json.loads(data.decode("utf-8-sig"))
@@ -100,12 +101,11 @@ def copy_data(src, dst):
             if old.relative_to(dst).as_posix() not in blob:
                 old.unlink()
                 removed += 1
-    # 工作区已删掉的 lineinfo.md 从副本摘除（groups.json/manifest.json 恒在、不在此列）——
-    # 不摘的话副本里残留旧文件，flatten 会照旧透传，查看器预览永远去不掉旧介绍
-    stale_li = dst / "lineinfo.md"
-    if "lineinfo.md" not in blob and stale_li.is_file():
-        stale_li.unlink()
-        removed += 1
+    for name in OPTIONAL_NET_FILES:
+        stale = dst / name
+        if name not in blob and stale.is_file():
+            stale.unlink()
+            removed += 1
     for rel, data in blob.items():
         target = dst / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -142,13 +142,12 @@ def sync_once(src, dst, out, do_validate=False, always=False):
     out.mkdir(parents=True, exist_ok=True)
     for name in NET_FILES:
         os.replace(stage / name, out / name)
-    # lineinfo.md（可选产物，2026-11-23）：数据目录有则 flatten 已透传进 stage，一并换入；
-    # 本轮没有（工作区删掉了该文件）则把上一轮的旧文件摘掉——查看器预览不残留旧介绍
-    staged_li, out_li = stage / "lineinfo.md", out / "lineinfo.md"
-    if staged_li.is_file():
-        os.replace(staged_li, out_li)
-    elif out_li.is_file():
-        out_li.unlink()
+    for name in OPTIONAL_NET_FILES:
+        staged, previous = stage / name, out / name
+        if staged.is_file():
+            os.replace(staged, previous)
+        elif previous.is_file():
+            previous.unlink()
     shutil.rmtree(stage, ignore_errors=True)
     LAST_FP = fp
     summary = next((ln for ln in log.splitlines() if ln.startswith("flatten 完成")), "flatten 完成")

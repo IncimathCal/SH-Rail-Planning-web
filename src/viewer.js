@@ -2963,7 +2963,11 @@
       if (!lb || !S.map) return;
       // 2026-11-27 点击车站改版：完整行为（flyTo zoom13＋波纹＋多线高亮＋面板车站页），
       // 搜索结果保留（返回回搜索态）。纯联络线站（无自然线路）退旧行为：仅 flyTo＋波纹。
-      const pin = S.pinByKey.get(lb.key);
+      let pin = S.pinByKey.get(lb.key);
+      if (!pin && lb.groupType === 'out-of-station') {
+        // 出闸组共用站名，但直属站各有自己的可点选站圈。
+        pin = S.groupTree.directStops(lb.key.slice(2)).map((s) => S.pinByKey.get(s.sid)).find(Boolean);
+      }
       if (pin && enterStationByPin(pin)) return;
       const pad = cameraPadding();
       S.map.flyTo({

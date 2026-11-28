@@ -60,6 +60,21 @@ def load_json(path):
     return json.loads(raw.decode("utf-8"))
 
 
+def manifest_line_path(data_dir, entry):
+    """Return the same line file the validator scans and flatten reads."""
+    lid = entry.get("id") if isinstance(entry, dict) else None
+    if not isinstance(lid, str) or not RE_LINE_ID.fullmatch(lid):
+        raise ValueError(f"bad manifest line id: {lid!r}")
+    expected = Path("lines", f"{lid}.json")
+    file = entry.get("file")
+    if not isinstance(file, str) or Path(file.replace("\\", "/")) != expected:
+        raise ValueError(f"line {lid}: file must point to {expected.as_posix()}, got {file!r}")
+    path = data_dir / expected
+    if not path.is_file():
+        raise ValueError(f"line {lid}: file {expected.as_posix()} not found")
+    return path
+
+
 def check_ascii_keys_and_cjk(node, fname, key="", in_info=False):
     """规则 10：字段名 ASCII；中文仅限文本内容字段与 info 子树。"""
     if isinstance(node, dict):
@@ -567,7 +582,21 @@ def main():
         try:
             mf = load_json(mf_path)
             check_ascii_keys_and_cjk(mf, "manifest.json")
-            mlines = {e.get("id"): e for e in mf.get("lines") or []}
+            entries = mf.get("lines", [])
+            if not isinstance(entries, list):
+                err("manifest.json", "lines must be a list")
+                entries = []
+            mlines = {}
+            for entry in entries:
+                try:
+                    manifest_line_path(target, entry)
+                except ValueError as e:
+                    err("manifest.json", str(e))
+                    continue
+                lid = entry["id"]
+                if lid in mlines:
+                    err("manifest.json", f"duplicate manifest line id: {lid}")
+                mlines[lid] = entry
             # 归档线（编辑器「归档」）：文件保留在 lines/（meta.archived=true），不进 manifest.lines、
             # 须列入 manifest.archived，flatten/publish 剔除。active＝未归档的线路文件——
             # manifest 对账只比 active（此前把归档文件也算在用线，归档过的数据集必 FAIL）
@@ -583,8 +612,7 @@ def main():
             for a in sorted(archived_files):
                 if a not in mf_archived:
                     err(f"lines/{a}.json", "archived line file is not listed in manifest.json archived")
-            for e in mf.get("lines") or []:
-                lid = e.get("id")
+            for lid, e in mlines.items():
                 if lid in lines and isinstance(e.get("stops"), int):
                     actual = len(lines[lid].get("stops") or [])
                     if e["stops"] != actual:
