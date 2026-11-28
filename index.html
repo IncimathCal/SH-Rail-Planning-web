@@ -555,6 +555,7 @@
     }
     .lp-tl-date.st-opened { background: #111; color: #fff; border-color: #111; }
     .lp-tl-date.st-approved { background: rgba(0,0,0,.08); color: #000; }
+    .lp-tl-date.st-near_term { background: rgba(25,95,140,.12); color: #164e73; border-color: rgba(25,95,140,.28); }
     .lp-tl-date.st-future, .lp-tl-date.st-corridor { color: #555; }
     .lp-tl-lbl { flex: 1; min-width: 0; color: #222; }
     .lp-tl-km { flex: none; font-size: 10.5px; color: #555; font-variant-numeric: tabular-nums; }
@@ -622,6 +623,7 @@
       background: #111; color: #fff; white-space: nowrap;
     }
     #tlStageBadge.st-approved { background: #444; color: #fff; }
+    #tlStageBadge.st-near_term { background: #1c5f8a; color: #fff; }
     #tlStageBadge.st-future { background: rgba(0,0,0,.1); color: #000; }
     #tlStageBadge.st-corridor { background: rgba(0,0,0,.06); color: #444; border: 1px dashed #888; }
     .tl-kpis {
@@ -1215,10 +1217,13 @@
           <div class="cycle-cell cell-basemap">
             <button id="btnCycleBasemap" type="button">高德</button>
             <div class="cycle-cap">底图</div>
-            <!-- 底图清单（高德→无字高德→用地→卫星→OpenStreetMap 共 5 态） -->
+            <!-- 底图清单（高德→无字高德→高德卫星→纯净矢量→纯净无字→用地→卫星→OpenStreetMap 共 8 态） -->
             <div id="basemapMenu" class="glass">
               <button type="button" data-basemap="gaode"><span class="bm-swatch" style="background:#EDE4CE"></span>高德</button>
               <button type="button" data-basemap="gaode-plain"><span class="bm-swatch" style="background:#F7F4EC"></span>高德无字</button>
+              <button type="button" data-basemap="gaode-sat"><span class="bm-swatch" style="background:#364935"></span>高德卫星</button>
+              <button type="button" data-basemap="ofm-labeled"><span class="bm-swatch" style="background:#EEF2EA"></span>纯净矢量</button>
+              <button type="button" data-basemap="ofm-plain"><span class="bm-swatch" style="background:#F4F6F2"></span>纯净无字</button>
               <button type="button" data-basemap="planblock"><span class="bm-swatch" style="background:#C5CDA6"></span>用地</button>
               <button type="button" data-basemap="shanghai_W"><span class="bm-swatch" style="background:#46543F"></span>卫星</button>
               <button type="button" data-basemap="osm"><span class="bm-swatch" style="background:#E8E8E6"></span>OpenStreetMap</button>
@@ -1340,9 +1345,10 @@
       <button type="button" class="tl-era-btn" data-year="2015.96">2015 扩网</button>
       <button type="button" class="tl-era-btn" data-year="2021.99">2021 破800</button>
       <button type="button" class="tl-era-btn" data-year="2025.99">2025 现状</button>
-      <button type="button" class="tl-era-btn" data-year="2028.95">2028 近期</button>
-      <button type="button" class="tl-era-btn" data-year="2034.00">远期规划</button>
-      <button type="button" class="tl-era-btn" data-year="2038.00">远景预控</button>
+      <button type="button" class="tl-era-btn" data-year="2028.95">2028 在建</button>
+      <button type="button" class="tl-era-btn" data-year="2033.30">近期规划</button>
+      <button type="button" class="tl-era-btn" data-year="2035.00">远期规划</button>
+      <button type="button" class="tl-era-btn" data-year="2038.50">远景预控</button>
     </div>
   </section>
 

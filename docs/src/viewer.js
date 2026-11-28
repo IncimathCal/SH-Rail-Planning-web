@@ -359,6 +359,8 @@
       eventPauseId: '',
       activePlanBanner: null,
       renameAnim: null,
+      showcaseHighlight: null,
+      lastBuildHiSig: '',
       l24MergeT: Infinity,
       triggeredEventIds: new Set(),
       eventFeedCollapsed: false,
@@ -928,6 +930,8 @@
       // 保证默认（无底图）路径零外部资源零网络请求。
       style: {
         version: 8,
+        // 仅在切换「纯净矢量」无地铁中文底图时才按需加载 OpenFreeMap 免费字体瓦片；默认高德路径零请求
+        glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
         sources: {
           lines: { type: 'geojson', data: renderLinesFC() },
           stops: { type: 'geojson', data: renderStopsFC() },
@@ -1162,11 +1166,15 @@
   //（planblock z12 陆家嘴与 OSM 程序化配准、黄浦江中带中位差 -0.5px）。内部端点直连的
   // 性质与高德 appmaptile 同类（无 SLA）；shanghai_W 无 key 无配额、1–2 米级分辨率。
   const BASEMAP_LABEL_ZH = { off: '无', osm: 'OSM', gaode: '高德', 'gaode-plain': '高德无字',
+    'gaode-sat': '高德卫星', 'ofm-labeled': '纯净矢量', 'ofm-plain': '纯净无字',
     carto: 'CARTO无字', planblock: '用地', shanghai_W: '卫星' };
   const BASEMAP_ATTR_ZH = {
     osm: '底图 © OpenStreetMap 贡献者',
     gaode: '底图 © 高德',
     'gaode-plain': '底图 © 高德',   // 无字与有字同属高德服务，同一署名
+    'gaode-sat': '卫星影像 © 高德',   // 高德卫星影像（无 key 公共瓦片，GCJ02 与高德矢量同源）
+    'ofm-labeled': '无地铁矢量底图 © OpenFreeMap © OpenMapTiles © OSM',
+    'ofm-plain': '无地铁矢量底图 © OpenFreeMap © OpenMapTiles © OSM',
     carto: '底图 © OpenStreetMap contributors © CARTO',   // CARTO 条款硬性署名（文字即可）
     planblock: '用地数据 © 上海市规划和自然资源局',   // 惯例署名（性质同省界：无硬性条款，礼貌标注）
     shanghai_W: '影像 © 上海市测绘院，低层影像 © Esri',   // shanghai_W＝上海测绘院正射影像；
@@ -1174,7 +1182,7 @@
     // 双层结构追加，署名行全 zoom 恒定不随层切换
   };
   function isGaodeBasemap(mode) {
-    return mode === 'gaode' || mode === 'gaode-plain';
+    return mode === 'gaode' || mode === 'gaode-plain' || mode === 'gaode-sat';
   }
   // 底图白色遮罩不透明度——按「底图明暗类」归档取值（2026-11-27 扩容重构，研究报告
   // 零散/底图研究-天地图卫星与用地图-261127.md 3.3 节建议；旧的两张平铺查表
@@ -1205,9 +1213,10 @@
     darkSat: { normal: 0.32, focus: 0.22 },
   };
   const BASEMAP_VEIL_BAND = {
-    gaode: 'light', 'gaode-plain': 'pale', osm: 'light',
+    gaode: 'light', 'gaode-plain': 'light', osm: 'light',
+    'ofm-labeled': 'pale', 'ofm-plain': 'pale',
     carto: 'pale',
-    planblock: 'dark', shanghai_W: 'darkSat',
+    planblock: 'dark', shanghai_W: 'darkSat', 'gaode-sat': 'darkSat',
   };
   // 深图类底图判定（dark/darkSat）：高亮策略按此分流——深图＝降透明度法、浅色＝白罩法
   //（2026-11-27 用户裁定；off／未知态兜底 light 档＝白罩法，纯防御）。改动点集中引用此
@@ -1277,12 +1286,18 @@
       tiles: [1, 2, 3, 4].map((n) =>
         'https://webrd0' + n + '.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}'),
     });
-    // 无字高德：wprd 子域＋scl=2&style=7&ltype=1（纯地理水系/绿地/陆地底图，不含高德内置路网与市域铁路/地铁底线，
-    // 避免与历史时间轴演进冲突；512×512 retina 高清、GCJ02 与路线同通道对齐）
+    // 无字高德：wprd 子域＋scl=2&style=7（完整保留路网、建筑地块、水系与绿地，去除全部文字注记；
+    // 512×512 retina 高清、GCJ02 与路线同通道对齐）
     map.addSource('basemap-gaode-plain', {
       type: 'raster', tileSize: 256,
       tiles: [1, 2, 3, 4].map((n) =>
-        'https://wprd0' + n + '.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=2&style=7&ltype=1&x={x}&y={y}&z={z}'),
+        'https://wprd0' + n + '.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=2&style=7&x={x}&y={y}&z={z}'),
+    });
+    // 高德卫星图：webst01-04 style=6 纯卫星影像（免 key 公共瓦片，GCJ02 偏移与高德矢量同源）
+    map.addSource('basemap-gaode-sat', {
+      type: 'raster', tileSize: 256, maxzoom: 18,
+      tiles: [1, 2, 3, 4].map((n) =>
+        'https://webst0' + n + '.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}'),
     });
     map.addSource('basemap-carto', {
       type: 'raster', tileSize: 256,
@@ -1338,6 +1353,8 @@
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-gaode-plain', type: 'raster', source: 'basemap-gaode-plain',
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
+    map.addLayer({ id: 'basemap-gaode-sat', type: 'raster', source: 'basemap-gaode-sat',
+      layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-carto', type: 'raster', source: 'basemap-carto',
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-planblock', type: 'raster', source: 'basemap-planblock',
@@ -1361,8 +1378,79 @@
   //（复用既有 render 函数，mode 变了自然产出变换后坐标）。箭头 icon-rotate 角度是 WGS84
   // 下算的——GCJ 常量级偏移（百米级）对方向角影响可忽略，不重算；fitAll/选中定位用的
   // dispBbox 已是显示坐标（与渲染同帧），不特殊处理。
+  // 无地铁纯净矢量底图（OpenFreeMap Bright 矢量瓦片，免 key，WGS84 精确对齐）：
+  // 完整保留路网、建筑地块、水系与绿地，彻底剔除全部地铁/铁路/轨交图层与站标；
+  // 支持「纯净矢量（中文路名地名）」与「纯净无字（纯路网建筑无注记）」双态实时切换。
+  const OFM_STATE = { status: 'idle', baseIds: [], labelIds: [] };
+  function syncOfmLayerVisibility() {
+    if (!S.map || OFM_STATE.status !== 'ready') return;
+    const showBase = S.basemap === 'ofm-plain' || S.basemap === 'ofm-labeled';
+    const showLbl = S.basemap === 'ofm-labeled';
+    for (const id of OFM_STATE.baseIds) {
+      if (S.map.getLayer(id)) S.map.setLayoutProperty(id, 'visibility', showBase ? 'visible' : 'none');
+    }
+    for (const id of OFM_STATE.labelIds) {
+      if (S.map.getLayer(id)) S.map.setLayoutProperty(id, 'visibility', showLbl ? 'visible' : 'none');
+    }
+  }
+  function ensureOfmVectorBasemap() {
+    if (!S.map || OFM_STATE.status !== 'idle') return;
+    OFM_STATE.status = 'loading';
+    fetch('https://tiles.openfreemap.org/styles/bright')
+      .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then((styleJson) => {
+        const map = S.map;
+        if (!map || !styleJson || !Array.isArray(styleJson.layers)) { OFM_STATE.status = 'error'; return; }
+        if (!map.getSource('basemap-ofm-omt')) {
+          map.addSource('basemap-ofm-omt', { type: 'vector', url: 'https://tiles.openfreemap.org/planet' });
+        }
+        const before = map.getLayer('basemap-veil') ? 'basemap-veil'
+          : (map.getLayer('provinces') ? 'provinces' : undefined);
+        const railRe = /rail|transit|subway|metro|train|ferry/i;
+        const skipSymbolRe = /road_oneway|shield|airport/i;
+        for (const raw of styleJson.layers) {
+          if (!raw || !raw.id || raw.source !== 'openmaptiles') continue;
+          if (railRe.test(raw.id)) continue;
+          if (raw['source-layer'] === 'poi') continue;
+          const isSym = raw.type === 'symbol';
+          if (isSym && skipSymbolRe.test(raw.id)) continue;
+          const ly = JSON.parse(JSON.stringify(raw));
+          ly.id = 'ofm-' + raw.id;
+          ly.source = 'basemap-ofm-omt';
+          ly.layout = ly.layout || {};
+          ly.layout.visibility = 'none';
+          if (isSym) {
+            delete ly.layout['icon-image'];
+            delete ly.layout['icon-size'];
+            delete ly.layout['icon-offset'];
+            delete ly.layout['icon-anchor'];
+            delete ly.layout['icon-padding'];
+            if (!ly.layout['text-field']) continue;
+            ly.layout['text-field'] = ['coalesce', ['get', 'name:zh'], ['get', 'name:zh-Hans'], ['get', 'name']];
+            const tf = ly.layout['text-font'];
+            if (Array.isArray(tf) && tf.some((f) => typeof f === 'string' && /bold/i.test(f))) {
+              ly.layout['text-font'] = ['Noto Sans Bold'];
+            } else {
+              ly.layout['text-font'] = ['Noto Sans Regular'];
+            }
+          }
+          try {
+            if (!map.getLayer(ly.id)) {
+              map.addLayer(ly, before);
+              if (isSym) OFM_STATE.labelIds.push(ly.id);
+              else OFM_STATE.baseIds.push(ly.id);
+            }
+          } catch (e) { /* skip incompatible optional layer */ }
+        }
+        OFM_STATE.status = 'ready';
+        syncOfmLayerVisibility();
+      })
+      .catch(() => { OFM_STATE.status = 'idle'; });
+  }
+
   function applyBasemapToMap() {
     if (S.basemap !== 'off') ensureBasemapLayers();
+    if (S.basemap === 'ofm-plain' || S.basemap === 'ofm-labeled') ensureOfmVectorBasemap();
     recomputeDimmed();   // 2026-11-27 深图态高亮策略：底图切换时 dim 集随明暗类重算（深图⇄浅色策略跟随、切走无残留——下方重设 source 读 S.dimmed）
     syncBasemapVeil();   // 遮罩档位随聚焦态与底图态（建层先落当态常态档，聚焦中开底图即刻换聚焦档；深图态恒常态档）
     const vis = (layerId, on) => {
@@ -1371,6 +1459,8 @@
     vis('basemap-osm', S.basemap === 'osm');
     vis('basemap-gaode', S.basemap === 'gaode');
     vis('basemap-gaode-plain', S.basemap === 'gaode-plain');
+    vis('basemap-gaode-sat', S.basemap === 'gaode-sat');
+    syncOfmLayerVisibility();
     vis('basemap-carto', S.basemap === 'carto');
     vis('basemap-planblock', S.basemap === 'planblock');
     // 卫星态两 layer 同置 visible，zoom 分工在 layer 级 min/maxzoom（z12 分界，见
@@ -1380,7 +1470,7 @@
     // 遮罩随底图开关（不透明度＝veilOpacityFor 按底图明暗类归档取值：浅色矢量 60/40、
     // carto 35/30、用地 32/27、卫星 32/22——见 VEIL_BANDS 注）
     vis('basemap-veil', S.basemap !== 'off');
-    // 显示坐标变换：高德矢量/无字同走 GCJ02；osm/carto/用地/上海卫星 WGS84 直通
+    // 显示坐标变换：高德矢量/无字/卫星三态同走 GCJ02；osm/carto/用地/上海卫星 WGS84 直通
     S.dispCoord = V.makeDispCoord(isGaodeBasemap(S.basemap) ? 'gaode'
       : (S.basemap === 'carto' ? 'carto' : 'none'));
     if (S.map.getSource('lines')) S.map.getSource('lines').setData(renderLinesFC());
@@ -3413,6 +3503,10 @@
     // 只按 zoom 门槛，见 visibleLabels 的 displayOnlyIds 放行）；混合单元按本地成员期次判
     // 时间轴态：按当前时刻 t 动态反映「站名历史更名」「动态站台定位」「非换乘→换乘升级」与「更名先隐后现动画」
     const tlDispT = S.tl.active ? timelineDisplayTimeAt(S.tl.currentTime) : 0;
+    const abNow = S.tl.active ? timelineActiveBatchAt(S.tl.currentTime) : null;
+    const tlLabelTol = abNow
+      ? Math.min(0.0005, Math.max(1e-5, (abNow.drawEndTime - abNow.startTime) * 0.01))
+      : 0.002;
     const ra = S.tl.active ? S.tl.renameAnim : null;
     const nowAnimMs = ra ? performance.now() : 0;
     const holdPreRenameOf = (key) => Boolean(ra && !ra.swapped && ra.key === key);
@@ -3420,12 +3514,12 @@
     const baseLabels = S.tl.active
       ? S.dispLabels.reduce((acc, label) => {
           const ot = S.pinOpenTime && S.pinOpenTime.get(label.key);
-          if (ot == null || ot > S.tl.currentTime + 0.02) return acc;
+          if (ot == null || ot > S.tl.currentTime + tlLabelTol) return acc;
           const tt = S.pinTransferTime && S.pinTransferTime.get(label.key);
-          const isTransferNow = Number.isFinite(tt) && tt <= S.tl.currentTime + 0.02;
+          const isTransferNow = Number.isFinite(tt) && tt <= S.tl.currentTime + tlLabelTol;
           const arrivals = S.pinLineArrivals && S.pinLineArrivals.get(label.key);
           const openedLineIds = Array.isArray(arrivals)
-            ? arrivals.filter((a) => a.openTime <= S.tl.currentTime + 0.02).map((a) => a.lineId)
+            ? arrivals.filter((a) => a.openTime <= S.tl.currentTime + tlLabelTol).map((a) => a.lineId)
             : (label.lineIds || []);
           let anchorLon = label.lon;
           let anchorLat = label.lat;
@@ -3515,7 +3609,8 @@
             ? '上海科技馆'
             : V.stationNameAt(S.timeline, label.name, openedLineIds.length ? openedLineIds : label.lineIds, tlDispT);
           const defUntil = S.pinDeferredUntil && S.pinDeferredUntil.get(label.key);
-          const isDeferredNow = Number.isFinite(defUntil) && tlDispT < defUntil - 0.01 && S.tl.currentTime < defUntil - 0.01;
+          const isDeferredNow = (Number.isFinite(defUntil) && tlDispT < defUntil - 0.01 && S.tl.currentTime < defUntil - 0.01)
+            || (holdPreRenameOf(label.key) && Boolean(ra && ra.isStationOpen));
           acc.push(Object.assign({}, label, {
             lon: anchorLon,
             lat: anchorLat,
@@ -3548,7 +3643,7 @@
           const lids = Array.isArray(lb.lineIds) ? lb.lineIds : [];
           if (lids.indexOf(ab.lineId) < 0 && lids.indexOf(ab.mainId) < 0) continue;
           const tReach = ab.labelReach && ab.labelReach.get(lb.key);
-          if (tReach != null && tReach > S.tl.currentTime + 0.01) continue;
+          if (tReach != null && tReach > S.tl.currentTime + tlLabelTol) continue;
           lb.tlActive = true;
           if (!present.has(lb.key)) {
             present.add(lb.key);
@@ -3705,9 +3800,17 @@
   const TIMELINE_MAX_T = 2040.0;
   const EMPTY_TL_FC = { type: 'FeatureCollection', features: [] };
   const TL_LAYER_IDS = [
-    'tl-ghost', 'tl-approved', 'tl-building', 'tl-done', 'tl-done-dash', 'tl-active-glow', 'tl-active',
+    'tl-ghost', 'tl-approved', 'tl-building', 'tl-build-hi-glow', 'tl-build-hi', 'tl-done', 'tl-done-dash', 'tl-active-glow', 'tl-active',
     'tl-pills-outer', 'tl-pills-inner', 'tl-stops', 'tl-stops-dark', 'tl-stops-big', 'tl-stops-fade',
   ];
+
+  // 恒定线路里程推进速度（约 5.2 km/s @ 1×），取代按站数恒定：
+  // 无论市区密站线、大站距市域快线（16/17/22/机场联络线/南枫线等）还是无站点远景预控通道，
+  // 线头与视口均保持一致的物理移动速率，彻底杜绝大站距及无站点线路视口飞速掠过！
+  function tlBatchTargetDrawSec(_segCount, totalKm) {
+    const km = Number.isFinite(totalKm) ? Math.max(0.5, totalKm) : 5;
+    return Math.max(1.5, Math.min(14.0, 0.55 + km / 5.2));
+  }
 
   // 线性巡航缓动：前 14% 柔和起速、中间 72% 纯匀速巡航、后 14% 柔和落停
   function smoothLinearCruise(p) {
@@ -3751,11 +3854,15 @@
       return best;
     };
     const stopReachBySid = new Map();
+    const stopFadeBySid = new Map();
     const stopHandoverBySid = new Map();
-    const recordStopReachSid = (sid, t, handover) => {
+    const recordStopReachSid = (sid, t, handover, fadeSpan) => {
       if (!sid) return;
       const prev = stopReachBySid.get(sid);
-      if (prev == null || t < prev) stopReachBySid.set(sid, t);
+      if (prev == null || t < prev) {
+        stopReachBySid.set(sid, t);
+        if (Number.isFinite(fadeSpan) && fadeSpan > 0) stopFadeBySid.set(sid, fadeSpan);
+      }
       if (handover) {
         const prevH = stopHandoverBySid.get(sid);
         if (!prevH || handover.beforeTime > prevH.beforeTime) stopHandoverBySid.set(sid, handover);
@@ -3772,9 +3879,16 @@
     };
 
     // ① 按每条线切出所有连续施工/开通批次，同日多线严格逐条排开（同线主线必先于支线）；
-    //    支持历史移交段（如原5号线支线→23号线、13西延南段→29号线）。
+    //    支持历史移交段（如原5号线支线→23号线、13西延南段→29号线）；
+    //    联络线不单独排在最后队列中，而是在本线排程完成后挂载到所连后开通主线的同一时段同步出现！
     const rawBatches = [];
+    const connectorLines = [];
     for (const line of S.linesMap.values()) {
+      const isConnector = (Array.isArray(line.connects) && line.connects.length > 0) || line.layer === '联络线';
+      if (isConnector) {
+        connectorLines.push(line);
+        continue;
+      }
       const rank = V.lineLayerRank(line);
       const isLocal = rank !== 'displayOnly' && rank !== 'hidden';
       const mainId = S.lineGroups.mainOf.get(line.lineId) || line.lineId;
@@ -3789,6 +3903,7 @@
         let j = i;
         while (j + 1 < segList.length
           && Math.abs(metas[j + 1].time - metas[i].time) < 1e-4
+          && (metas[j + 1].label || '') === (metas[i].label || '')
           && Boolean(metas[j + 1].handover) === Boolean(metas[i].handover)) j++;
         const batchLen = j - i + 1;
         const prevEarlier = i > 0 && metas[i - 1].time < metas[i].time - 1e-4;
@@ -3897,6 +4012,11 @@
           dwellEndTime = drawEndTime;
         }
         const drawSpan = Math.max(0.002, drawEndTime - slotStart);
+        const targetDrawSec = tlBatchTargetDrawSec(b.items.length, b.batchTotalKm);
+        const dwellSpan = Math.max(0.0005, dwellEndTime - drawEndTime);
+        // 统一按 1× 播放约 0.30 秒真实耗时折算站圈渐显窗，且不超过停顿期的 35%，
+        // 彻底避免 3北/7号线 等窄时间窗线路画完后站点仅浮现一半！
+        const batchFadeSpan = Math.max(0.0003, Math.min(0.016, (drawSpan / targetDrawSec) * 0.30, dwellSpan * 0.35));
         let accKm = 0;
         const batchStopReachesBySid = new Map();
         for (const item of b.items) {
@@ -3904,21 +4024,21 @@
           const f0 = b.batchTotalKm > 0 ? accKm / b.batchTotalKm : 0;
           accKm += wKm;
           const f1 = b.batchTotalKm > 0 ? accKm / b.batchTotalKm : 1;
-          // 严格匀速里程映射：整条线路从起点到终点速度恒定流畅
+          // 严格匀速里程映射：整条线路相邻区段首尾严格衔接、零重叠，杜绝 activeTipCoord 来回跳动
           const startTime = slotStart + f0 * drawSpan;
-          const endTime = Math.max(startTime + 0.0004, slotStart + f1 * drawSpan);
+          const endTime = slotStart + f1 * drawSpan;
           segOpenByLineIdx.set(b.lineId + ':' + item.sg.segIndex, startTime);
           // 几何端点精确匹配站点（彻底杜绝含 arrow 端点线路的索引偏移）
           const stStart = matchNearestStop(b.lineId, item.coords[0]);
           const stEnd = matchNearestStop(b.lineId, item.coords[item.coords.length - 1]);
           if (stStart) {
-            recordStopReachSid(stStart.sid, startTime, item.meta.handover);
+            recordStopReachSid(stStart.sid, startTime, item.meta.handover, batchFadeSpan);
             if (!batchStopReachesBySid.has(stStart.sid) || startTime < batchStopReachesBySid.get(stStart.sid)) {
               batchStopReachesBySid.set(stStart.sid, startTime);
             }
           }
           if (stEnd) {
-            recordStopReachSid(stEnd.sid, endTime, item.meta.handover);
+            recordStopReachSid(stEnd.sid, endTime, item.meta.handover, batchFadeSpan);
             if (!batchStopReachesBySid.has(stEnd.sid) || endTime < batchStopReachesBySid.get(stEnd.sid)) {
               batchStopReachesBySid.set(stEnd.sid, endTime);
             }
@@ -3973,6 +4093,8 @@
             openText: b.openText,
             stage: b.stage,
             segCount: b.items.length,
+            totalKm: b.batchTotalKm,
+            avgSegKm: b.batchTotalKm / Math.max(1, b.items.length),
             openTime: b.openTime,
             startTime: slotStart,
             drawEndTime,
@@ -3983,6 +4105,93 @@
             endCoord: lastCoords[lastCoords.length - 1],
             stops: batchStops,
             labelReach,
+          });
+        }
+      }
+    }
+    // 联络线跟随所属主线同步出现（取所连各主线邻接区段中较晚开通者的批次时段，不单独占队也不抢镜头）
+    if (connectorLines.length) {
+      const segsByLineId = new Map();
+      const segsByMainId = new Map();
+      for (const s of segsOut) {
+        if (!segsByLineId.has(s.lineId)) segsByLineId.set(s.lineId, []);
+        segsByLineId.get(s.lineId).push(s);
+        if (!segsByMainId.has(s.mainId)) segsByMainId.set(s.mainId, []);
+        segsByMainId.get(s.mainId).push(s);
+      }
+      const batchByKey = new Map();
+      for (const b of batchesOut) batchByKey.set(b.key, b);
+      const nearestSegOf = (pool, midPt) => {
+        if (!pool || !pool.length) return null;
+        let best = pool[0], bestD = Infinity;
+        for (const cand of pool) {
+          const cs = cand.coords;
+          if (!cs || !cs.length) continue;
+          const p0 = cs[0], p1 = cs[cs.length - 1], pm = cs[cs.length >> 1];
+          const d = Math.min(
+            Math.hypot(p0[0] - midPt[0], p0[1] - midPt[1]),
+            Math.hypot(p1[0] - midPt[0], p1[1] - midPt[1]),
+            Math.hypot(pm[0] - midPt[0], pm[1] - midPt[1])
+          );
+          if (d < bestD) { bestD = d; best = cand; }
+        }
+        return best;
+      };
+      for (const conn of connectorLines) {
+        const connects = Array.isArray(conn.connects) ? conn.connects : [];
+        const dash = V.lineDashed(conn);
+        const rank = V.lineLayerRank(conn);
+        const isLocal = rank !== 'displayOnly' && rank !== 'hidden';
+        for (const sg of conn.segments) {
+          const coords = [];
+          for (const pt of sg.coords) {
+            if (pt && Number.isFinite(pt[0]) && Number.isFinite(pt[1])) coords.push(dc(pt[0], pt[1]));
+          }
+          if (coords.length < 2) continue;
+          const midPt = coords[coords.length >> 1];
+          let hostSeg = null;
+          for (const cid of connects) {
+            const cMain = (S.lineGroups && S.lineGroups.mainOf.get(cid)) || cid;
+            const pool = segsByLineId.get(cid) || segsByMainId.get(cMain) || [];
+            const ns = nearestSegOf(pool, midPt);
+            if (ns && (!hostSeg || ns.endTime > hostSeg.endTime)) hostSeg = ns;
+          }
+          const hostBatch = hostSeg ? batchByKey.get(hostSeg.batchKey) : null;
+          const startTime = hostBatch ? hostBatch.startTime : (hostSeg ? hostSeg.startTime : 2035.0);
+          const endTime = hostBatch ? hostBatch.drawEndTime : (hostSeg ? hostSeg.endTime : 2035.1);
+          const openTime = hostSeg ? hostSeg.openTime : 2035.0;
+          const approveTime = hostSeg ? hostSeg.approveTime : null;
+          const buildTime = hostSeg ? hostSeg.buildTime : null;
+          const cumDist = V.polylineCumDistKm(coords);
+          const totalKm = cumDist[cumDist.length - 1] || 0;
+          segOpenByLineIdx.set(conn.lineId + ':' + sg.segIndex, startTime);
+          const stStart = matchNearestStop(conn.lineId, coords[0]);
+          const stEnd = matchNearestStop(conn.lineId, coords[coords.length - 1]);
+          const fadeS = Math.max(0.0005, Math.min(0.012, (endTime - startTime) * 0.25));
+          if (stStart) recordStopReachSid(stStart.sid, endTime, null, fadeS);
+          if (stEnd) recordStopReachSid(stEnd.sid, endTime, null, fadeS);
+          segsOut.push({
+            batchKey: hostSeg ? hostSeg.batchKey : (conn.lineId + ':conn'),
+            lineId: conn.lineId,
+            mainId: conn.lineId,
+            segIndex: sg.segIndex,
+            color: conn.color || '#888888',
+            dash,
+            isLocal,
+            isConnector: true,
+            stage: hostSeg ? hostSeg.stage : 'future',
+            sharedOffset: Number.isFinite(sg.sharedOffset) ? sg.sharedOffset : 0,
+            openTime,
+            approveTime,
+            approveText: hostSeg ? hostSeg.approveText : '',
+            buildTime,
+            buildText: hostSeg ? hostSeg.buildText : '',
+            handover: null,
+            startTime,
+            endTime,
+            coords,
+            cumDist,
+            totalKm,
           });
         }
       }
@@ -4098,6 +4307,7 @@
           lat,
           builtTime: t,
           openTime: effOpenTime,
+          fadeSpan: stopFadeBySid.get(s.sid) || 0.006,
           handover: ho,
         });
       }
@@ -4122,6 +4332,7 @@
           lat: pinObj.lat,
           builtTime: bt,
           openTime: ot,
+          fadeSpan: (pinObj.sid && stopFadeBySid.get(pinObj.sid)) || 0.006,
           handover: ho,
         });
       }
@@ -4162,8 +4373,12 @@
         const opened = [];
         const builtOnly = [];
         const activeLinesMap = new Map();
+        let stageFadeSpan = Infinity;
         for (const se of stopEntries) {
           if (se.builtTime > t + 0.004) continue;
+          if (Math.abs(se.builtTime - t) <= 0.004 || Math.abs(se.openTime - t) <= 0.004) {
+            if (Number.isFinite(se.fadeSpan) && se.fadeSpan < stageFadeSpan) stageFadeSpan = se.fadeSpan;
+          }
           const useHo = se.handover && t + 0.004 < se.handover.beforeTime;
           const effMain = useHo ? se.handover.mainId : se.mainId;
           const effLid = useHo ? se.handover.lineId : se.lineId;
@@ -4393,6 +4608,10 @@
       }
 
       if (!stages.length) return null;
+      const fallbackFade = stopEntries.reduce((mn, se) => Math.min(mn, se.fadeSpan || 0.006), 0.006);
+      for (let si = 0; si < stages.length; si++) {
+        if (!Number.isFinite(stages[si].fadeSpan)) stages[si].fadeSpan = fallbackFade;
+      }
       const arrivals = Array.from(arrivalsByMain.values()).sort((a, b) => a.openTime - b.openTime);
       const openTime = stages[0].fromTime;
       if (stages[0].isDeferred && Number.isFinite(firstOpenedTime) && firstOpenedTime > openTime) {
@@ -4477,7 +4696,7 @@
     if (!map || S.tl.layersBuilt) return;
     S.tl.layersBuilt = true;
     const before = map.getLayer('focus-veil') ? 'focus-veil' : undefined;
-    for (const id of ['tl-ghost', 'tl-approved', 'tl-building', 'tl-done', 'tl-active', 'tl-pills', 'tl-stops', 'tl-stops-fade']) {
+    for (const id of ['tl-ghost', 'tl-approved', 'tl-building', 'tl-build-hi', 'tl-done', 'tl-active', 'tl-pills', 'tl-stops', 'tl-stops-fade']) {
       if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: EMPTY_TL_FC });
     }
     map.addLayer({
@@ -4510,6 +4729,29 @@
         'line-dasharray': [2.2, 1.8],
         'line-opacity': 0.64,
         'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX * 0.92), V.LINE_WIDTH_PX * 0.92),
+        'line-offset': ['coalesce', ['get', 'sharedOffset'], 0],
+      },
+    }, before);
+    // 线路开工拉远展示高亮层：开工事件触发时以柔和外发光＋醒目虚线呈现新动工线路全貌
+    map.addLayer({
+      id: 'tl-build-hi-glow', type: 'line', source: 'tl-build-hi',
+      layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
+      paint: {
+        'line-color': ['get', 'color'],
+        'line-opacity': 0.28,
+        'line-blur': 4,
+        'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX * 2.4), V.LINE_WIDTH_PX * 2.4),
+        'line-offset': ['coalesce', ['get', 'sharedOffset'], 0],
+      },
+    }, before);
+    map.addLayer({
+      id: 'tl-build-hi', type: 'line', source: 'tl-build-hi',
+      layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
+      paint: {
+        'line-color': ['get', 'color'],
+        'line-dasharray': [2.4, 1.5],
+        'line-opacity': 0.96,
+        'line-width': V.zoomInterp(V.scaledSize(V.LINE_WIDTH_PX * 1.25), V.LINE_WIDTH_PX * 1.25),
         'line-offset': ['coalesce', ['get', 'sharedOffset'], 0],
       },
     }, before);
@@ -4666,9 +4908,11 @@
   }
   function timelineBatchLatestStop(batch, t) {
     if (!batch || !Array.isArray(batch.stops) || !batch.stops.length) return null;
+    const drawSpan = Math.max(0, (batch.drawEndTime || batch.endTime || 0) - (batch.startTime || 0));
+    const tol = Math.min(0.0004, drawSpan * 0.008);
     let best = batch.stops[0];
     for (let i = 0; i < batch.stops.length; i++) {
-      if (batch.stops[i].reachTime <= t + 0.004) best = batch.stops[i];
+      if (batch.stops[i].reachTime <= t + tol) best = batch.stops[i];
       else break;
     }
     return best;
@@ -4681,13 +4925,81 @@
       && (batch.endCoord[1] < batch.startCoord[1] - 0.01);
     const nsBiasY = isNS ? (headingSouth ? -26 : -14) : 0;
     const offset = [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2 + nsBiasY];
-    const closeZoom = (batch && batch.segCount <= 3) ? 12.8 : 12.4;
+    // 按平均站距与线路总长度自适应取景层级：市区线保持站级 z12.4~12.8；
+    // 16/17/22/机场联络线/示范区线等大站距长线自动拉远至 z10.6~11.9，显著降低像素平移速度！
+    const avgKm = (batch && Number.isFinite(batch.avgSegKm)) ? batch.avgSegKm : 1.5;
+    const totKm = (batch && Number.isFinite(batch.totalKm)) ? batch.totalKm : 10;
+    let closeZoom = (batch && batch.segCount <= 3 && avgKm <= 2.2) ? 12.8 : 12.4;
+    if (avgKm > 2.0 || totKm > 38) {
+      const kmPenalty = Math.max(0, Math.log2(Math.max(1, avgKm / 1.8)) * 0.72)
+        + Math.max(0, (totKm - 38) / 60) * 0.35;
+      closeZoom = Math.max(10.6, Math.min(closeZoom, 12.4 - kmPenalty));
+    }
     const canvas = S.map && S.map.getCanvas();
     const w = canvas ? canvas.clientWidth : G.innerWidth;
     const h = canvas ? canvas.clientHeight : G.innerHeight;
     const openCx = (w + pad.left - pad.right) / 2;
     const openCy = (h + pad.top - pad.bottom) / 2 + nsBiasY;
     return { pad, nsBiasY, offset, closeZoom, openCx, openCy };
+  }
+  function tlShowcaseEventBbox(evType, evTime) {
+    const segs = S.tl.segments || [];
+    let bb = null;
+    for (let i = 0; i < segs.length; i++) {
+      const sg = segs[i];
+      if (!sg.isLocal) continue;
+      const cmpT = evType === 'plan' ? sg.approveTime : sg.buildTime;
+      if (!Number.isFinite(cmpT) || Math.abs(cmpT - evTime) > 0.12) continue;
+      for (let k = 0; k < sg.coords.length; k++) {
+        const pt = sg.coords[k];
+        if (!pt || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1])) continue;
+        if (!bb) bb = [pt[0], pt[1], pt[0], pt[1]];
+        else {
+          if (pt[0] < bb[0]) bb[0] = pt[0];
+          if (pt[1] < bb[1]) bb[1] = pt[1];
+          if (pt[0] > bb[2]) bb[2] = pt[0];
+          if (pt[1] > bb[3]) bb[3] = pt[1];
+        }
+      }
+    }
+    if (!bb) return null;
+    const dx = Math.max(0.05, (bb[2] - bb[0]) * 0.14);
+    const dy = Math.max(0.04, (bb[3] - bb[1]) * 0.14);
+    return [bb[0] - dx, bb[1] - dy, bb[2] + dx, bb[3] + dy];
+  }
+  function panToShowcaseOverview(evType, evTime) {
+    if (!S.map) return 0;
+    const bb = tlShowcaseEventBbox(evType, evTime);
+    if (!bb) return 0;
+    const pad = tlCameraPadding();
+    let cam = null;
+    try {
+      cam = S.map.cameraForBounds([[bb[0], bb[1]], [bb[2], bb[3]]], { padding: pad, maxZoom: 11.2 });
+    } catch (e) { cam = null; }
+    if (!cam || !cam.center) return 0;
+    const targetZoom = Math.max(9.2, Math.min(11.2, Number.isFinite(cam.zoom) ? cam.zoom : 10.6));
+    let distKm = 12;
+    try {
+      const c = S.map.getCenter();
+      if (c && Number.isFinite(c.lng) && Number.isFinite(c.lat)) {
+        const tc = Array.isArray(cam.center) ? cam.center : [cam.center.lng, cam.center.lat];
+        distKm = V.haversineKm([c.lng, c.lat], tc);
+      }
+    } catch (e) { /* fallback */ }
+    const panDur = Math.round(Math.max(680, Math.min(1450, 540 + distKm * 24)));
+    S.map.easeTo({
+      center: cam.center,
+      zoom: targetZoom,
+      duration: panDur,
+      essential: true,
+      easing: smoothLinearCruise,
+    });
+    return panDur;
+  }
+  function resetShowcaseFlashPaint() {
+    if (!S.map) return;
+    if (S.map.getLayer('tl-build-hi')) S.map.setPaintProperty('tl-build-hi', 'line-opacity', 0.92);
+    if (S.map.getLayer('tl-build-hi-glow')) S.map.setPaintProperty('tl-build-hi-glow', 'line-opacity', 0.30);
   }
   // 切换至下一条线路前的「先就位再开行」视口门控：先把目标线路起点平稳平移到可见视口中央，
   // 返回需要等待相机就位的时长（ms）；若起点已在可见中心附近则返回 0 立即开行。
@@ -4735,6 +5047,10 @@
     if (!force && S.tl.panGateUntilMs > 0 && now < S.tl.panGateUntilMs) return;
     const t = S.tl.currentTime;
     const active = timelineActiveBatchAt(t);
+    // 正常播放期间，仅在活跃线路「正在逐站绘制（t < drawEndTime）」时跟随；
+    // 线末停顿期与两线之间的空窗期（含更名/暂缓站特写结束后）绝不回拉到已画完的老线路终点，
+    // 杜绝 15号线/18号线/7号线/2号线 在特写或空窗期来回折返平移！
+    if (!force && (!active || t >= active.drawEndTime)) return;
     let targetBatch = active;
     if (!targetBatch) {
       const batches = S.tl.batches || [];
@@ -4806,6 +5122,10 @@
     const activeFeats = [];
     const approvedFeats = [];
     const buildingFeats = [];
+    const buildHiFeats = [];
+    const shHi = S.tl.showcaseHighlight;
+    const shHiType = shHi ? shHi.type : '';
+    const shHiTime = (shHi && Number.isFinite(shHi.time)) ? shHi.time : null;
     let liveKm = 0;
     let approveKm = 0;
     let buildKm = 0;
@@ -4830,6 +5150,17 @@
       const sg = segs[i];
       const eff = effOfSeg(sg);
       if (sg.startTime > t) {
+        // 线路批复 / 线路开工拉远闪动展示态：高亮对应新批复或新开工线路全貌（即使「批复/在建」关闭也清晰展现）
+        if (shHiTime != null && sg.isLocal) {
+          const cmpT = shHiType === 'plan' ? sg.approveTime : sg.buildTime;
+          if (Number.isFinite(cmpT) && Math.abs(cmpT - shHiTime) <= 0.12) {
+            buildHiFeats.push({
+              type: 'Feature',
+              geometry: { type: 'LineString', coordinates: sg.coords },
+              properties: { color: eff.color, sharedOffset: sg.sharedOffset },
+            });
+          }
+        }
         // 严格四态演进：未批复不展示 → 已批复待开工浅色预显（tl-approved）→ 已开工虚线展示（tl-building）→ 已开通实线
         if (S.tl.buildOn && sg.isLocal) {
           if (sg.buildTime != null && sg.buildTime <= displayT + 0.01) {
@@ -4857,7 +5188,7 @@
         handoverSwitched += eff.switched;
         if (sg.isLocal) {
           liveKm += sg.totalKm;
-          liveLines.add(eff.mainId);
+          if (!sg.isConnector) liveLines.add(eff.mainId);
         }
         doneFeats.push({
           type: 'Feature',
@@ -4865,13 +5196,16 @@
           properties: { color: eff.color, dash: sg.dash, local: sg.isLocal ? 1 : 0, sharedOffset: sg.sharedOffset },
         });
       } else {
-        const rawP = Math.max(0, Math.min(1, (t - sg.startTime) / Math.max(0.0004, sg.endTime - sg.startTime)));
+        const segDur = Math.max(1e-6, sg.endTime - sg.startTime);
+        const rawP = Math.max(0, Math.min(1, (t - sg.startTime) / segDur));
         const sliced = V.slicePolylineByRatio(sg.coords, sg.cumDist, sg.totalKm, rawP);
+        if (sg.isLocal && !sg.isConnector && (!activeBatch || sg.batchKey === activeBatch.key)) {
+          activeTipCoord = (sliced && sliced.tip) ? sliced.tip : sg.coords[0];
+        }
         if (sliced && sliced.coords.length >= 2) {
           if (sg.isLocal) {
             liveKm += sg.totalKm * rawP;
-            liveLines.add(eff.mainId);
-            if (sliced.tip && (!activeBatch || sg.batchKey === activeBatch.key)) activeTipCoord = sliced.tip;
+            if (!sg.isConnector) liveLines.add(eff.mainId);
           }
           activeFeats.push({
             type: 'Feature',
@@ -4911,6 +5245,13 @@
       S.tl.lastBuildSig = buildSig;
       S.map.getSource('tl-building').setData({ type: 'FeatureCollection', features: buildingFeats });
     }
+    const buildHiSig = (shHiTime != null ? (shHiType + ':' + shHiTime) : '') + ':' + buildHiFeats.length;
+    if (force || buildHiSig !== S.tl.lastBuildHiSig) {
+      S.tl.lastBuildHiSig = buildHiSig;
+      if (S.map.getSource('tl-build-hi')) {
+        S.map.getSource('tl-build-hi').setData({ type: 'FeatureCollection', features: buildHiFeats });
+      }
+    }
 
     // 站点与换乘图标（按线路数逐步演变：单线小圆 → 2线大圆 → 3线/4线逐步生长的药丸）
     const stablePins = [];
@@ -4918,7 +5259,6 @@
     const fadeFeats = [];
     let liveStations = 0;
     let stageSigHash = 0;
-    const FADE_WINDOW = 0.035;
     const zScale = V.labelScale(S.map.getZoom());
     const bigDef = STOP_LAYER_DEFS.find((d) => d.id === 'stops-big') || { radius: 6, strokeW: 2.2 };
     const normDef = STOP_LAYER_DEFS.find((d) => d.id === 'stops') || { radius: 3.5, strokeW: 1.8 };
@@ -4927,31 +5267,34 @@
     const raIcon = S.tl.renameAnim;
     for (let i = 0; i < units.length; i++) {
       const u = units[i];
-      if (u.openTime > t) break;
+      if (u.openTime > t + 1e-5) break;
       const stgList = u.stages;
-      const evalT = (raIcon && !raIcon.swapped && u.key === raIcon.key) ? (t - 0.02) : t;
+      const evalT = (raIcon && !raIcon.swapped && u.key === raIcon.key)
+        ? Math.min(t - 0.02, Number.isFinite(raIcon.evTime) ? (raIcon.evTime - 0.02) : (t - 0.02))
+        : t;
       let si = 0;
       while (si + 1 < stgList.length && stgList[si + 1].fromTime <= evalT + 1e-4) si++;
       const cur = stgList[si];
       if (u.isLocal && !cur.isDeferred) liveStations++;
       stageSigHash += (si + 1) * ((i % 97) + 1);
-      const age = t - cur.fromTime;
+      const age = Math.max(0, t - cur.fromTime);
+      const fadeWin = (Number.isFinite(cur.fadeSpan) && cur.fadeSpan > 0) ? cur.fadeSpan : 0.006;
 
       if (cur.kind === 'pill') {
         openPills.push(cur.feature);
-      } else if (age >= 0 && age < FADE_WINDOW) {
-        const k = Math.max(0, Math.min(1, age / FADE_WINDOW));
+      } else if (age < fadeWin) {
+        const k = Math.max(0, Math.min(1, age / fadeWin));
         const ease = 1 - Math.pow(1 - k, 3);
         const targetDef = cur.feature.properties.big ? bigDef : normDef;
-        const fromR = si > 0 ? normDef.radius : targetDef.radius * 0.35;
-        const fromSW = si > 0 ? normDef.strokeW : targetDef.strokeW * 0.5;
+        const fromR = si > 0 ? normDef.radius : targetDef.radius * 0.55;
+        const fromSW = si > 0 ? normDef.strokeW : targetDef.strokeW * 0.65;
         fadeFeats.push({
           type: 'Feature',
           geometry: cur.feature.geometry,
           properties: {
             r: (fromR + (targetDef.radius - fromR) * ease) * zScale,
             sw: (fromSW + (targetDef.strokeW - fromSW) * ease) * zScale,
-            op: si > 0 ? (0.5 + 0.5 * ease) : ease,
+            op: si > 0 ? (0.65 + 0.35 * ease) : (0.40 + 0.60 * ease),
             fill: cur.isDeferred ? '#d5d9df' : '#ffffff',
             stroke: cur.feature.properties.stroke || '#000000',
           },
@@ -4974,13 +5317,15 @@
     }
     S.map.getSource('tl-stops-fade').setData({ type: 'FeatureCollection', features: fadeFeats });
 
-    // 更新 HUD 实时数字、大字真实日期（未审批远期/远景不编造具体年份）、在建里程、阶段徽章、大事件/当前车站字幕与滑块
+    // 更新 HUD 实时数字、大字真实日期（无明确时间表近期/远期/远景不编造具体年份）、在建里程、阶段徽章、大事件/当前车站字幕与滑块
     const dtEl = $('tlDateLabel');
     if (dtEl) {
-      if ((activeBatch && activeBatch.stage === 'corridor') || (!activeBatch && displayT >= 2037.5)) {
+      if ((activeBatch && activeBatch.stage === 'corridor') || (!activeBatch && displayT >= 2038.2)) {
         dtEl.textContent = '远景预控';
-      } else if ((activeBatch && activeBatch.stage === 'future') || (!activeBatch && displayT >= 2033.2)) {
+      } else if ((activeBatch && activeBatch.stage === 'future') || (!activeBatch && displayT >= 2034.85)) {
         dtEl.textContent = '远期规划';
+      } else if ((activeBatch && activeBatch.stage === 'near_term') || (!activeBatch && displayT >= 2033.2)) {
+        dtEl.textContent = '近期规划';
       } else {
         dtEl.textContent = V.formatDecimalYear(displayT);
       }
@@ -5004,7 +5349,7 @@
 
     const stage = activeBatch
       ? (activeBatch.stage || 'approved')
-      : (displayT < 2026.5 ? 'opened' : (displayT < 2033.1 ? 'approved' : (displayT < 2036.8 ? 'future' : 'corridor')));
+      : (displayT < 2026.5 ? 'opened' : (displayT < 2033.2 ? 'approved' : (displayT < 2034.85 ? 'near_term' : (displayT < 2038.2 ? 'future' : 'corridor'))));
     const sb = $('tlStageBadge');
     if (sb) {
       sb.textContent = V.TIMELINE_STAGE_ZH[stage] || '规划';
@@ -5091,6 +5436,9 @@
       } else if (shown.type === 'station') {
         if (tEl) tEl.textContent = '暂缓站开通：' + (shown.title || '');
         if (sEl) sEl.textContent = (shown.date ? (shown.date + ' ') : '') + (shown.detail || '');
+      } else if (shown.type === 'build') {
+        if (tEl) tEl.textContent = '线路开工：' + (shown.title || '');
+        if (sEl) sEl.textContent = (shown.date ? (shown.date + ' ') : '') + (shown.detail || '');
       } else {
         if (tEl) tEl.textContent = shown.title || '';
         if (sEl) sEl.textContent = (shown.date ? (shown.date + '获批：') : '') + (shown.detail || '');
@@ -5154,11 +5502,16 @@
         S.tl.eventPanUntilMs = 0;
         S.tl.eventPauseUntilMs = 0;
         S.tl.eventPauseId = '';
-        S.tl.activePlanBanner = (ev.type === 'plan' || ev.type === 'rename' || ev.type === 'station') ? ev : null;
+        S.tl.activePlanBanner = (ev.type === 'plan' || ev.type === 'rename' || ev.type === 'station' || ev.type === 'build') ? ev : null;
+        S.tl.showcaseHighlight = (ev.type === 'build' || ev.type === 'plan') ? { type: ev.type, time: ev.time, panDoneMs: 0, endMs: 0 } : null;
+        resetShowcaseFlashPaint();
         pruneTriggeredEventsAfter(ev.time);
         const ab = timelineActiveBatchAt(targetT);
         S.tl.arrivedBatchKey = ab ? ab.key : '';
-        if (S.tl.followOn && Array.isArray(ev.coord) && ev.coord.length >= 2 && S.map) {
+        if (S.tl.followOn && (ev.type === 'build' || ev.type === 'plan') && S.map) {
+          panToShowcaseOverview(ev.type, ev.time);
+          renderTimelineFrame(true, 0, true);
+        } else if (S.tl.followOn && Array.isArray(ev.coord) && ev.coord.length >= 2 && S.map) {
           const pad = tlCameraPadding();
           S.map.easeTo({
             center: S.dispCoord(ev.coord[0], ev.coord[1]),
@@ -5191,6 +5544,15 @@
   function resolveRenameLabelKey(ev) {
     if (!ev) return null;
     if (ev.stationKey) return ev.stationKey;
+    if (ev.sid) {
+      const stObj = (S.stops || []).find((s) => s.sid === ev.sid);
+      if (stObj) {
+        const pk = S.groupTree ? V.stopPinKeyOf(stObj, S.groupTree) : stObj.sid;
+        const pin = pk && S.pinByKey ? S.pinByKey.get(pk) : null;
+        if (pin && pin.groupType === 'out-of-station' && pin.groupId != null) return 'g:' + pin.groupId;
+        if (pk) return pk;
+      }
+    }
     const rk = ev.rkey || '';
     if (rk === 'l0016:人民广场') return 'g:g0023';
     if (rk === '国家会展中心') return 'g:g0076';
@@ -5222,6 +5584,20 @@
     // 更名事件到达后先让老站名渐隐退场、停顿一拍、再突出浮现新站名并同步切换换乘图标！
     if (S.tl.eventPauseUntilMs > 0) {
       if (nowMs < S.tl.eventPauseUntilMs) {
+        if (S.tl.showcaseHighlight && S.map) {
+          const sh = S.tl.showcaseHighlight;
+          if (nowMs < sh.panDoneMs) {
+            if (S.map.getLayer('tl-build-hi')) S.map.setPaintProperty('tl-build-hi', 'line-opacity', 0.72);
+            if (S.map.getLayer('tl-build-hi-glow')) S.map.setPaintProperty('tl-build-hi-glow', 'line-opacity', 0.20);
+          } else {
+            // 镜头拉远就位后，让新批复 / 新开工线路清脆闪动 3 个脉冲，醒目呈现覆盖范围
+            const dwellTotal = Math.max(400, sh.endMs - sh.panDoneMs);
+            const frac = Math.max(0, Math.min(1, (nowMs - sh.panDoneMs) / dwellTotal));
+            const pulse = 0.5 - 0.5 * Math.cos(frac * Math.PI * 6);
+            if (S.map.getLayer('tl-build-hi')) S.map.setPaintProperty('tl-build-hi', 'line-opacity', 0.18 + 0.82 * pulse);
+            if (S.map.getLayer('tl-build-hi-glow')) S.map.setPaintProperty('tl-build-hi-glow', 'line-opacity', 0.06 + 0.56 * pulse);
+          }
+        }
         if (S.tl.renameAnim) {
           if (!S.tl.renameAnim.swapped && nowMs >= S.tl.renameAnim.swapMs) {
             S.tl.renameAnim.swapped = true;
@@ -5236,13 +5612,15 @@
         return;
       }
       const hadRename = Boolean(S.tl.renameAnim);
+      const hadShowcase = Boolean(S.tl.showcaseHighlight);
       S.tl.eventPanUntilMs = 0;
       S.tl.eventPauseUntilMs = 0;
       S.tl.eventPauseId = '';
       S.tl.activePlanBanner = null;
       S.tl.renameAnim = null;
-      S.tl.renameAnim = null;
-      if (hadRename) renderTimelineFrame(true, 0, true);
+      S.tl.showcaseHighlight = null;
+      if (hadShowcase) resetShowcaseFlashPaint();
+      if (hadRename || hadShowcase) renderTimelineFrame(true, 0, true);
       dt = 0.016;
     }
 
@@ -5269,9 +5647,9 @@
     let yps;
     if (activeBatch) {
       if (ct < activeBatch.drawEndTime) {
-        // 逐站演示期：1× 下约每秒 3~4 站（2站约1.8秒、20站约6.6秒），清晰呈现车站逐个加载与站级跟焦
+        // 逐站演示期：市区线按站数匀速，16/17/22/机场联络线等长距离大站距线按总里程放缓
         const drawSpan = Math.max(0.001, activeBatch.drawEndTime - activeBatch.startTime);
-        const targetDrawSec = Math.max(1.8, Math.min(7.5, 1.0 + 0.28 * activeBatch.segCount));
+        const targetDrawSec = tlBatchTargetDrawSec(activeBatch.segCount, activeBatch.totalKm);
         yps = (drawSpan / targetDrawSec) * speed;
       } else {
         // 线末停顿展示期：每条线播完安静停顿约 1.15 秒后再飞往下一条线
@@ -5298,26 +5676,33 @@
       if (!ev.pauseMs || ev.pauseMs <= 0) continue;
       if (S.tl.triggeredEventIds.has(ev.id)) continue;
       const isCloseup = (ev.type === 'rename' || ev.type === 'station') && Array.isArray(ev.coord) && ev.coord.length >= 2;
+      const isShowcase = ev.type === 'build' || ev.type === 'plan';
       const prevCmp = ev.useSlotTime ? ct : prevDisp;
       const nextCmp = ev.useSlotTime ? nextCt : nextDisp;
-      const minWin = isCloseup ? (prevCmp - 0.55) : (prevCmp - 0.004);
+      const minWin = (isCloseup || isShowcase) ? (prevCmp - 0.55) : (prevCmp - 0.004);
       if (ev.time > minWin && ev.time <= nextCmp + 0.004) {
-        // 正在画线过程中：更名/暂缓站开通不丢弃，顺延到当前线画完立刻特写；普通小开工事件跳过以免打断画线
-        if (ev.type !== 'plan' && activeBatch && ct < activeBatch.drawEndTime) {
-          if (!isCloseup) S.tl.triggeredEventIds.add(ev.id);
+        // 正在画线过程中：更名/暂缓站开通/批复/开工不丢弃，顺延到当前线画完立刻拉远闪动或拉近特写
+        if (activeBatch && ct < activeBatch.drawEndTime) {
+          if (!isCloseup && !isShowcase) S.tl.triggeredEventIds.add(ev.id);
           continue;
         }
         S.tl.triggeredEventIds.add(ev.id);
         const pauseScale = Math.sqrt(Math.max(0.5, speed));
         const dwellMs = ev.type === 'plan'
-          ? Math.round(Math.max(1200, ev.pauseMs / pauseScale))
-          : (ev.type === 'rename'
-            ? Math.round(Math.max(1850, (ev.pauseMs || 2200) / pauseScale))
-            : (isCloseup
-              ? Math.round(Math.max(950, ev.pauseMs / pauseScale))
-              : Math.round(Math.max(450, ev.pauseMs / pauseScale))));
+          ? Math.round(Math.max(1650, ev.pauseMs / pauseScale))
+          : ((ev.type === 'rename' || ev.type === 'station')
+            ? Math.round(Math.max(1850, (ev.pauseMs || 2100) / pauseScale))
+            : (ev.type === 'build'
+              ? Math.round(Math.max(1350, (ev.pauseMs || 1450) / pauseScale))
+              : (isCloseup
+                ? Math.round(Math.max(950, ev.pauseMs / pauseScale))
+                : Math.round(Math.max(450, ev.pauseMs / pauseScale)))));
         let panDur = 0;
-        if (isCloseup && S.tl.followOn && S.map && nowMs >= (S.tl.userPanUntilMs || 0)) {
+        if (isShowcase && S.tl.followOn && S.map && nowMs >= (S.tl.userPanUntilMs || 0)) {
+          panDur = panToShowcaseOverview(ev.type, ev.time);
+          S.tl.lastFollowSig = '';
+          S.tl.arrivedBatchKey = '';
+        } else if (isCloseup && S.tl.followOn && S.map && nowMs >= (S.tl.userPanUntilMs || 0)) {
           const targetCoord = S.dispCoord(ev.coord[0], ev.coord[1]);
           const pad = tlCameraPadding();
           const offset = [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2];
@@ -5355,27 +5740,31 @@
         S.tl.eventPauseId = ev.id;
         S.tl.eventPanUntilMs = panDur > 0 ? (nowMs + panDur) : 0;
         S.tl.eventPauseUntilMs = nowMs + panDur + dwellMs;
-        S.tl.activePlanBanner = (ev.type === 'plan' || isCloseup) ? ev : null;
-        if (ev.type === 'rename') {
+        S.tl.activePlanBanner = (isShowcase || isCloseup) ? ev : null;
+        S.tl.showcaseHighlight = isShowcase
+          ? { type: ev.type, time: ev.time, panDoneMs: nowMs + panDur, endMs: nowMs + panDur + dwellMs }
+          : null;
+        if (ev.type === 'rename' || ev.type === 'station') {
           const rkKey = resolveRenameLabelKey(ev);
           const panDoneMs = nowMs + panDur;
           const fadeOutStartMs = panDoneMs + Math.round(dwellMs * 0.13);
           const swapMs = fadeOutStartMs + Math.round(dwellMs * 0.24);
           const fadeInStartMs = swapMs + Math.round(dwellMs * 0.08);
           const fadeInEndMs = fadeInStartMs + Math.round(dwellMs * 0.25);
-          let oldText = ev.oldName || '';
-          let newText = ev.newName || ev.stationName || '';
+          const isStOpen = ev.type === 'station';
+          let oldText = isStOpen ? ((ev.stationName || '') + '（未开）') : (ev.oldName || '');
+          let newText = isStOpen ? (ev.stationName || '') : (ev.newName || ev.stationName || '');
           let extraOldKey = null;
           let extraOldText = '';
-          if (rkKey === 'g:g0023') {
+          if (!isStOpen && rkKey === 'g:g0023') {
             oldText = '人民广场 / 人民公园';
             newText = '人民广场';
-          } else if (rkKey === 'g:g0076') {
+          } else if (!isStOpen && rkKey === 'g:g0076') {
             oldText = '徐泾东';
             extraOldKey = 'g:g0076:l0032';
             extraOldText = '诸光路';
             newText = '国家会展中心';
-          } else if (rkKey === 'g:g0082' && ev.id === 'rn-l0033-yingchun') {
+          } else if (!isStOpen && rkKey === 'g:g0082' && ev.id === 'rn-l0033-yingchun') {
             oldText = '上海科技馆';
             extraOldKey = 'g:g0082:l0033';
             extraOldText = '迎春路';
@@ -5383,6 +5772,8 @@
           }
           S.tl.renameAnim = rkKey ? {
             evId: ev.id,
+            evTime: ev.time,
+            isStationOpen: isStOpen,
             key: rkKey,
             extraOldKey,
             extraOldText,
@@ -5496,6 +5887,8 @@
     S.tl.eventPauseUntilMs = 0;
     S.tl.eventPauseId = '';
     S.tl.activePlanBanner = null;
+    S.tl.showcaseHighlight = null;
+    resetShowcaseFlashPaint();
     pruneTriggeredEventsAfter(timelineDisplayTimeAt(S.tl.currentTime));
     syncTimelineButtons();
     renderTimelineFrame(true);
@@ -5513,6 +5906,8 @@
     S.tl.eventPanUntilMs = 0;
     S.tl.eventPauseUntilMs = 0;
     S.tl.activePlanBanner = null;
+    S.tl.showcaseHighlight = null;
+    resetShowcaseFlashPaint();
     if (S.tl.rafId) { G.cancelAnimationFrame(S.tl.rafId); S.tl.rafId = 0; }
     setTimelineLayersVisible(false);
     setNormalLayersVisible(true);
@@ -5564,6 +5959,8 @@
       S.tl.eventPauseId = '';
       S.tl.activePlanBanner = null;
       S.tl.renameAnim = null;
+      S.tl.showcaseHighlight = null;
+    resetShowcaseFlashPaint();
       S.tl.triggeredEventIds = new Set();
       S.tl.lastFollowSig = '';
       syncTimelineButtons();
@@ -5624,7 +6021,9 @@
         S.tl.eventPauseUntilMs = 0;
         S.tl.eventPauseId = '';
         S.tl.activePlanBanner = null;
-      S.tl.renameAnim = null;
+        S.tl.renameAnim = null;
+        S.tl.showcaseHighlight = null;
+    resetShowcaseFlashPaint();
         pruneTriggeredEventsAfter(timelineDisplayTimeAt(S.tl.currentTime));
         const ab = timelineActiveBatchAt(S.tl.currentTime);
         S.tl.arrivedBatchKey = ab ? ab.key : '';
@@ -5643,7 +6042,9 @@
           S.tl.eventPauseUntilMs = 0;
           S.tl.eventPauseId = '';
           S.tl.activePlanBanner = null;
-      S.tl.renameAnim = null;
+          S.tl.renameAnim = null;
+          S.tl.showcaseHighlight = null;
+    resetShowcaseFlashPaint();
           pruneTriggeredEventsAfter(timelineDisplayTimeAt(S.tl.currentTime));
           const ab = timelineActiveBatchAt(S.tl.currentTime);
           S.tl.arrivedBatchKey = ab ? ab.key : '';
