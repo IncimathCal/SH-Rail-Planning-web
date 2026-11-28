@@ -844,13 +844,15 @@ def build_key_events(stops_fc):
             dt_lbl = dt_lbl[:7].replace("-", "年") + "月"
         ev = {
             "id": f"st-{sid}",
+            "sid": sid,
+            "lineIds": [sid.split("-", 1)[0]],
             "time": d["openTime"],
             "date": dt_lbl,
             "type": "station",
             "title": f"{d['lineName']} {d['name']}站开通启用",
             "detail": d["note"],
-            "pauseMs": 1400,
-            "focusZoom": 13.2,
+            "pauseMs": 2100,
+            "focusZoom": 13.4,
             "stationName": d["name"],
         }
         if sid in coord_by_sid:

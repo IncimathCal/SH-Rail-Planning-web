@@ -3609,7 +3609,8 @@
             ? '上海科技馆'
             : V.stationNameAt(S.timeline, label.name, openedLineIds.length ? openedLineIds : label.lineIds, tlDispT);
           const defUntil = S.pinDeferredUntil && S.pinDeferredUntil.get(label.key);
-          const isDeferredNow = Number.isFinite(defUntil) && tlDispT < defUntil - 0.01 && S.tl.currentTime < defUntil - 0.01;
+          const isDeferredNow = (Number.isFinite(defUntil) && tlDispT < defUntil - 0.01 && S.tl.currentTime < defUntil - 0.01)
+            || (holdPreRenameOf(label.key) && Boolean(ra && ra.isStationOpen));
           acc.push(Object.assign({}, label, {
             lon: anchorLon,
             lat: anchorLat,
@@ -5268,7 +5269,9 @@
       const u = units[i];
       if (u.openTime > t + 1e-5) break;
       const stgList = u.stages;
-      const evalT = (raIcon && !raIcon.swapped && u.key === raIcon.key) ? (t - 0.02) : t;
+      const evalT = (raIcon && !raIcon.swapped && u.key === raIcon.key)
+        ? Math.min(t - 0.02, Number.isFinite(raIcon.evTime) ? (raIcon.evTime - 0.02) : (t - 0.02))
+        : t;
       let si = 0;
       while (si + 1 < stgList.length && stgList[si + 1].fromTime <= evalT + 1e-4) si++;
       const cur = stgList[si];
@@ -5541,6 +5544,15 @@
   function resolveRenameLabelKey(ev) {
     if (!ev) return null;
     if (ev.stationKey) return ev.stationKey;
+    if (ev.sid) {
+      const stObj = (S.stops || []).find((s) => s.sid === ev.sid);
+      if (stObj) {
+        const pk = S.groupTree ? V.stopPinKeyOf(stObj, S.groupTree) : stObj.sid;
+        const pin = pk && S.pinByKey ? S.pinByKey.get(pk) : null;
+        if (pin && pin.groupType === 'out-of-station' && pin.groupId != null) return 'g:' + pin.groupId;
+        if (pk) return pk;
+      }
+    }
     const rk = ev.rkey || '';
     if (rk === 'l0016:人民广场') return 'g:g0023';
     if (rk === '国家会展中心') return 'g:g0076';
@@ -5678,8 +5690,8 @@
         const pauseScale = Math.sqrt(Math.max(0.5, speed));
         const dwellMs = ev.type === 'plan'
           ? Math.round(Math.max(1650, ev.pauseMs / pauseScale))
-          : (ev.type === 'rename'
-            ? Math.round(Math.max(1850, (ev.pauseMs || 2200) / pauseScale))
+          : ((ev.type === 'rename' || ev.type === 'station')
+            ? Math.round(Math.max(1850, (ev.pauseMs || 2100) / pauseScale))
             : (ev.type === 'build'
               ? Math.round(Math.max(1350, (ev.pauseMs || 1450) / pauseScale))
               : (isCloseup
@@ -5732,26 +5744,27 @@
         S.tl.showcaseHighlight = isShowcase
           ? { type: ev.type, time: ev.time, panDoneMs: nowMs + panDur, endMs: nowMs + panDur + dwellMs }
           : null;
-        if (ev.type === 'rename') {
+        if (ev.type === 'rename' || ev.type === 'station') {
           const rkKey = resolveRenameLabelKey(ev);
           const panDoneMs = nowMs + panDur;
           const fadeOutStartMs = panDoneMs + Math.round(dwellMs * 0.13);
           const swapMs = fadeOutStartMs + Math.round(dwellMs * 0.24);
           const fadeInStartMs = swapMs + Math.round(dwellMs * 0.08);
           const fadeInEndMs = fadeInStartMs + Math.round(dwellMs * 0.25);
-          let oldText = ev.oldName || '';
-          let newText = ev.newName || ev.stationName || '';
+          const isStOpen = ev.type === 'station';
+          let oldText = isStOpen ? ((ev.stationName || '') + '（未开）') : (ev.oldName || '');
+          let newText = isStOpen ? (ev.stationName || '') : (ev.newName || ev.stationName || '');
           let extraOldKey = null;
           let extraOldText = '';
-          if (rkKey === 'g:g0023') {
+          if (!isStOpen && rkKey === 'g:g0023') {
             oldText = '人民广场 / 人民公园';
             newText = '人民广场';
-          } else if (rkKey === 'g:g0076') {
+          } else if (!isStOpen && rkKey === 'g:g0076') {
             oldText = '徐泾东';
             extraOldKey = 'g:g0076:l0032';
             extraOldText = '诸光路';
             newText = '国家会展中心';
-          } else if (rkKey === 'g:g0082' && ev.id === 'rn-l0033-yingchun') {
+          } else if (!isStOpen && rkKey === 'g:g0082' && ev.id === 'rn-l0033-yingchun') {
             oldText = '上海科技馆';
             extraOldKey = 'g:g0082:l0033';
             extraOldText = '迎春路';
@@ -5759,6 +5772,8 @@
           }
           S.tl.renameAnim = rkKey ? {
             evId: ev.id,
+            evTime: ev.time,
+            isStationOpen: isStOpen,
             key: rkKey,
             extraOldKey,
             extraOldText,

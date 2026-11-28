@@ -154,7 +154,10 @@ assert(stationEvents.length >= 10, 'Should emit individual deferred-station open
 for (const e of renameEvents.concat(stationEvents)) {
   assert(Array.isArray(e.coord) && e.coord.length === 2 && Number.isFinite(e.coord[0]) && Number.isFinite(e.coord[1]),
     `Event ${e.id} must carry valid WGS84 coord for close-up focus`);
-  assert(e.pauseMs >= 1200, `Event ${e.id} must carry pauseMs >= 1200`);
+  assert(e.pauseMs >= 2000, `Event ${e.id} must carry pauseMs >= 2000 for 5-phase fade transition`);
+}
+for (const e of stationEvents) {
+  assert(typeof e.sid === 'string' && e.sid.length > 0, `Station event ${e.id} must carry sid`);
 }
 for (let i = 1; i < timeline.keyEvents.length; i++) {
   assert(timeline.keyEvents[i].time >= timeline.keyEvents[i - 1].time, 'keyEvents must be sorted chronologically');
