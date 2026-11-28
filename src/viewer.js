@@ -3511,7 +3511,9 @@
             }
             return acc;
           }
-          const histName = V.stationNameAt(S.timeline, label.name, openedLineIds.length ? openedLineIds : label.lineIds, tlDispT);
+          const histName = (label.key === 'g:g0082')
+            ? '上海科技馆'
+            : V.stationNameAt(S.timeline, label.name, openedLineIds.length ? openedLineIds : label.lineIds, tlDispT);
           const defUntil = S.pinDeferredUntil && S.pinDeferredUntil.get(label.key);
           const isDeferredNow = Number.isFinite(defUntil) && tlDispT < defUntil - 0.01 && S.tl.currentTime < defUntil - 0.01;
           acc.push(Object.assign({}, label, {
