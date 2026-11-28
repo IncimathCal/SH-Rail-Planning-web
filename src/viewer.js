@@ -2075,12 +2075,24 @@
   const MQ_MOBILE = G.matchMedia ? G.matchMedia('(max-width: 767px)') : null;
   function isMobileViewport() { return !!(MQ_MOBILE && MQ_MOBILE.matches); }
   const SHEET_HANDLE_H = 44;
-  // 两档标准高度（px）：hidden＝只露把手、expanded＝视口五分之四（2026-11-28 二轮 75%→80%）；
-  // 视口高取 innerHeight（documentElement 兜底）。core 纯函数防御返回 null 时就地兜两档。
+  // iOS 安全区底高（2026-11-28 刘海/灵动岛适配）：读 #panel 的 computed padding-bottom——
+  // index.html 移动端 media 里该值＝env(safe-area-inset-bottom)（浏览器已解析为 px），
+  // 桌面态/无刘海设备＝0px。解析失败一律 0（不抬高档位、行为同旧版）。
+  function sheetSafeBottom() {
+    const panel = $('panel');
+    if (!panel || !G.getComputedStyle) return 0;
+    const v = parseFloat(G.getComputedStyle(panel).paddingBottom);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  }
+  // 两档标准高度（px）：hidden＝只露把手（含安全区底——面板贴底、把手可视区浮在 home
+  // 指示条之上，2026-11-28 iOS 适配）、expanded＝视口五分之四（面板高度语义不变，底部
+  // 内容避让由 #panel padding-bottom 承担）；视口高取 innerHeight（documentElement 兜底）。
+  // core 纯函数防御返回 null 时就地兜两档。
   function sheetHeightsNow() {
     const vh = G.innerHeight || (document.documentElement && document.documentElement.clientHeight) || 0;
-    const h = V.sheetSnapHeights(vh, SHEET_HANDLE_H);
-    return h || { hidden: SHEET_HANDLE_H, expanded: Math.round(vh * 4 / 5) || SHEET_HANDLE_H };
+    const sab = sheetSafeBottom();
+    const h = V.sheetSnapHeights(vh, SHEET_HANDLE_H + sab);
+    return h || { hidden: SHEET_HANDLE_H + sab, expanded: Math.round(vh * 4 / 5) || SHEET_HANDLE_H + sab };
   }
   // 两档应用：写 #panel inline 高度＋data-sheetSnap（冒烟断言/CSS 钩子）；hidden ⇔
   // S.panelCollapsed 同步 true（相机让位与可见性判定消费同一「收起」语义）。instant＝直设
@@ -3013,16 +3025,29 @@
       return;
     }
 
+    // iOS 安全区（2026-11-28 刘海/灵动岛适配）：读 index.html #coordinateRuler 的 --safe-*
+    // 变量（env() 浏览器已解析为 px；无刘海/桌面＝0，全部算式退化为旧值）。四边留白
+    // 20px 与安全区相加——刻度/读数自视口物理边缘内缩到安全区边缘（顶避灵动岛、底避
+    // home 指示条、横屏两侧避刘海侧）。SVG 不能用 CSS padding 避让（不改内部坐标系）。
+    const svgStyle = G.getComputedStyle ? G.getComputedStyle(svg) : null;
+    const safePx = (prop) => {
+      const v = parseFloat(svgStyle ? svgStyle.getPropertyValue(prop) : '');
+      return Number.isFinite(v) && v > 0 ? v : 0;
+    };
+    const sat = safePx('--safe-top'), sab = safePx('--safe-bottom');
+    const sal = safePx('--safe-left'), sar = safePx('--safe-right');
+    const padT = 20 + sat, padB = 20 + sab, padL = 20 + sal, padR = 20 + sar;
+
     // map.unproject 返回当前底图显示坐标；高德态用既有 GCJ02 逆变换恢复 WGS84 读数。
     // 每条边分别采样，旋转/倾斜后经纬度沿单边可能非单调，不能用全视口跨度估步长。
     const inverseDisplay = (S.basemap === 'gaode' || S.basemap === 'gaode-plain') ? V.gcj02ToWgs84 : (lon, lat) => [lon, lat];
     const sampleEdge = (name, count = 64) => Array.from({ length: count + 1 }, (_, i) => {
       const t = i / count;
       let point;
-      if (name === 'top') point = [20 + (width - 40) * t, 0];
-      else if (name === 'bottom') point = [20 + (width - 40) * t, height];
-      else if (name === 'left') point = [0, 20 + (height - 40) * t];
-      else point = [width, 20 + (height - 40) * t];
+      if (name === 'top') point = [padL + (width - padL - padR) * t, sat];
+      else if (name === 'bottom') point = [padL + (width - padL - padR) * t, height - sab];
+      else if (name === 'left') point = [sal, padT + (height - padT - padB) * t];
+      else point = [width - sar, padT + (height - padT - padB) * t];
       const displayed = map.unproject(point);
       const [lon, lat] = inverseDisplay(displayed.lng, displayed.lat);
       return { t, value: name === 'top' || name === 'bottom' ? lon : lat };
@@ -3036,8 +3061,8 @@
     const edgeSpan = (samples) => Math.max(...samples.map((sample) => sample.value)) - Math.min(...samples.map((sample) => sample.value));
     const longitudeSpan = Math.max(edgeSpan(edges.top), edgeSpan(edges.bottom));
     const latitudeSpan = Math.max(edgeSpan(edges.left), edgeSpan(edges.right));
-    const longitudeStep = V.niceTickStep(longitudeSpan, width - 40, 95);
-    const latitudeStep = V.niceTickStep(latitudeSpan, height - 40, 62);
+    const longitudeStep = V.niceTickStep(longitudeSpan, width - padL - padR, 95);
+    const latitudeStep = V.niceTickStep(latitudeSpan, height - padT - padB, 62);
     const longitudeTicks = V.coordinateTicks(Math.min(...longitudes), Math.max(...longitudes), longitudeStep);
     const latitudeTicks = V.coordinateTicks(Math.min(...latitudes), Math.max(...latitudes), latitudeStep);
     const labels = [];
@@ -3047,21 +3072,23 @@
       const horizontal = name === 'top' || name === 'bottom';
       const positions = V.edgeTickPositions(edges[name], values);
       for (const { value, t } of positions) {
-        const x = horizontal ? 20 + (width - 40) * t : (name === 'left' ? 0 : width);
-        const y = horizontal ? (name === 'top' ? 0 : height) : 20 + (height - 40) * t;
+        const x = horizontal ? padL + (width - padL - padR) * t : (name === 'left' ? sal : width - sar);
+        const y = horizontal ? (name === 'top' ? sat : height - sab) : padT + (height - padT - padB) * t;
         const tick = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
         if (horizontal) {
           const direction = name === 'top' ? 1 : -1;
-          tick.setAttribute('d', `M${x},${name === 'top' ? 1 : height - 1}v${direction * 5}`);
+          const edge = name === 'top' ? sat + 1 : height - sab - 1;
+          tick.setAttribute('d', `M${x},${edge}v${direction * 5}`);
           label.setAttribute('x', x);
-          label.setAttribute('y', (name === 'top' ? 1 : height - 1) + direction * 8);
+          label.setAttribute('y', edge + direction * 8);
           label.setAttribute('text-anchor', 'middle');
           label.setAttribute('dominant-baseline', direction > 0 ? 'hanging' : 'auto');
         } else {
           const direction = name === 'left' ? 1 : -1;
-          tick.setAttribute('d', `M${name === 'left' ? 1 : width - 1},${y}h${direction * 5}`);
-          label.setAttribute('x', (name === 'left' ? 1 : width - 1) + direction * 8);
+          const edge = name === 'left' ? sal + 1 : width - sar - 1;
+          tick.setAttribute('d', `M${edge},${y}h${direction * 5}`);
+          label.setAttribute('x', edge + direction * 8);
           label.setAttribute('y', y);
           label.setAttribute('text-anchor', direction > 0 ? 'start' : 'end');
           label.setAttribute('dominant-baseline', 'middle');
