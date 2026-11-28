@@ -102,8 +102,8 @@
   const LINE_HIT_LAYER_PREFIXES = ['arrow-fade-', 'conn-blend-', 'conn-fade-'];
   // 标签只按 zoom 门槛分级，**不设标签总数上限**。组/换乘标签含出闸换乘成员，z≥10 渐显；
   // 普通单线站 z≥11 渐显，同屏数量由渲染层视口裁剪约束。
-  const LABEL_ZOOM_GROUP = 10;  // 换乘组及出闸换乘标签最低 zoom
-  const LABEL_ZOOM_STOP = 11;   // 普通单线站标签最低 zoom
+  const LABEL_ZOOM_GROUP = 10.5;// 换乘组及出闸换乘标签最低 zoom（2026-11-28 降半级）
+  const LABEL_ZOOM_STOP = 11.5; // 普通单线站标签最低 zoom（2026-11-28 降半级）
 
   // 尺寸随缩放等比变化（2026-11-22 用户两次裁定：初次线性缩小案被推翻，改「等比缩＋向上封顶」）：
   // z≥SIZE_ZOOM_HOLD 各尺寸维持基准值（拉近不再变粗——封顶）；z<11 按 2^(z−11) 持续等比缩小
