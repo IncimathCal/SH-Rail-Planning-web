@@ -1203,7 +1203,7 @@
     darkSat: { normal: 0.32, focus: 0.22 },
   };
   const BASEMAP_VEIL_BAND = {
-    gaode: 'light', 'gaode-plain': 'light', osm: 'light',
+    gaode: 'light', 'gaode-plain': 'pale', osm: 'light',
     carto: 'pale',
     planblock: 'dark', shanghai_W: 'darkSat',
   };
@@ -1275,12 +1275,12 @@
       tiles: [1, 2, 3, 4].map((n) =>
         'https://webrd0' + n + '.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}'),
     });
-    // 无字高德（demo 2026-11-26 追加）：wprd 子域＋scl=2&style=7（仅 wprd 支持 scl=2）；
-    // 512×512 瓦片按 tileSize 256 摆放＝retina 高清（研究报告实测 CORS *、z3–20 可用）
+    // 无字高德：wprd 子域＋scl=2&style=7&ltype=1（纯地理水系/绿地/陆地底图，不含高德内置路网与市域铁路/地铁底线，
+    // 避免与历史时间轴演进冲突；512×512 retina 高清、GCJ02 与路线同通道对齐）
     map.addSource('basemap-gaode-plain', {
       type: 'raster', tileSize: 256,
       tiles: [1, 2, 3, 4].map((n) =>
-        'https://wprd0' + n + '.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=2&style=7&x={x}&y={y}&z={z}'),
+        'https://wprd0' + n + '.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=2&style=7&ltype=1&x={x}&y={y}&z={z}'),
     });
     map.addSource('basemap-carto', {
       type: 'raster', tileSize: 256,
