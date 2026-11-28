@@ -139,16 +139,19 @@ eq(st.find((s) => s.sid === 's2').groupType, 'same-station', '合法 groupType �
 // ---------- buildStopView：组归并 ----------
 console.log('buildStopView:');
 const sv = V.buildStopView(st);
-eq(sv.pins.length, 8, 'pin 数＝单站2＋g2/g4/g5/g6合并各1＋g3成员2（g1 药丸成员圈隐去）');
-const g1pill = sv.pills.find((p) => p.key === 'g:g1');
-ok(g1pill && g1pill.lineIds.join(',') === 'la,lb,lc', 'g1（3 线同站组）产出药丸（key 即组 pin 的 key）');
-eq(g1pill.chain, [[1, 1], [1, 1], [1, 1]], 'g1 药丸链序（共点退化，顺序 [0,1,2]）');
-ok(!sv.pins.some((p) => p.key === 'g:g1'), 'g1 不再画合并大圈（药丸替代）');
+eq(sv.pins.length, 9, 'pin 数＝单站2＋g1/g2/g4/g5/g6合并各1＋g3成员2');
+const g1pin = sv.pins.find((p) => p.key === 'g:g1');
+ok(g1pin && g1pin.kind === 'group' && g1pin.big === true
+  && g1pin.groupType === 'same-station' && g1pin.groupId === 'g1' && g1pin.name === '中央',
+  '3 线共点组画一个可点选的合并大圈');
+eq(g1pin && g1pin.lineIds, ['la', 'lb', 'lc'], '共点组保留全部成员线');
 eq(sv.pins.filter((p) => p.key === 's2' || p.key === 's3' || p.key === 's4').length, 0,
-  'g1 成员站圈不再出现（药丸即换乘标识）');
-ok(g1pill.pin && g1pill.pin.kind === 'group' && g1pill.pin.big === true
-  && g1pill.pin.groupType === 'same-station' && g1pill.pin.groupId === 'g1' && g1pill.pin.name === '中央',
-  '药丸条目自带组 pin（面板/hover 单元，不进 pins 不渲染成圈）');
+  '共点组成员不单独成圈');
+const nearCoincident = st.filter((s) => s.groupId === 'g1')
+  .map((s, i) => ({ ...s, lon: 121.426244 + i * 1e-7, lat: 31.249198 + i * 5e-7 }));
+const nearView = V.buildStopView(nearCoincident);
+eq([nearView.pins.map((p) => p.key), nearView.pills.length], [['g:g1'], 0],
+  '亚米级坐标差也用合并站圈，避免短折线在地图上消失');
 const g6 = sv.pins.find((p) => p.key === 'g:g6');
 ok(g6 && g6.kind === 'group' && g6.big === true, 'g6 恰 2 线同站组维持合并大圈（现状完全不动）');
 ok(!sv.pills.some((p) => p.groupId === 'g6'), '2 线组不出药丸');
@@ -166,10 +169,10 @@ const g4 = sv.pins.find((p) => p.key === 'g:g4');
 ok(g4 && g4.kind === 'group' && g4.big === true, '单成员组照常成组');
 const g5 = sv.pins.find((p) => p.key === 'g:g5');
 ok(g5 && g5.kind === 'group' && g5.groupType === 'same-station', '组员 groupType 脏数据（stopList 归 null）兜底同站换乘');
-eq(sv.pills.length, 1, '全库仅 g1 满足 ≥3 线（其余组不出药丸）');
+eq(sv.pills.length, 0, '共点同站组不再生成退化药丸');
 eq(sv.labels.length, 8, '标签数＝单站2＋组6（g1/g2/g3/g4/g5/g6 各一）');
 const lg1 = sv.labels.find((l) => l.key === 'g:g1');
-ok(lg1 && lg1.group === true && lg1.name === '中央', '药丸组仍合并为一个标签（均值位置）');
+ok(lg1 && lg1.group === true && lg1.name === '中央', '共点组仍合并为一个标签（均值位置）');
 const lg3 = sv.labels.find((l) => l.key === 'g:g3');
 ok(lg3 && lg3.group === true && lg3.name === '出闸西', '出闸组仍合并为一个标签');
 // 2026-11-22 改版：标签携带 lineIds（站名可见性判定用——全局开关/聚焦常显/调光隐藏）
@@ -860,7 +863,7 @@ const lmI = V.normalizeLines(linesFC);
 const stI = V.stopList(stopsFC);
 const svI = V.buildStopView(stI);
 const summI = V.lineSummaries(lmI, stI);
-eq(svI.pins.length, 8, '集成视图 pin 数一致（g1 药丸成员圈隐去）');
+eq(svI.pins.length, 9, '集成视图 pin 数一致（g1 共点组画一个大圈）');
 eq(summI.get('la').stopCount, 7, '集成摘要站数一致');
 ok([...summI.keys()].sort().join(',') === 'la,lb,lc', '摘要覆盖全部线');
 
@@ -1488,7 +1491,7 @@ const svNx = V.buildStopView(stNx, { linesMap: lmNx, lineGroups: lgNx, tree: tre
   const stN = V.stopList(fc(
     stopFeat('n1', '未定甲', 'l0007', '沪乍线', 0.1, 30, 30, 'nA', null),
     stopFeat('n2', '未定甲', 'l0034', '19号线', 0.1, 30, 30, 'nA', null),
-    stopFeat('n3', '未定甲', 'l0051', '奉贤线', 0.1, 30, 30, 'nA', null),
+    stopFeat('n3', '未定甲', 'l0051', '奉贤线', 0.1, 30.001, 30, 'nA', null),
     stopFeat('n4', '怪类', 'l0054', '机场快线', 0.1, 31, 31, 'nB', 'weird'),
     stopFeat('n5', '怪类', 'l0057', '嘉青松金线', 0.1, 31, 31, 'nB', 'weird'),
     stopFeat('n6', '表定', 'l0022', '8号线', 0.1, 32, 32, 'nC', 'same-station'),
@@ -1527,13 +1530,13 @@ eq([V.logicalLineCount([], lmCnt, lgCnt), V.logicalLineCount(['cd', 'cd', null, 
 const cntStops = V.stopList(fc(
   stopFeat('cm-s1', '汇甲', 'cm', '主线甲', 0.5, 1, 1, 'kA', 'same-station'),
   stopFeat('cb-s1', '汇甲', 'cb', '支线甲', 0.5, 1, 1, 'kA', 'same-station'),
-  stopFeat('cd-s1', '汇甲', 'cd', '独立乙', 0.5, 1, 1, 'kA', 'same-station'),     // kA＝主线＋支线＋另一线 → 2
+  stopFeat('cd-s1', '汇甲', 'cd', '独立乙', 0.5, 1.001, 1, 'kA', 'same-station'), // kA＝主线＋支线＋另一线 → 2
   stopFeat('cd-s2', '汇乙', 'cd', '独立乙', 0.6, 2, 2, 'kB', 'same-station'),
   stopFeat('ce-s1', '汇乙', 'ce', '独立丙', 0.6, 2, 2, 'kB', 'same-station'),
-  stopFeat('cf-s1', '汇乙', 'cf', '联络丁', 0.6, 2, 2, 'kB', 'same-station'),     // kB＝两独立线＋联络线 → 2
+  stopFeat('cf-s1', '汇乙', 'cf', '联络丁', 0.6, 2.001, 2, 'kB', 'same-station'), // kB＝两独立线＋联络线 → 2
   stopFeat('cd-s3', '汇丙', 'cd', '独立乙', 0.7, 3, 3, 'kC', 'same-station'),
   stopFeat('ce-s2', '汇丙', 'ce', '独立丙', 0.7, 3, 3, 'kC', 'same-station'),
-  stopFeat('ch-s1', '汇丙', 'ch', '独立己', 0.7, 3, 3, 'kC', 'same-station'),     // kC＝三条互不隶属 → 3
+  stopFeat('ch-s1', '汇丙', 'ch', '独立己', 0.7, 3.001, 3, 'kC', 'same-station'), // kC＝三条互不隶属 → 3
   stopFeat('cf-s2', '汇丁', 'cf', '联络丁', 0.8, 4, 4, 'kD', 'same-station'),
   stopFeat('cg-s1', '汇丁', 'cg', '联络戊', 0.8, 4, 4, 'kD', 'same-station'),     // kD＝全是联络线 → 0
   stopFeat('cm-s2', '汇戊', 'cm', '主线甲', 0.9, 5, 5, 'kE', 'same-station'),

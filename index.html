@@ -8,7 +8,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>上海市城市轨道交通远期线网规划示意图</title>
   <meta name="description" content="上海轨道交通远期线网规划示意图：线路走向、设站与换乘节点、分段建设状态（既有 / 近期 / 远期），数据纯手工录入。">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="only light">
   <meta name="theme-color" content="#ffffff">
   <!-- 新 UI（2026-11-26 实装，源＝零散/新UI-demo/ 定稿 demo；同日二轮全面去蓝改黑白灰；
        真素材：favicon/初始页/右上 logo＝assets/logo.svg） -->
@@ -29,6 +29,7 @@
        （视图推挤：前进新视图自右滑入、旧视图退左淡出；返回反向——数据位与时长见
        #panelViews 段与 viewer.js showView/VIEW_RANK；相机侧改动见 viewer.js）。 */
     :root {
+      color-scheme: only light;   /* 保留地图站名黑字白描边，避免浏览器强制深色时重着色。 */
       --bg: #ffffff;
       --panel-border: rgba(0, 0, 0, 0.08);
       --control-border: rgba(0, 0, 0, 0.16);

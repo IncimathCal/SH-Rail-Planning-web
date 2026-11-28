@@ -1664,25 +1664,41 @@
   // 快照不含 imports（2026-11-22 性能修正）：imports 只经 addImportRecord 变更且不参与撤销，
   // 全量导入 path 字符串 ≈0.5MB，逐次 stringify 进 100 层撤销栈曾致录入规模上升后明显卡顿；
   // undo 因此恒保留当前 S.imports（与旧快照行为等价——快照里的 imports 从未被真正改过）
-  function snapshot() {
-    const s = JSON.stringify({
+  function snapshot(workspaceChange = false) {
+    const data = JSON.stringify({
       lines: [...S.lines.values()],
       groups: S.groups, lineOrder: S.lineOrder,
     });
-    if (S.undo.length && S.undo[S.undo.length - 1] === s) return;   // 与栈顶相同不压栈（防空转膨胀）
-    S.undo.push(s);
+    const previous = S.undo[S.undo.length - 1];
+    if (!workspaceChange && previous && !previous.workspace && previous.data === data) return;
+    const entry = { data };
+    if (workspaceChange) {
+      entry.workspace = { binding: workspace, manifest: S.manifest, calib: S.calib,
+        lineinfoMd: S.lineinfoMd, lineinfoSavedMd: S.lineinfoSavedMd };
+    }
+    S.undo.push(entry);
     if (S.undo.length > 100) S.undo.shift();
   }
   function undo() {
+    if (workspaceBusy) return;
     const snap = S.undo.pop();
     if (!snap) { setStatus('没有可撤销的操作。'); return; }
-    const d = JSON.parse(snap);
+    const d = JSON.parse(snap.data);
     // 快照可能是升级前的 @1 数据：还原后重跑迁移（幂等），防旧格式流入渲染/保存
     for (const l of d.lines) migrateLineToV2(l);
     S.lines = new Map(d.lines.map((l) => [l.id, l]));
     S.groups = takeGroups(d.groups);
     // imports 不随快照回滚（见 snapshot 注释）；旧版快照含 imports 键亦忽略
     S.lineOrder = Array.isArray(d.lineOrder) ? d.lineOrder : null;   // 旧快照无此键＝null（回退 id 升序）
+    if (snap.workspace) {
+      workspace = snap.workspace.binding;
+      S.manifest = snap.workspace.manifest;
+      S.lineinfoMd = snap.workspace.lineinfoMd;
+      S.lineinfoSavedMd = snap.workspace.lineinfoSavedMd;
+      S.calib = snap.workspace.calib;
+      basemapEpoch++;
+      syncBasemapButton();
+    }
     S.arcs = reuseArcs(S.arcs, S.lines);   // path 没变的线沿用旧弧；变了的丢掉重建
     if (S.selImport && !S.imports.some((im) => im.source === S.selImport.source)) S.selImport = null;
     if (!S.lines.has(S.activeLine)) S.activeLine = null;
@@ -3390,7 +3406,7 @@
   // 后 textarea 编辑它在 lineinfo.md 中的那一节 md 原文（不搞结构化表单，保留手写 md
   // 习惯），防抖 300ms 实时预览——渲染复用查看器 VIEWER_CORE.parseLineInfo（editor.html
   // 载入 src/viewer_core.js，实现零语义改动）。文件读写：载入见 applyWorkspace／
-  // bootFetchData，落盘见 saveLineinfoIfChanged（只替换被编辑节，其余字节逐位保留）；
+  // bootFetchData，落盘见 saveWorkspaceToHandle（只替换被编辑节，其余字节逐位保留）；
   // 未保存改动＝S.lineinfoMd 与 S.lineinfoSavedMd 失配，列表行内 ● 标出，文本与基线随
   // 自动暂存持久（刷新不丢），「保存工作区」后基线同步、标记清零。
   let liSel = null;              // 当前选中条目 id（线组 id 或线 id；临时 UI 状态：不进快照/撤销/自动暂存）
@@ -3862,7 +3878,7 @@
       drag = { type: 'stop', lid, sid, moved: false,
         el: world.querySelector(`.stop-c[data-sid="${CSS.escape(sid)}"]`),
         ring: world.querySelector('.stop-ring'),
-        pre: JSON.stringify({ lines: [...S.lines.values()], groups: S.groups, lineOrder: S.lineOrder }) };   // 不含 imports（同 snapshot 性能修正）
+        pre: { data: JSON.stringify({ lines: [...S.lines.values()], groups: S.groups, lineOrder: S.lineOrder }) } };
       svg.setPointerCapture(e.pointerId);
       regCanvasDbl(`stop:${sid}`, () => locateStopInList(sid, lid));   // 双击站圈：左栏定位
       return;
@@ -5156,7 +5172,8 @@
   // 工作区文件夹与 data/ 同构：lines/*.json＋groups.json＋manifest.json，复制进 data/ 即为提交。
   // 打开走 File System Access（Chrome/Edge，可直写；可直接打开 data/ 本体，保存即落盘）；
   // 不支持该 API 的浏览器降级：载入走 webkitdirectory 目录读（只读），保存走多文件下载。
-  let wsHandle = null;   // 当前工作区目录句柄（null＝未打开/降级模式）
+  let workspace = null;   // { handle, lineIds }，只清理当前工作区已载入或保存过的线路。
+  let workspaceBusy = false;
 
   const wsMenu = $('wsMenu');
   $('btnWorkspace').onclick = () => wsMenu.showModal();
@@ -5166,32 +5183,35 @@
 
   /** 应用一份工作区数据集（整体替换语义；一次快照，撤销一次回退整批）。
    *  lineinfoText＝工作区 lineinfo.md 原文（字符串）或 null（工作区无此文件——整体替换语义
-   *  连介绍文本一并清零，不沿用上一个工作区的）。lineinfo 不参与撤销（撤销只回退线路/编组）。 */
-  function applyWorkspace(lineFiles, groups, manifest, calib, label, writable, lineinfoText) {
+   *  连介绍文本一并清零，不沿用上一个工作区的）。 */
+  function applyWorkspace(lineFiles, groups, manifest, calib, label, handle, lineinfoText) {
     if (!lineFiles.size && !groups && !manifest) {
       setStatus(`${label}：未发现工作区文件（lines/*.json、groups.json、manifest.json 均无）。若要清空请用「新建空工作区」。`, true);
       return;
     }
     const cur = S.lines.size;
     if (!confirm(`载入工作区：将以 ${lineFiles.size} 条线路替换当前 ${cur} 条（编组一并替换，Ctrl+Z 可撤销）。继续？`)) return;
-    snapshot();
     // @1 → @2 分段实体迁移（工作区里可能有升级前保存的旧文件；保存后生效）
     const migNotes = [];
     for (const l of lineFiles.values()) {
       const note = migrateLineNote(l);
       if (note) migNotes.push(note);
     }
+    const nextGroups = takeGroups(groups) || { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
+    const nextArcs = reuseArcs(S.arcs, lineFiles);
+    snapshot(true);
     S.lines = new Map(lineFiles);
     // 整体替换语义要彻底：工作区缺 groups.json/manifest.json 时清空而非沿用当前值，
     // 否则旧组的 stationGroups 会悬挂引用新工作区不存在的线路/站 id
-    S.groups = takeGroups(groups) || { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
+    S.groups = nextGroups;
     S.manifest = manifest || null;
+    workspace = handle ? { handle, lineIds: new Set(lineFiles.keys()) } : null;
     // 工作区整体替换：显示顺序随 manifest.lineOrder（缺失＝null 回退 id 升序）
     S.lineOrder = (manifest && Array.isArray(manifest.lineOrder)) ? manifest.lineOrder : null;
     // 线路介绍整体替换：工作区有 lineinfo.md 用其原文（落盘基线同步＝无未保存改动），无则清零
     S.lineinfoMd = S.lineinfoSavedMd = (typeof lineinfoText === 'string') ? lineinfoText : null;
     if (calib) takeCalibration(calib);
-    S.arcs = reuseArcs(S.arcs, S.lines);   // path 没变的线沿用旧弧；变了的丢掉重建
+    S.arcs = nextArcs;
     if (!S.lines.has(S.activeLine)) S.activeLine = lineFiles.size ? [...lineFiles.keys()][0] : null;
     S.selStop = null; S.pending = []; S.pendingGroups = [];
     syncCountersWithLoaded();
@@ -5201,68 +5221,88 @@
     $('btnBasemap').classList.toggle('primary', S.basemap !== 'off' && !!S.calib);
     setStatus(`已载入工作区（${label}）：线路 ${lineFiles.size} 条`
       + (groups ? '＋groups' : '') + (manifest ? '＋manifest' : '') + (calib ? '＋标定' : '')
-      + (writable ? '。保存工作区将直写该文件夹。' : '。本浏览器不支持目录直写——保存工作区将走多文件下载。')
+      + (handle ? '。保存工作区将直写该文件夹。' : '。本浏览器不支持目录直写——保存工作区将走多文件下载。')
       + (migNotes.length ? ' ' + migNotes.join('；') + '。' : ''));
   }
 
-  async function readHandleJson(fh) {
-    const f = await fh.getFile();
-    return JSON.parse(await f.text());
+  async function readWorkspace(files, label, handle) {
+    const lineFiles = new Map();
+    let groups = null, manifest = null, calib = null, lineinfoText = null;
+    let reading = '';
+    const schemas = { 'groups.json': 'fmt/groups@1', 'manifest.json': 'fmt/manifest@1', 'calibration.json': 'fmt/calibration@2' };
+    try {
+      for await (const [name, getFile] of files) {
+        const isLine = /^l\d{4}\.json$/.test(name);
+        if (!isLine && name !== 'lineinfo.md' && !Object.prototype.hasOwnProperty.call(schemas, name)) continue;
+        reading = isLine ? 'lines/' + name : name;
+        const text = await (await getFile()).text();
+        if (name === 'lineinfo.md') { lineinfoText = text; continue; }
+        const obj = JSON.parse(text);
+        if (isLine) {
+          if (!isLineObj(obj) || obj.id + '.json' !== name || typeof obj.path !== 'string' ||
+              !Array.isArray(obj.stops) || obj.stops.some((stop) => !stop || typeof stop !== 'object')) {
+            throw new Error('线路格式或文件名与线路编号不符');
+          }
+          if (lineFiles.has(obj.id)) throw new Error('工作区包含重复的线路编号');
+          lineFiles.set(obj.id, obj);
+        } else {
+          if (!obj || obj.schema !== schemas[name]) throw new Error('文件格式无效');
+          if (name === 'groups.json') groups = obj;
+          else if (name === 'manifest.json') manifest = obj;
+          else calib = obj;
+        }
+      }
+    } catch (e) {
+      setStatus(`读取工作区失败${reading ? ' ' + reading : ''}：${e.message}`, true);
+      return;
+    }
+    applyWorkspace(lineFiles, groups, manifest, calib, label, handle, lineinfoText);
+  }
+
+  async function* workspaceDirectoryFiles(dir) {
+    for await (const [name, handle] of dir.entries()) {
+      if (name === 'lines' && handle.kind === 'directory') {
+        for await (const [ln, file] of handle.entries()) {
+          if (file.kind === 'file' && /^l\d{4}\.json$/.test(ln)) yield [ln, () => file.getFile()];
+        }
+      } else if (handle.kind === 'file' && !/^l\d{4}\.json$/.test(name)) {
+        yield [name, () => handle.getFile()];
+      }
+    }
   }
 
   async function openWorkspace() {
+    if (workspaceBusy) return;
     if (!window.showDirectoryPicker) { $('fileWsDir').click(); return; }   // 降级：目录读
-    let dir;
-    try { dir = await window.showDirectoryPicker({ mode: 'readwrite' }); }
-    catch (e) { return; }   // 用户取消
-    const lineFiles = new Map(); let groups = null, manifest = null, calib = null, lineinfoText = null;
+    workspaceBusy = true;
     try {
-      for await (const [name, handle] of dir.entries()) {
-        if (handle.kind === 'directory') {
-          if (name === 'lines') {
-            for await (const [ln, lfh] of handle.entries()) {
-              if (lfh.kind !== 'file' || !/^l\d{4}\.json$/.test(ln)) continue;
-              try {
-                const obj = await readHandleJson(lfh);
-                if (isLineObj(obj)) lineFiles.set(obj.id, obj);
-              } catch (e) { setStatus(`工作区 lines/${ln} 解析失败，已跳过：${e.message}`, true); }
-            }
-          }
-          continue;
-        }
-        try {
-          if (name === 'manifest.json') { const o = await readHandleJson(handle); if (o.schema === 'fmt/manifest@1') manifest = o; }
-          else if (name === 'groups.json') { const o = await readHandleJson(handle); if (o.schema === 'fmt/groups@1') groups = o; }
-          else if (name === 'calibration.json') { const o = await readHandleJson(handle); if (o.schema === 'fmt/calibration@2') calib = o; }
-          else if (name === 'lineinfo.md') { lineinfoText = await (await handle.getFile()).text(); }   // 手填 markdown 原样读入
-        } catch (e) { setStatus(`工作区 ${name} 解析失败，已跳过：${e.message}`, true); }
-      }
-    } catch (e) { setStatus(`读取工作区失败：${e.message}`, true); return; }
-    if (lineFiles.size || groups || manifest) wsHandle = dir;
-    applyWorkspace(lineFiles, groups, manifest, calib, dir.name, true, lineinfoText);
+      const dir = await window.showDirectoryPicker({ mode: 'readwrite' });
+      await readWorkspace(workspaceDirectoryFiles(dir), dir.name, dir);
+    } catch (e) {
+      if (e.name !== 'AbortError') setStatus(`载入工作区失败：${e.message}`, true);
+    } finally {
+      workspaceBusy = false;
+    }
   }
 
-  // 降级：webkitdirectory 整目录读（只读——保存走下载）。按文件名归槽，非工作区文件一概忽略
+  // 不支持 File System Access 时，从 webkitdirectory 读目录并走多文件下载。
   $('fileWsDir').addEventListener('change', async (e) => {
-    const lineFiles = new Map(); let groups = null, manifest = null, calib = null, lineinfoText = null;
-    for (const f of [...e.target.files]) {
-      const base = (f.webkitRelativePath || f.name).replace(/\\/g, '/').split('/').pop();
-      try {
-        if (/^l\d{4}\.json$/.test(base)) {
-          const obj = JSON.parse(await f.text());
-          if (isLineObj(obj)) lineFiles.set(obj.id, obj);
-        } else if (base === 'manifest.json') { const o = JSON.parse(await f.text()); if (o.schema === 'fmt/manifest@1') manifest = o; }
-        else if (base === 'groups.json') { const o = JSON.parse(await f.text()); if (o.schema === 'fmt/groups@1') groups = o; }
-        else if (base === 'calibration.json') { const o = JSON.parse(await f.text()); if (o.schema === 'fmt/calibration@2') calib = o; }
-        else if (base === 'lineinfo.md') { lineinfoText = await f.text(); }   // 手填 markdown 原样读入
-      } catch (err) { /* 非 JSON/坏文件跳过 */ }
-    }
+    const files = [...e.target.files];
     e.target.value = '';
-    applyWorkspace(lineFiles, groups, manifest, calib, '目录读入', false, lineinfoText);
+    if (workspaceBusy) return;
+    workspaceBusy = true;
+    try {
+      await readWorkspace(files.map((f) => [f.name, () => f]), '目录读入', null);
+    } catch (err) {
+      setStatus(`载入工作区失败：${err.message}`, true);
+    } finally {
+      workspaceBusy = false;
+    }
   });
 
   /** 新建空工作区＝清空暂存与编号水位后刷新（原「重置」） */
   function resetAll() {
+    if (workspaceBusy) return;
     if (!confirm('新建空工作区：将清空本地暂存（线路/组/导入记录）与线/组编号水位，测试数据不保留，页面随即刷新。\n确定继续？')) return;
     clearTimeout(lsTimer);                    // 防清空后 400ms 防抖又把暂存写回
     localStorage.removeItem(LS_KEY);           // 主暂存 shrail.editor.v1
@@ -5332,68 +5372,92 @@
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
-  function download(name, obj) {
-    saveBlob(name, new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json;charset=utf-8' }));
-  }
-  /** lineinfo.md 是手填 markdown，整文件按原文落盘（不 JSON 化——保真硬要求） */
-  function downloadText(name, text) {
-    saveBlob(name, new Blob([String(text)], { type: 'text/markdown;charset=utf-8' }));
-  }
-
-  /** 工作区直写：线路＋groups＋manifest＋lineinfo.md（有介绍改动时）成套写入目录（多余线路文件删除并列出）。
-   *  只碰 lines/ 子目录与 groups.json/manifest.json/lineinfo.md 自家产物——calibration 等其他文件一概不动。 */
-  async function writeJson(dirHandle, name, obj) {
-    const fh = await dirHandle.getFileHandle(name, { create: true });
-    const w = await fh.createWritable();
-    await w.write(JSON.stringify(obj, null, 2));
-    await w.close();
-  }
-  async function writeText(dirHandle, name, text) {
-    const fh = await dirHandle.getFileHandle(name, { create: true });
-    const w = await fh.createWritable();
-    await w.write(String(text));
-    await w.close();
-  }
-  /** lineinfo.md 落盘（保存工作区的两条通道共用的环节）：内存有文本且与落盘基线不同才写
-   *  ——未载入该文件的工作区不凭空生成；整文件写回但被编辑节以外的字节由
-   *  replaceLineInfoSection 保证原样；写完同步基线（脏标记随之清除）。返回是否实际写入。 */
-  async function saveLineinfoIfChanged(dirHandle) {
-    if (typeof S.lineinfoMd !== 'string' || S.lineinfoMd === S.lineinfoSavedMd) return false;
-    await writeText(dirHandle, 'lineinfo.md', S.lineinfoMd);
-    S.lineinfoSavedMd = S.lineinfoMd;
-    return true;
-  }
-
-  async function saveWorkspaceToHandle(dir) {
-    setStatus(`正在保存工作区（${dir.name}）…`);
+  function prepareWorkspaceSave() {
     const lines = [...S.lines.values()];
+    const invalid = lines.flatMap((line) => {
+      const issues = lineIssues(line);
+      return issues.length ? [line.id + '：' + issues.join('；')] : [];
+    });
+    if (invalid.length) throw new Error(invalid.join('，'));
+
+    const manifest = buildManifest();
+    const groups = S.groups ? JSON.parse(JSON.stringify(S.groups)) : { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
+    normalizeStationGroups(groups.stationGroups);
+    const lineinfo = typeof S.lineinfoMd === 'string' && S.lineinfoMd !== S.lineinfoSavedMd ? S.lineinfoMd : null;
+    const files = lines.map((line) => ({
+      name: line.id + '.json', inLines: true, contents: JSON.stringify(lineForSave(line), null, 2),
+    }));
+    files.push({ name: 'groups.json', contents: JSON.stringify(groups, null, 2) });
+    if (lineinfo !== null) files.push({ name: 'lineinfo.md', contents: lineinfo });
+    files.push({ name: 'manifest.json', contents: JSON.stringify(manifest, null, 2) });
+    return { files, manifest, lineinfo, lineIds: new Set(lines.map((line) => line.id)) };
+  }
+
+  async function writeWorkspaceFile(dir, name, contents) {
+    const file = await dir.getFileHandle(name, { create: true });
+    const stream = await file.createWritable();
+    try {
+      await stream.write(contents);
+      await stream.close();
+    } catch (error) {
+      await stream.abort().catch(() => {});
+      throw error;
+    }
+  }
+
+  async function saveWorkspaceToHandle(dir, data) {
+    setStatus(`正在保存工作区（${dir.name}）…`);
     const linesDir = await dir.getDirectoryHandle('lines', { create: true });
-    let ok = 0, fail = 0;
-    for (const l of lines) {
-      const issues = lineIssues(l);
-      if (issues.length) { fail++; setStatus(`保存失败 ${l.id}：${issues.join('；')}`, true); continue; }
-      try { await writeJson(linesDir, `${l.id}.json`, lineForSave(l)); ok++; }   // 联络线不带 color 落盘（兜底）
-      catch (e) { fail++; setStatus(`写入失败 ${l.id}.json：${e.message}`, true); }
+    const changes = data.files.map((file) => ({ ...file, dir: file.inLines ? linesDir : dir }));
+    if (workspace) {
+      for (const id of workspace.lineIds) {
+        if (!data.lineIds.has(id)) changes.push({ dir: linesDir, name: id + '.json', contents: null });
+      }
     }
-    if (!S.groups) S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
-    normalizeStationGroups(S.groups.stationGroups);   // 兜底：嵌套子组字段为空不写出（载入与各操作已保证）
-    await writeJson(dir, 'groups.json', S.groups);
-    await writeJson(dir, 'manifest.json', buildManifest());
-    let liWrote = false;
-    try { liWrote = await saveLineinfoIfChanged(dir); }   // lineinfo.md（有介绍改动时）
-    catch (e) { setStatus(`写入失败 lineinfo.md：${e.message}`, true); }
-    // 同步语义：lines/ 里已不在当前数据的线路文件删除（只认 lNNNN.json 命名，其余文件不动）
-    const ids = new Set(lines.map((l) => l.id));
+    // File 对象可能随写入失效，先读取原字节，任何写入失败时用它们恢复。
+    for (const change of changes) {
+      let file;
+      try {
+        file = await change.dir.getFileHandle(change.name);
+      } catch (error) {
+        if (error.name !== 'NotFoundError') throw error;
+      }
+      change.previous = file ? await (await file.getFile()).arrayBuffer() : null;
+    }
+    const attempted = [];
     const removed = [];
-    for await (const [name, handle] of linesDir.entries()) {
-      const m = /^(l\d{4})\.json$/.exec(name);
-      if (m && handle.kind === 'file' && !ids.has(m[1])) { await linesDir.removeEntry(name); removed.push(name); }
+    try {
+      for (const change of changes) {
+        if (change.contents === null && change.previous === null) continue;
+        attempted.push(change);
+        if (change.contents === null) {
+          await change.dir.removeEntry(change.name);
+          removed.push(change.name);
+        } else {
+          await writeWorkspaceFile(change.dir, change.name, change.contents);
+        }
+      }
+    } catch (error) {
+      const failedFile = attempted[attempted.length - 1];
+      const failed = [];
+      for (const change of attempted.reverse()) {
+        try {
+          if (change.previous !== null) await writeWorkspaceFile(change.dir, change.name, change.previous);
+          else await change.dir.removeEntry(change.name).catch((e) => { if (e.name !== 'NotFoundError') throw e; });
+        } catch (e) {
+          failed.push(change.name);
+        }
+      }
+      const recovery = failed.length ? '。无法恢复：' + failed.join('、') : '。已恢复写入前的文件';
+      throw new Error(failedFile.name + '：' + error.message + recovery);
     }
-    renderLineInfoPanel();   // 介绍落盘基线已同步：面板未保存标记随之刷新（无介绍改动时为无害重绘）
-    setStatus(`工作区已保存到 ${dir.name}/：线路 ${ok} 条＋groups.json＋manifest.json`
-      + (liWrote ? '＋lineinfo.md' : '')
-      + (fail ? `；${fail} 条未过检查或写入失败（见上）` : '')
-      + (removed.length ? `；已删除多余线路文件 ${removed.join('、')}` : '。'));
+    workspace = { handle: dir, lineIds: data.lineIds };
+    S.manifest = data.manifest;
+    if (data.lineinfo !== null) S.lineinfoSavedMd = data.lineinfo;
+    renderLineInfoPanel();
+    setStatus(`工作区已保存到 ${dir.name}/：线路 ${data.lineIds.size} 条＋groups.json＋manifest.json`
+      + (data.lineinfo !== null ? '＋lineinfo.md' : '')
+      + (removed.length ? `。已删除 ${removed.join('、')}` : '。'));
   }
 
   // 换乘站名回填（2026-11-22 需求 3）：勾选「填补换乘站数据」时每次保存工作区先执行——
@@ -5431,23 +5495,33 @@
   }
 
   $('btnSaveWorkspace').onclick = async () => {
-    backfillTransfersBeforeSave();   // 需求 3：勾选时先回填换乘站名（改内存预置，即改即生效），再走原保存流程
-    if (!wsHandle && window.showDirectoryPicker) {
-      // 未打开工作区：先选目录（另存为语义）
-      try { wsHandle = await window.showDirectoryPicker({ mode: 'readwrite' }); }
-      catch (e) { return; }   // 用户取消
+    if (workspaceBusy) return;
+    workspaceBusy = true;
+    try {
+      const data = prepareWorkspaceSave();
+      backfillTransfersBeforeSave();
+      const dir = workspace ? workspace.handle
+        : (window.showDirectoryPicker ? await window.showDirectoryPicker({ mode: 'readwrite' }) : null);
+      if (dir) {
+        try {
+          await saveWorkspaceToHandle(dir, data);
+        } catch (error) {
+          await saveWorkspaceDownload(data, '直写工作区失败：' + error.message);
+        }
+      } else {
+        await saveWorkspaceDownload(data);
+      }
+    } catch (error) {
+      if (error.name !== 'AbortError') setStatus('工作区保存失败：' + error.message, true);
+    } finally {
+      workspaceBusy = false;
     }
-    if (wsHandle) {
-      try { await saveWorkspaceToHandle(wsHandle); return; }
-      catch (e) { setStatus(`直写工作区失败（${e.message}）——已转多文件下载。`, true); }
-    }
-    saveWorkspaceDownload();
   };
 
   function buildManifest() {
     const active = [...S.lines.values()].filter((l) => !l.meta.archived);
     // archived 表：沿用旧表防编号复用＋补当前归档线；取消归档的线从中摘除（见 archivedIdList）
-    S.manifest = {
+    return {
       schema: 'fmt/manifest@1',
       dataset: (S.manifest && S.manifest.dataset) || 'main',
       version: (S.manifest && S.manifest.version) || '0.1.0',
@@ -5458,44 +5532,24 @@
       // 补齐全部线（含归档线，flatten/查看器侧自会忽略归档）；flatten 据此产出 net/index.json
       lineOrder: effectiveLineOrder(),
     };
-    return S.manifest;
   }
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  // 降级保存＝线路＋groups＋manifest（＋lineinfo.md 有介绍改动时）一并下载（目录直写不可用时；
-  // 水位恢复依赖 manifest，务必成套）；逐个隔 150ms 发出降低浏览器多下载拦截概率，结束对账计数
-  async function saveWorkspaceDownload() {
-    const lines = [...S.lines.values()];
-    const liPending = typeof S.lineinfoMd === 'string' && S.lineinfoMd !== S.lineinfoSavedMd;
-    const total = lines.length + 2 + (liPending ? 1 : 0);
-    let ok = 0, fail = 0, n = 0;
-    for (const l of lines) {
-      const issues = lineIssues(l);
-      if (issues.length) { fail++; setStatus(`保存失败 ${l.id}：${issues.join('；')}`, true); continue; }
-      download(`${l.id}.json`, lineForSave(l)); ok++; n++;   // 联络线不带 color 落盘（兜底）
-      setStatus(`保存工作区 ${n}/${total}：已请求 ${l.id}.json`);
-      await sleep(150);
+  // 降级保存：从同一份已校验数据逐个请求下载。
+  async function saveWorkspaceDownload(data, directError = '') {
+    const prefix = directError ? directError + '。' : '';
+    const total = data.files.length;
+    for (const [i, file] of data.files.entries()) {
+      const type = file.name.endsWith('.md') ? 'text/markdown;charset=utf-8' : 'application/json;charset=utf-8';
+      saveBlob(file.name, new Blob([file.contents], { type }));
+      setStatus(prefix + `已请求 ${i + 1}/${total} 个文件的下载：${file.name}`, !!directError);
+      if (i + 1 < total) await new Promise((resolve) => setTimeout(resolve, 150));
     }
-    if (!S.groups) S.groups = { schema: 'fmt/groups@1', lineGroups: [], stationGroups: [] };
-    normalizeStationGroups(S.groups.stationGroups);   // 兜底：嵌套子组字段为空不写出（载入与各操作已保证）
-    download('groups.json', S.groups); n++;
-    setStatus(`保存工作区 ${n}/${total}：已请求 groups.json`);
-    await sleep(150);
-    download('manifest.json', buildManifest()); n++;
-    if (liPending) {
-      await sleep(150);
-      downloadText('lineinfo.md', S.lineinfoMd); n++;   // 手填 markdown 原样下载（不 JSON 化）
-      S.lineinfoSavedMd = S.lineinfoMd;                 // 已导出即记为已保存（与直写通道口径一致）
+    if (!directError) {
+      S.manifest = data.manifest;
+      if (data.lineinfo !== null) S.lineinfoSavedMd = data.lineinfo;
+      renderLineInfoPanel();
     }
-    renderLineInfoPanel();   // 介绍基线已同步：面板未保存标记随之刷新（无介绍改动时为无害重绘）
-    setStatus(`保存工作区完成（降级下载模式）：已请求 ${n}/${total} 个文件（线路 ${ok} 个`
-      + (fail ? `＋未过检查 ${fail} 个（见上）` : '') + '＋groups＋manifest'
-      + (liPending ? '＋lineinfo.md' : '') + '）→ 放入工作区/data/ 对应位置。'
-      + '若浏览器询问「允许下载多个文件」请允许；中途取消可再点本按钮补齐。'
-      + '（Chrome/Edge 可经「载入工作区」打开文件夹获得直写，免手动归档。）', !!fail);
+    setStatus(prefix + `已请求下载工作区的 ${total} 个文件。请将它们放入对应的工作区目录。`, !!directError);
   }
-
-  // ---------- 启动 ----------
-  window.addEventListener('resize', () => { applyView(); scheduleWorld(); });   // 合帧：拖动窗体时连发
 
   (async function boot() {
     loadCounters();
