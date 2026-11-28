@@ -779,7 +779,7 @@
   //     out-of-station 单元：直属站各自普通尺寸圈（出闸换乘物理上是两个站，不并点，黑边），
   //       子组各自成单元；
   //     除出闸单元的直属站外，成员的个人小圈一律不再单独出现。
-  //   pills —— 逻辑线 ≥3 的 same-station 单元的胶囊折线：叶站 geo 按 planGroupPillChain 链序
+  //   pills —— 逻辑线 ≥3 的 same-station 单元的胶囊折线（近乎共点的组用站圈）：叶站 geo 按 planGroupPillChain 链序
   //（渲染层双层 line＋圆头端帽即得白底黑边胶囊）。条目自带 pin（组级信息面板/hover 单元，
   // key 'g:<id>'，渲染层并入 pinByKey；不进 pins＝不渲染成圈）。
   //   labels —— HTML 标签与搜索条目单元：无组站各一；每个单元各一（均值位置，名取首个非空）；
@@ -854,34 +854,33 @@
       const leaves = tree.leafStops(gid);
       if (!leaves.length) return;   // 无站组（成员线已归档、全线路所组被上游剔除等）：不出图形不出标签
       const u = unitOf(leaves);
+      const pin = {
+        kind: 'group', key: 'g:' + gid, groupId: gid, name: u.name, lineNames: u.lineNames,
+        lineIds: u.lineIds, groupType: type, big: type === 'same-station', lon: u.lon, lat: u.lat,
+        ...(u.stopPhaseMembers ? { stopPhaseMembers: u.stopPhaseMembers } : {}),
+      };
+      labels.push(unitLabel(gid, type, u));
       // shape:"pill"（2026-11-23 用户裁定）：同站组显式强制药丸——平行线双线站大圆悬浮对策，
       // 不论线数（仅 same-station 生效；validate 禁其他类型写 shape）；上级组（带子组的
       // 同站／接轨单元）一律药丸、不论线数；平铺组沿用逻辑线 ≥3
       const gn = tree.byId.get(gid);
       if ((gn && gn.shape === 'pill' && type === 'same-station') || tree.childrenOf(gid).length > 0
         || (type === 'same-station' && logicalLineCount(u.lineIds, linesMap, lineGroups) >= 3)) {
-        // 药丸替代一切成员图形——成员个人小圈不再出现（药丸即换乘标识，
-        // 2026-11-22 用户裁定）；组 pin 挂在药丸条目上（不进 pins＝不被渲染成圈），
-        // 渲染层在药丸线上挂点选/hover，用同一 key 查 pinByKey
-        const order = planGroupPillChain(leaves.map((s) => planarOf(s.lon, s.lat, u.lat)));   // 共享参考纬度＝叶站均值
-        pills.push({
-          key: 'g:' + gid, groupId: gid, lineIds: u.lineIds,
-          chain: order.map((i) => [leaves[i].lon, leaves[i].lat]),
-          pin: {
-            kind: 'group', key: 'g:' + gid, groupId: gid, name: u.name, lineNames: u.lineNames,
-            lineIds: u.lineIds, groupType: type, big: true, lon: u.lon, lat: u.lat,
-            ...(u.stopPhaseMembers ? { stopPhaseMembers: u.stopPhaseMembers } : {}),
-          },
-        });
-      } else {
-        pins.push({
-          kind: 'group', key: 'g:' + gid, groupId: gid, name: u.name, lineNames: u.lineNames,
-          lineIds: u.lineIds,
-          groupType: type, big: type === 'same-station', lon: u.lon, lat: u.lat,
-          ...(u.stopPhaseMembers ? { stopPhaseMembers: u.stopPhaseMembers } : {}),
-        });
+        const points = leaves.map((s) => planarOf(s.lon, s.lat, u.lat));
+        const [cx, cy] = planarOf(u.lon, u.lat, u.lat);
+        // MapLibre 切片化时会省略几乎共点的折线。成员全在半米内时，用同一组 pin 画站圈。
+        const hasSpread = points.some(([x, y]) => Math.hypot(x - cx, y - cy) * M_PER_DEG_LAT > 0.5);
+        if (hasSpread) {
+          const order = planGroupPillChain(points);
+          pills.push({
+            key: pin.key, groupId: gid, lineIds: u.lineIds,
+            chain: order.map((i) => [leaves[i].lon, leaves[i].lat]),
+            pin: { ...pin, big: true },
+          });
+          return;
+        }
       }
-      labels.push(unitLabel(gid, type, u));
+      pins.push(pin);
     };
     // 只从最外层组出发（子组由出闸单元递归带入；同站/junction 单元的内层组并入叶站不出图）
     for (const gid of tree.order) {
@@ -1077,7 +1076,7 @@
   // 无组＝白心小圈线色描边；出闸直属站＝黑边小圈；同站/junction 单元＝大圈
   //（junction 描边取成员线角色优先级色——main＞standalone＞branch＞connector，
   // 与胶水层 junctionStroke 同源规则）；药丸条件（shape:"pill"/带子组/逻辑线≥3）
-  // 同 buildStopView。返回 null（arrow 行无节点）或 { kind:'dot'|'dark'|'big'|'pill',
+  // 同 buildStopView（近乎共点的折线降级只影响地图）。返回 null（arrow 行无节点）或 { kind:'dot'|'dark'|'big'|'pill',
   // stroke:色值|null }——stroke null＝渲染层退段色（普通站）。
   function stopNodeGlyph(stop, tree, linesMap, lineGroups) {
     if (!stop || stop.kind === 'arrow') return null;

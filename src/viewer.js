@@ -615,7 +615,7 @@
   }
   // ≥3 线同站组药丸折线（view.pills 的 chain 已是贪心最近邻链序；成员圈已隐去、药丸即换乘标识）。
   // 特性携带 pin 的 key（渲染层据此查 pinByKey 开面板/hover）；坐标并入站点 bbox 供 fitAll 兜底；
-  // 单点退化（共点组）复制端点保 LineString 合法——round 端帽渲染为圆点。
+  // 近乎共点的组在 buildStopView 已分到站圈，本层只画有长度的链。
   function renderPillsFC() {
     const dc = S.dispCoord;
     const features = [];
@@ -623,8 +623,7 @@
       const coords = (pill.chain || [])
         .filter((c) => c && Number.isFinite(c[0]) && Number.isFinite(c[1]))
         .map((c) => dc(c[0], c[1]));
-      if (!coords.length) continue;
-      if (coords.length === 1) coords.push(coords[0]);
+      if (coords.length < 2) continue;
       for (const c of coords) S.dispStopsBbox = mergeBbox(S.dispStopsBbox, [c[0], c[1], c[0], c[1]]);
       features.push({
         type: 'Feature',
