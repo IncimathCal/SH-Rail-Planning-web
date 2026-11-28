@@ -81,6 +81,10 @@ assert.strictEqual(V.stationNameAt(timeline, '浦电路', ['l0018'], 2010.0), '�
 assert.strictEqual(V.stationNameAt(timeline, '浦电路', ['l0018'], 2025.0), '向城路');
 assert.strictEqual(V.stationNameAt(timeline, '浦电路', ['l0020'], 2025.0), '浦电路');
 assert.strictEqual(V.stationNameAt(timeline, '人民广场', ['l0015'], 1995.0), '人民广场');
+assert.strictEqual(V.stationNameAt(timeline, '人民广场', ['l0016'], 2000.5), '人民公园');
+assert.strictEqual(V.stationNameAt(timeline, '人民广场', ['l0016'], 2000.7), '人民广场');
+assert.strictEqual(V.stationNameAt(timeline, '上海科技馆', ['l0033'], 2022.5), '迎春路');
+assert.strictEqual(V.stationNameAt(timeline, '上海科技馆', ['l0016'], 2022.5), '上海科技馆');
 
 // Line 5 branch -> Line 23 handover metadata, groundbreaking buildTime, and unapproved future/corridor ordering
 const segL5Branch = V.segmentOpenMeta(timeline, 'l0038', 18);

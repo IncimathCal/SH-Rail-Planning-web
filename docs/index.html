@@ -777,6 +777,20 @@
     }
     /* 已建未开（暂缓开通）站名灰态 */
     .map-label.is-deferred { color: #7b818a; font-weight: 400; }
+    /* 车站更名特写：老站名先醒目渐隐、新站名随后突出浮现 */
+    .map-label.is-rename-old {
+      color: #b45309; font-weight: 700; z-index: 6;
+    }
+    .map-label.is-rename-old::before {
+      -webkit-text-stroke: 4px #fff;
+    }
+    .map-label.is-rename-new {
+      color: #6d28d9; font-weight: 700; z-index: 7;
+      text-shadow: 0 0 10px rgba(109, 40, 217, .28);
+    }
+    .map-label.is-rename-new::before {
+      -webkit-text-stroke: 4.2px #fff;
+    }
     .lp-foot { flex: none; padding: 12px 16px 14px; border-top: 1px solid var(--panel-border); }
     #btnKml {
       display: block; width: 100%; padding: 8px 0; cursor: pointer;

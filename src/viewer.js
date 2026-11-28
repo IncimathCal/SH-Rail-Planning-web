@@ -358,6 +358,8 @@
       eventPauseUntilMs: 0,
       eventPauseId: '',
       activePlanBanner: null,
+      renameAnim: null,
+      l24MergeT: Infinity,
       triggeredEventIds: new Set(),
       eventFeedCollapsed: false,
       lastEventSig: '',
@@ -3409,8 +3411,12 @@
     }
     // 分期态标签＝期次匹配单元＋他省纯单元（2026-11-25 纠正裁定：他省站名照常显示——
     // 只按 zoom 门槛，见 visibleLabels 的 displayOnlyIds 放行）；混合单元按本地成员期次判
-    // 时间轴态：按当前时刻 t 动态反映「站名历史更名」「动态站台定位」与「非换乘→换乘升级」状态
+    // 时间轴态：按当前时刻 t 动态反映「站名历史更名」「动态站台定位」「非换乘→换乘升级」与「更名先隐后现动画」
     const tlDispT = S.tl.active ? timelineDisplayTimeAt(S.tl.currentTime) : 0;
+    const ra = S.tl.active ? S.tl.renameAnim : null;
+    const nowAnimMs = ra ? performance.now() : 0;
+    const holdPreRenameOf = (key) => Boolean(ra && !ra.swapped && ra.key === key);
+    const l24MergeT = Number.isFinite(S.tl.l24MergeT) ? S.tl.l24MergeT : Infinity;
     const baseLabels = S.tl.active
       ? S.dispLabels.reduce((acc, label) => {
           const ot = S.pinOpenTime && S.pinOpenTime.get(label.key);
@@ -3425,16 +3431,33 @@
           let anchorLat = label.lat;
           const u = S.tl.unitByKey && S.tl.unitByKey.get(label.key);
           if (u && Array.isArray(u.stages) && u.stages.length) {
+            const evalT = holdPreRenameOf(label.key) ? (S.tl.currentTime - 0.02) : S.tl.currentTime;
             let si = 0;
-            while (si + 1 < u.stages.length && u.stages[si + 1].fromTime <= S.tl.currentTime + 1e-4) si++;
+            while (si + 1 < u.stages.length && u.stages[si + 1].fromTime <= evalT + 1e-4) si++;
             const stg = u.stages[si];
             if (stg && Number.isFinite(stg.anchorLon) && Number.isFinite(stg.anchorLat)) {
               anchorLon = stg.anchorLon;
               anchorLat = stg.anchorLat;
             }
           }
+          // 人民广场（g:g0023）：2000-06-11 2号线初通时称「人民公园」尚未一票换乘，2000-08-10 更名为「人民广场」并实现1/2号线站内换乘
+          if (label.key === 'g:g0023' && (tlDispT < 2000.61 - 1e-4 || holdPreRenameOf('g:g0023'))) {
+            const hasL1 = openedLineIds.indexOf('l0015') >= 0;
+            const hasL2 = openedLineIds.indexOf('l0016') >= 0;
+            if (hasL1 || hasL2) {
+              acc.push(Object.assign({}, label, {
+                lon: anchorLon,
+                lat: anchorLat,
+                group: false,
+                deferred: false,
+                lineIds: openedLineIds.length ? openedLineIds : ['l0015'],
+                displayName: (hasL1 && hasL2) ? '人民广场 / 人民公园' : (hasL2 ? '人民公园' : '人民广场'),
+              }));
+            }
+            return acc;
+          }
           // 国家会展中心（g:g0076）：2024-09 更名前，2号线「徐泾东」与17号线「诸光路」各自独立标于己方站台
-          if (label.key === 'g:g0076' && tlDispT < 2024.72) {
+          if (label.key === 'g:g0076' && (tlDispT < 2024.72 - 1e-4 || holdPreRenameOf('g:g0076'))) {
             const hasL2 = openedLineIds.indexOf('l0016') >= 0;
             const hasL17 = openedLineIds.indexOf('l0032') >= 0;
             if (hasL2) {
@@ -3456,6 +3479,34 @@
                 deferred: false,
                 lineIds: ['l0032'],
                 displayName: '诸光路',
+              }));
+            }
+            return acc;
+          }
+          // 上海科技馆 / 18号线迎春路（g:g0082）：24号线开通前，18号线独立标为「迎春路」位于东侧800m站台，24号线贯通后并站更名
+          if (label.key === 'g:g0082' && (S.tl.currentTime < l24MergeT - 1e-4 || holdPreRenameOf('g:g0082'))) {
+            const hasL2 = openedLineIds.indexOf('l0016') >= 0;
+            const hasL18 = openedLineIds.indexOf('l0033') >= 0;
+            if (hasL2) {
+              const l2Name = (tlDispT < 2002.95 - 1e-4 || holdPreRenameOf('g:g0082:l0016')) ? '杨高南路' : '上海科技馆';
+              acc.push(Object.assign({}, label, {
+                lon: 121.5385277,
+                lat: 31.2217059,
+                group: false,
+                deferred: false,
+                lineIds: ['l0016'],
+                displayName: l2Name,
+              }));
+            }
+            if (hasL18) {
+              acc.push(Object.assign({}, label, {
+                key: 'g:g0082:l0033',
+                lon: 121.5469413,
+                lat: 31.220775,
+                group: false,
+                deferred: false,
+                lineIds: ['l0033'],
+                displayName: '迎春路',
               }));
             }
             return acc;
@@ -3484,11 +3535,12 @@
     const items = V.visibleLabels(labels, map.getZoom(),
       { hideAll: !S.namesOn, dimmedSet: S.phaseActive ? displayOnlyLineIds() : S.dimmed, focus: S.focus, focusMembers, stationKey, phase: S.phase,
         displayOnlyIds: S.phaseActive ? displayOnlyLineIds() : [] });
-    // 时间轴播放时：当前正在逐站绘制/停顿展示的这一条线，其已抵达车站的站名强制逐个显现（不受 zoom 门槛隐藏）
+    // 时间轴播放时：当前正在逐站绘制/停顿展示的这一条线，其已抵达车站的站名强制逐个显现；
+    // 若正在执行车站更名特写动画，也强制纳入主更名站与伴随旧站标签
     if (S.tl.active && S.namesOn) {
+      const present = new Set(items.map((x) => x.key));
       const ab = timelineActiveBatchAt(S.tl.currentTime);
       if (ab) {
-        const present = new Set(items.map((x) => x.key));
         for (let bi = 0; bi < baseLabels.length; bi++) {
           const lb = baseLabels[bi];
           const lids = Array.isArray(lb.lineIds) ? lb.lineIds : [];
@@ -3499,6 +3551,17 @@
           if (!present.has(lb.key)) {
             present.add(lb.key);
             items.push(lb);
+          }
+        }
+      }
+      if (ra) {
+        for (let bi = 0; bi < baseLabels.length; bi++) {
+          const lb = baseLabels[bi];
+          if (lb.key === ra.key || (ra.extraOldKey && lb.key === ra.extraOldKey)) {
+            if (!present.has(lb.key)) {
+              present.add(lb.key);
+              items.push(lb);
+            }
           }
         }
       }
@@ -3520,7 +3583,56 @@
       if (!xy) continue;
       if (xy.x < -M || xy.y < -M || xy.x > w + M || xy.y > h + M) continue;
       seen.add(it.key);
-      const txt = (S.tl.active && it.displayName != null) ? it.displayName : (it.name || '');
+      let txt = (S.tl.active && it.displayName != null) ? it.displayName : (it.name || '');
+      let animOp = null;
+      let animDy = 0;
+      let animScale = 1;
+      let animCls = '';
+      if (ra && (it.key === ra.key || (ra.extraOldKey && it.key === ra.extraOldKey))) {
+        const isExtra = Boolean(ra.extraOldKey && it.key === ra.extraOldKey);
+        const oldT = isExtra ? (ra.extraOldText || txt) : (ra.oldText || txt);
+        const newT = ra.newText || txt;
+        if (nowAnimMs < ra.fadeOutStartMs) {
+          txt = oldT;
+          animOp = 1;
+          animScale = 1.15;
+          animCls = 'old';
+        } else if (nowAnimMs < ra.swapMs) {
+          const p = Math.max(0, Math.min(1, (nowAnimMs - ra.fadeOutStartMs) / Math.max(1, ra.swapMs - ra.fadeOutStartMs)));
+          txt = oldT;
+          animOp = Math.max(0, 1 - p * p);
+          animDy = -9 * p;
+          animScale = 1.15 - 0.18 * p;
+          animCls = 'old';
+        } else if (nowAnimMs < ra.fadeInStartMs) {
+          txt = isExtra ? oldT : newT;
+          animOp = 0;
+          animScale = 1;
+        } else if (nowAnimMs < ra.fadeInEndMs) {
+          if (isExtra) {
+            txt = oldT;
+            animOp = 0;
+          } else {
+            const p = Math.max(0, Math.min(1, (nowAnimMs - ra.fadeInStartMs) / Math.max(1, ra.fadeInEndMs - ra.fadeInStartMs)));
+            const ease = 1 - Math.pow(1 - p, 3);
+            txt = newT;
+            animOp = ease;
+            animDy = 7 * (1 - ease);
+            animScale = 1.32 - 0.18 * ease;
+            animCls = 'new';
+          }
+        } else {
+          if (isExtra) {
+            txt = oldT;
+            animOp = 0;
+          } else {
+            txt = newT;
+            animOp = 1;
+            animScale = 1.14;
+            animCls = 'new';
+          }
+        }
+      }
       let el = S.labelPool.get(it.key);
       if (!el) {
         el = document.createElement('div');
@@ -3538,10 +3650,19 @@
         el.classList.toggle('is-tl-active', !!(S.tl.active && it.tlActive));
         el.classList.toggle('is-deferred', !!(S.tl.active && it.deferred));
       }
-      // demo 高亮渐变：站名显隐走 opacity（.map-label 带 CSS transition）——分期/聚焦
-      // 切换时站名渐隐渐显，替代原 visibility 硬切
-      if (el.style.opacity !== '1') el.style.opacity = '1';
-      el.style.transform = 'translate3d(' + xy.x.toFixed(1) + 'px,' + xy.y.toFixed(1) + 'px,0) translate(-50%,-140%)' + zfTxt;
+      el.classList.toggle('is-rename-old', animCls === 'old');
+      el.classList.toggle('is-rename-new', animCls === 'new');
+      if (animOp != null) {
+        el.style.transition = 'none';
+        el.style.opacity = animOp.toFixed(3);
+        const effScale = zf * animScale;
+        const scTxt = Math.abs(effScale - 1) > 0.002 ? ' scale(' + effScale.toFixed(3) + ')' : '';
+        el.style.transform = 'translate3d(' + xy.x.toFixed(1) + 'px,' + (xy.y + animDy).toFixed(1) + 'px,0) translate(-50%,-140%)' + scTxt;
+      } else {
+        if (el.style.transition) el.style.transition = '';
+        if (el.style.opacity !== '1') el.style.opacity = '1';
+        el.style.transform = 'translate3d(' + xy.x.toFixed(1) + 'px,' + xy.y.toFixed(1) + 'px,0) translate(-50%,-140%)' + zfTxt;
+      }
     }
     for (const [k, el] of S.labelPool) {
       if (!seen.has(k)) el.style.opacity = '0';
@@ -3749,13 +3870,15 @@
       const grp = openGroups[gi];
       const T0 = grp.anchor;
       const Tnext = (gi + 1 < openGroups.length) ? openGroups[gi + 1].anchor : TIMELINE_MAX_T;
-      const maxWindow = Math.max(0.10, (Tnext - T0) * 0.92);
+      // 严格零重叠时间窗：绝不溢出到下一开通日 Tnext，彻底杜绝2号线东西延伸、7号线与11号线等临近日期两头同时行进
+      const gapToNext = Math.max(0.012, Tnext - T0);
+      const maxWindow = Math.min(gapToNext * 0.94, Math.max(0.012, gapToNext - 0.003));
       const localList = grp.batches.filter((b) => b.isLocal);
       const M = localList.length;
       const slotStep = M <= 1
         ? Math.min(TIMELINE_DRAW_SPAN, maxWindow)
         : Math.min(0.42, maxWindow / M);
-      const slotDur = M <= 1 ? slotStep : Math.max(0.018, slotStep * 0.88);
+      const slotDur = M <= 1 ? slotStep : Math.max(0.003, slotStep * 0.90);
 
       let localIdx = 0;
       for (const b of grp.batches) {
@@ -3763,7 +3886,7 @@
         if (b.isLocal) {
           slotStart = T0 + localIdx * slotStep;
           const slotEnd = slotStart + slotDur;
-          drawEndTime = slotStart + Math.max(0.010, slotDur * 0.76);
+          drawEndTime = slotStart + Math.max(0.002, slotDur * 0.76);
           dwellEndTime = slotEnd;
           localIdx++;
         } else {
@@ -3771,7 +3894,7 @@
           drawEndTime = T0 + Math.min(0.20, maxWindow);
           dwellEndTime = drawEndTime;
         }
-        const drawSpan = Math.max(0.010, drawEndTime - slotStart);
+        const drawSpan = Math.max(0.002, drawEndTime - slotStart);
         let accKm = 0;
         const batchStopReachesBySid = new Map();
         for (const item of b.items) {
@@ -3781,7 +3904,7 @@
           const f1 = b.batchTotalKm > 0 ? accKm / b.batchTotalKm : 1;
           // 严格匀速里程映射：整条线路从起点到终点速度恒定流畅
           const startTime = slotStart + f0 * drawSpan;
-          const endTime = Math.max(startTime + 0.002, slotStart + f1 * drawSpan);
+          const endTime = Math.max(startTime + 0.0004, slotStart + f1 * drawSpan);
           segOpenByLineIdx.set(b.lineId + ':' + item.sg.segIndex, startTime);
           // 几何端点精确匹配站点（彻底杜绝含 arrow 端点线路的索引偏移）
           const stStart = matchNearestStop(b.lineId, item.coords[0]);
@@ -3926,6 +4049,10 @@
       }
     }
 
+    // 24号线抵达上海科技馆（l0039-s12）的精确时间槽：此前18号线「迎春路」保持独立站台不与2号线合并
+    const l24MergeT = stopTimeBySid.get('l0039-s12');
+    S.tl.l24MergeT = Number.isFinite(l24MergeT) ? l24MergeT : Infinity;
+
     const mergeLabelMeta = (key, openTime, transferTime, arrivals) => {
       const prevOpen = S.pinOpenTime.get(key);
       if (prevOpen == null || openTime < prevOpen) S.pinOpenTime.set(key, openTime);
@@ -3997,7 +4124,7 @@
         });
       }
 
-      // 收集所有离散演变时刻（已建未开出现时刻 + 正式开通时刻 + 历史移交时刻 + g0076 更名合并时刻）
+      // 收集所有离散演变时刻（已建未开出现时刻 + 正式开通时刻 + 历史移交时刻 + 分站合并更名时刻）
       const timeSet = new Set();
       for (const se of stopEntries) {
         timeSet.add(se.builtTime);
@@ -4006,7 +4133,9 @@
           timeSet.add(se.handover.beforeTime);
         }
       }
+      if (unitKey === 'g:g0023') timeSet.add(2000.61);
       if (unitKey === 'g:g0076') timeSet.add(2024.72);
+      if (unitKey === 'g:g0082' && Number.isFinite(l24MergeT)) timeSet.add(l24MergeT);
       const eventTimes = Array.from(timeSet).sort((a, b) => a - b);
 
       // 合并相近事件（< 0.004 年视为同一批）
@@ -4073,8 +4202,44 @@
         if (!Number.isFinite(firstOpenedTime)) firstOpenedTime = t;
         const distinctCount = activeLinesMap.size;
         const activeList = Array.from(activeLinesMap.values());
+        const isPreMergeRmgc = (unitKey === 'g:g0023' && t < 2000.61 - 1e-4);
         const isPreRenameNecc = (unitKey === 'g:g0076' && t < 2024.72 - 1e-4);
-        if (!isPreRenameNecc && distinctCount >= 2 && !Number.isFinite(firstTransferTime)) firstTransferTime = t;
+        const isPreMergeKjg = (unitKey === 'g:g0082' && Number.isFinite(l24MergeT) && t < l24MergeT - 1e-4);
+        if (!isPreMergeRmgc && !isPreRenameNecc && !isPreMergeKjg && distinctCount >= 2 && !Number.isFinite(firstTransferTime)) {
+          firstTransferTime = t;
+        }
+
+        // 人民广场（g:g0023）2000-08-10 更名并一票换乘前：1号线「人民广场」与2号线「人民公园」分站独立画圆
+        if (isPreMergeRmgc) {
+          const sL1 = opened.find((s) => s.lineId === 'l0015') || opened[0];
+          const pPrimary = dc(sL1.lon, sL1.lat);
+          const primaryFeat = {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [pPrimary[0], pPrimary[1]] },
+            properties: { key: unitKey, name: '人民广场', big: 0, dark: 0, deferred: 0, stroke: sL1.color },
+          };
+          const extraFeatures = [];
+          for (const os of opened) {
+            if (os === sL1) continue;
+            const po = dc(os.lon, os.lat);
+            extraFeatures.push({
+              type: 'Feature',
+              geometry: { type: 'Point', coordinates: [po[0], po[1]] },
+              properties: { key: unitKey + ':' + os.lineId, name: '人民公园', big: 0, dark: 0, deferred: 0, stroke: os.color },
+            });
+          }
+          stages.push({
+            fromTime: t,
+            distinctCount: 1,
+            isDeferred: false,
+            anchorLon: sL1.lon,
+            anchorLat: sL1.lat,
+            kind: 'pin',
+            feature: primaryFeat,
+            extraFeatures,
+          });
+          continue;
+        }
 
         // 国家会展中心（g:g0076）2024-09 更名前：2号线徐泾东与17号线诸光路为独立站台，各自在己方位置绘制本线圆点
         if (isPreRenameNecc) {
@@ -4093,6 +4258,38 @@
               type: 'Feature',
               geometry: { type: 'Point', coordinates: [po[0], po[1]] },
               properties: { key: unitKey + ':' + os.lineId, name: '诸光路', big: 0, dark: 0, deferred: 0, stroke: os.color },
+            });
+          }
+          stages.push({
+            fromTime: t,
+            distinctCount: 1,
+            isDeferred: false,
+            anchorLon: sL2.lon,
+            anchorLat: sL2.lat,
+            kind: 'pin',
+            feature: primaryFeat,
+            extraFeatures,
+          });
+          continue;
+        }
+
+        // 上海科技馆 / 18号线迎春路（g:g0082）24号线开通前：2号线上海科技馆与18号线迎春路相距约800m，各自独立画本线圆点
+        if (isPreMergeKjg) {
+          const sL2 = opened.find((s) => s.lineId === 'l0016') || opened[0];
+          const pPrimary = dc(sL2.lon, sL2.lat);
+          const primaryFeat = {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [pPrimary[0], pPrimary[1]] },
+            properties: { key: unitKey, name: '上海科技馆', big: 0, dark: 0, deferred: 0, stroke: sL2.color },
+          };
+          const extraFeatures = [];
+          for (const os of opened) {
+            if (os === sL2) continue;
+            const po = dc(os.lon, os.lat);
+            extraFeatures.push({
+              type: 'Feature',
+              geometry: { type: 'Point', coordinates: [po[0], po[1]] },
+              properties: { key: unitKey + ':' + os.lineId, name: '迎春路', big: 0, dark: 0, deferred: 0, stroke: os.color },
             });
           }
           stages.push({
@@ -4231,7 +4428,28 @@
     S.tl.batches = batchesOut;
     S.tl.stationUnits = unitsOut;
     S.tl.unitByKey = unitByKey;
-    S.tl.events = (S.timeline && Array.isArray(S.timeline.keyEvents)) ? S.timeline.keyEvents : [];
+    const baseEvents = (S.timeline && Array.isArray(S.timeline.keyEvents)) ? S.timeline.keyEvents.slice() : [];
+    if (Number.isFinite(l24MergeT)) {
+      baseEvents.push({
+        id: 'rn-l0033-yingchun',
+        time: l24MergeT,
+        useSlotTime: true,
+        date: '远期规划',
+        type: 'rename',
+        title: '18号线 迎春路 → 上海科技馆（24号线贯通换乘）',
+        detail: '24号线开通后与既有2号线上海科技馆站、18号线迎春路站连成一站并同步更名',
+        pauseMs: 2200,
+        focusZoom: 13.6,
+        stationName: '上海科技馆',
+        stationKey: 'g:g0082',
+        oldName: '迎春路',
+        newName: '上海科技馆',
+        rkey: 'l0033:上海科技馆',
+        coord: [121.544608, 31.220375],
+      });
+      baseEvents.sort((a, b) => a.time - b.time);
+    }
+    S.tl.events = baseEvents;
     S.tl.planApprovals = (S.timeline && Array.isArray(S.timeline.planApprovals)) ? S.timeline.planApprovals : [];
     S.tl.lastDoneSig = '';
     S.tl.lastApproveSig = '';
@@ -4645,7 +4863,7 @@
           properties: { color: eff.color, dash: sg.dash, local: sg.isLocal ? 1 : 0, sharedOffset: sg.sharedOffset },
         });
       } else {
-        const rawP = Math.max(0, Math.min(1, (t - sg.startTime) / Math.max(0.002, sg.endTime - sg.startTime)));
+        const rawP = Math.max(0, Math.min(1, (t - sg.startTime) / Math.max(0.0004, sg.endTime - sg.startTime)));
         const sliced = V.slicePolylineByRatio(sg.coords, sg.cumDist, sg.totalKm, rawP);
         if (sliced && sliced.coords.length >= 2) {
           if (sg.isLocal) {
@@ -4704,12 +4922,14 @@
     const normDef = STOP_LAYER_DEFS.find((d) => d.id === 'stops') || { radius: 3.5, strokeW: 1.8 };
     const units = S.tl.stationUnits || [];
 
+    const raIcon = S.tl.renameAnim;
     for (let i = 0; i < units.length; i++) {
       const u = units[i];
       if (u.openTime > t) break;
       const stgList = u.stages;
+      const evalT = (raIcon && !raIcon.swapped && u.key === raIcon.key) ? (t - 0.02) : t;
       let si = 0;
-      while (si + 1 < stgList.length && stgList[si + 1].fromTime <= t + 1e-4) si++;
+      while (si + 1 < stgList.length && stgList[si + 1].fromTime <= evalT + 1e-4) si++;
       const cur = stgList[si];
       if (u.isLocal && !cur.isDeferred) liveStations++;
       stageSigHash += (si + 1) * ((i % 97) + 1);
@@ -4885,12 +5105,13 @@
     if (!S.tl.active) return;
     feed.classList.toggle('is-collapsed', !!S.tl.eventFeedCollapsed);
     const evs = S.tl.events || [];
-    let count = 0;
+    const shownEvs = [];
     for (let i = 0; i < evs.length; i++) {
-      if (evs[i].time <= displayT + 0.015) count = i + 1;
-      else break;
+      const cmpT = evs[i].useSlotTime ? S.tl.currentTime : displayT;
+      if (evs[i].time <= cmpT + 0.015) shownEvs.push(evs[i]);
     }
-    const latestId = count > 0 ? evs[count - 1].id : '';
+    const count = shownEvs.length;
+    const latestId = count > 0 ? shownEvs[count - 1].id : '';
     const sig = count + ':' + latestId + ':' + (S.tl.eventPauseId || '');
     if (!force && sig === S.tl.lastEventSig) return;
     S.tl.lastEventSig = sig;
@@ -4899,7 +5120,7 @@
     list.textContent = '';
     const frag = document.createDocumentFragment();
     for (let i = count - 1; i >= 0; i--) {
-      const ev = evs[i];
+      const ev = shownEvs[i];
       const item = document.createElement('div');
       item.className = 'tl-ev-item' + (i === count - 1 ? ' is-latest' : '');
       item.dataset.evId = ev.id;
@@ -4965,6 +5186,30 @@
     }
   }
 
+  function resolveRenameLabelKey(ev) {
+    if (!ev) return null;
+    if (ev.stationKey) return ev.stationKey;
+    const rk = ev.rkey || '';
+    if (rk === 'l0016:人民广场') return 'g:g0023';
+    if (rk === '国家会展中心') return 'g:g0076';
+    if (rk === '上海科技馆' || rk === 'l0033:上海科技馆') return 'g:g0082';
+    const wantLid = (Array.isArray(ev.lineIds) && ev.lineIds[0]) || (rk.indexOf(':') > 0 ? rk.split(':')[0] : '');
+    const wantName = ev.stationName || (rk.indexOf(':') > 0 ? rk.split(':')[1] : rk);
+    for (const lb of S.dispLabels || []) {
+      const lids = Array.isArray(lb.lineIds) ? lb.lineIds : [];
+      if (wantLid && lids.indexOf(wantLid) < 0) continue;
+      if (lb.name === wantName || lb.name === rk || (rk && lb.name && lb.name.indexOf(rk) >= 0)) return lb.key;
+    }
+    if (wantLid && rk.indexOf(':') > 0) {
+      const origNm = rk.split(':')[1];
+      for (const lb of S.dispLabels || []) {
+        const lids = Array.isArray(lb.lineIds) ? lb.lineIds : [];
+        if (lids.indexOf(wantLid) >= 0 && lb.name === origNm) return lb.key;
+      }
+    }
+    return null;
+  }
+
   function timelineTick(nowMs) {
     if (!S.tl.active || !S.tl.playing) { S.tl.rafId = 0; return; }
     let dt = S.tl.lastFrameMs ? Math.min(0.05, (nowMs - S.tl.lastFrameMs) / 1000) : 0.016;
@@ -4972,19 +5217,30 @@
 
     // 关键事件 / 建设规划批复 / 车站更名与暂缓站开通特写停顿门控：
     // 先将视口平移就位（panDur），到达后再独立计满停顿展示时长（dwellMs），平移耗时绝不挤占停顿时间！
+    // 更名事件到达后先让老站名渐隐退场、停顿一拍、再突出浮现新站名并同步切换换乘图标！
     if (S.tl.eventPauseUntilMs > 0) {
       if (nowMs < S.tl.eventPauseUntilMs) {
-        if (nowMs - S.tl.lastLabelMs > 100) {
+        if (S.tl.renameAnim) {
+          if (!S.tl.renameAnim.swapped && nowMs >= S.tl.renameAnim.swapMs) {
+            S.tl.renameAnim.swapped = true;
+            renderTimelineFrame(true, 0, true);
+          }
+          updateLabels();
+        } else if (nowMs - S.tl.lastLabelMs > 100) {
           S.tl.lastLabelMs = nowMs;
           scheduleLabels();
         }
         S.tl.rafId = G.requestAnimationFrame(timelineTick);
         return;
       }
+      const hadRename = Boolean(S.tl.renameAnim);
       S.tl.eventPanUntilMs = 0;
       S.tl.eventPauseUntilMs = 0;
       S.tl.eventPauseId = '';
       S.tl.activePlanBanner = null;
+      S.tl.renameAnim = null;
+      S.tl.renameAnim = null;
+      if (hadRename) renderTimelineFrame(true, 0, true);
       dt = 0.016;
     }
 
@@ -5012,12 +5268,12 @@
     if (activeBatch) {
       if (ct < activeBatch.drawEndTime) {
         // 逐站演示期：1× 下约每秒 3~4 站（2站约1.8秒、20站约6.6秒），清晰呈现车站逐个加载与站级跟焦
-        const drawSpan = Math.max(0.010, activeBatch.drawEndTime - activeBatch.startTime);
+        const drawSpan = Math.max(0.001, activeBatch.drawEndTime - activeBatch.startTime);
         const targetDrawSec = Math.max(1.8, Math.min(7.5, 1.0 + 0.28 * activeBatch.segCount));
         yps = (drawSpan / targetDrawSec) * speed;
       } else {
         // 线末停顿展示期：每条线播完安静停顿约 1.15 秒后再飞往下一条线
-        const dwellSpan = Math.max(0.004, activeBatch.dwellEndTime - activeBatch.drawEndTime);
+        const dwellSpan = Math.max(0.0005, activeBatch.dwellEndTime - activeBatch.drawEndTime);
         const targetDwellSec = 1.15;
         yps = (dwellSpan / targetDwellSec) * speed;
       }
@@ -5040,8 +5296,10 @@
       if (!ev.pauseMs || ev.pauseMs <= 0) continue;
       if (S.tl.triggeredEventIds.has(ev.id)) continue;
       const isCloseup = (ev.type === 'rename' || ev.type === 'station') && Array.isArray(ev.coord) && ev.coord.length >= 2;
-      const minWin = isCloseup ? (prevDisp - 0.55) : (prevDisp - 0.004);
-      if (ev.time > minWin && ev.time <= nextDisp + 0.004) {
+      const prevCmp = ev.useSlotTime ? ct : prevDisp;
+      const nextCmp = ev.useSlotTime ? nextCt : nextDisp;
+      const minWin = isCloseup ? (prevCmp - 0.55) : (prevCmp - 0.004);
+      if (ev.time > minWin && ev.time <= nextCmp + 0.004) {
         // 正在画线过程中：更名/暂缓站开通不丢弃，顺延到当前线画完立刻特写；普通小开工事件跳过以免打断画线
         if (ev.type !== 'plan' && activeBatch && ct < activeBatch.drawEndTime) {
           if (!isCloseup) S.tl.triggeredEventIds.add(ev.id);
@@ -5051,15 +5309,17 @@
         const pauseScale = Math.sqrt(Math.max(0.5, speed));
         const dwellMs = ev.type === 'plan'
           ? Math.round(Math.max(1200, ev.pauseMs / pauseScale))
-          : (isCloseup
-            ? Math.round(Math.max(950, ev.pauseMs / pauseScale))
-            : Math.round(Math.max(450, ev.pauseMs / pauseScale)));
+          : (ev.type === 'rename'
+            ? Math.round(Math.max(1850, (ev.pauseMs || 2200) / pauseScale))
+            : (isCloseup
+              ? Math.round(Math.max(950, ev.pauseMs / pauseScale))
+              : Math.round(Math.max(450, ev.pauseMs / pauseScale))));
         let panDur = 0;
         if (isCloseup && S.tl.followOn && S.map && nowMs >= (S.tl.userPanUntilMs || 0)) {
           const targetCoord = S.dispCoord(ev.coord[0], ev.coord[1]);
           const pad = tlCameraPadding();
           const offset = [(pad.left - pad.right) / 2, (pad.top - pad.bottom) / 2];
-          const focusZoom = Number.isFinite(ev.focusZoom) ? ev.focusZoom : 13.2;
+          const focusZoom = Number.isFinite(ev.focusZoom) ? ev.focusZoom : 13.4;
           const canvas = S.map.getCanvas();
           const w = canvas ? canvas.clientWidth : G.innerWidth;
           const h = canvas ? canvas.clientHeight : G.innerHeight;
@@ -5094,6 +5354,48 @@
         S.tl.eventPanUntilMs = panDur > 0 ? (nowMs + panDur) : 0;
         S.tl.eventPauseUntilMs = nowMs + panDur + dwellMs;
         S.tl.activePlanBanner = (ev.type === 'plan' || isCloseup) ? ev : null;
+        if (ev.type === 'rename') {
+          const rkKey = resolveRenameLabelKey(ev);
+          const panDoneMs = nowMs + panDur;
+          const fadeOutStartMs = panDoneMs + Math.round(dwellMs * 0.13);
+          const swapMs = fadeOutStartMs + Math.round(dwellMs * 0.24);
+          const fadeInStartMs = swapMs + Math.round(dwellMs * 0.08);
+          const fadeInEndMs = fadeInStartMs + Math.round(dwellMs * 0.25);
+          let oldText = ev.oldName || '';
+          let newText = ev.newName || ev.stationName || '';
+          let extraOldKey = null;
+          let extraOldText = '';
+          if (rkKey === 'g:g0023') {
+            oldText = '人民广场 / 人民公园';
+            newText = '人民广场';
+          } else if (rkKey === 'g:g0076') {
+            oldText = '徐泾东';
+            extraOldKey = 'g:g0076:l0032';
+            extraOldText = '诸光路';
+            newText = '国家会展中心';
+          } else if (rkKey === 'g:g0082' && ev.id === 'rn-l0033-yingchun') {
+            oldText = '上海科技馆';
+            extraOldKey = 'g:g0082:l0033';
+            extraOldText = '迎春路';
+            newText = '上海科技馆';
+          }
+          S.tl.renameAnim = rkKey ? {
+            evId: ev.id,
+            key: rkKey,
+            extraOldKey,
+            extraOldText,
+            oldText,
+            newText,
+            panDoneMs,
+            fadeOutStartMs,
+            swapMs,
+            fadeInStartMs,
+            fadeInEndMs,
+            swapped: false,
+          } : null;
+        } else {
+          S.tl.renameAnim = null;
+        }
         S.tl.currentTime = nextCt;
         renderTimelineFrame(true, 0, true);
         S.tl.rafId = G.requestAnimationFrame(timelineTick);
@@ -5259,6 +5561,7 @@
       S.tl.eventPauseUntilMs = 0;
       S.tl.eventPauseId = '';
       S.tl.activePlanBanner = null;
+      S.tl.renameAnim = null;
       S.tl.triggeredEventIds = new Set();
       S.tl.lastFollowSig = '';
       syncTimelineButtons();
@@ -5319,6 +5622,7 @@
         S.tl.eventPauseUntilMs = 0;
         S.tl.eventPauseId = '';
         S.tl.activePlanBanner = null;
+      S.tl.renameAnim = null;
         pruneTriggeredEventsAfter(timelineDisplayTimeAt(S.tl.currentTime));
         const ab = timelineActiveBatchAt(S.tl.currentTime);
         S.tl.arrivedBatchKey = ab ? ab.key : '';
@@ -5337,6 +5641,7 @@
           S.tl.eventPauseUntilMs = 0;
           S.tl.eventPauseId = '';
           S.tl.activePlanBanner = null;
+      S.tl.renameAnim = null;
           pruneTriggeredEventsAfter(timelineDisplayTimeAt(S.tl.currentTime));
           const ab = timelineActiveBatchAt(S.tl.currentTime);
           S.tl.arrivedBatchKey = ab ? ab.key : '';

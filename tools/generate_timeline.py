@@ -453,6 +453,10 @@ MILESTONES = [
 ]
 
 STATION_RENAMES = {
+    "l0016:人民广场": [
+        {"time": 2000.44, "date": "2000-06", "name": "人民公园", "note": "2号线一期开通初期原名（尚未与1号线统一票务换乘）"},
+        {"time": 2000.61, "date": "2000-08", "name": "人民广场", "note": "2000年8月10日2号线人民公园站更名为人民广场站，并与1号线实现站内一票换乘"},
+    ],
     "锦江乐园": [
         {"time": 1993.41, "date": "1993-05", "name": "虹梅路", "note": "1号线南段初开通原名"},
         {"time": 2001.33, "date": "2001-05", "name": "锦江乐园", "note": "2001年5月1日更名"},
@@ -534,6 +538,10 @@ STATION_RENAMES = {
     "l0018:浦电路": [
         {"time": 2005.99, "date": "2005-12", "name": "浦电路", "note": "4号线开通原名（与6号线浦电路同名不同站）"},
         {"time": 2024.72, "date": "2024-09", "name": "向城路", "note": "2024年9月21日仅4号线更名，6号线浦电路保持不变"},
+    ],
+    "l0033:上海科技馆": [
+        {"time": 2021.99, "date": "2021-12", "name": "迎春路", "note": "18号线一期北段开通站名（24号线开通前独立运营，不与2号线上海科技馆站换乘）"},
+        {"time": 2034.50, "date": "远期规划", "name": "上海科技馆", "note": "24号线开通后与既有2号线上海科技馆站连成一站并同步更名"},
     ],
 }
 
@@ -816,9 +824,12 @@ def build_key_events(stops_fc):
         if sid in coord_by_sid:
             ev["coord"] = coord_by_sid[sid]
         events.append(ev)
-    # 全部历史站名更名事件：逐站附精确坐标，触发特写镜头与独立停顿
+    # 全部历史站名更名事件：逐站附精确坐标、新旧站名，触发特写镜头与先隐后现动画
     for rkey, entries in STATION_RENAMES.items():
         if not isinstance(entries, list) or len(entries) < 2:
+            continue
+        # 18号线迎春路 → 上海科技馆由前端按24号线实际远期槽位动态注入，避免与固定时间错位
+        if rkey == "l0033:上海科技馆":
             continue
         coord = lookup_rename_coord(rkey)
         for ri in range(1, len(entries)):
@@ -830,18 +841,28 @@ def build_key_events(stops_fc):
             dt_str = cur_e["date"]
             if len(dt_str) == 7 and dt_str[4] == "-":
                 dt_str = dt_str.replace("-", "年") + "月"
-            prefix = "4号线 " if rkey.startswith("l0018:") else ""
+            if rkey == "l0016:人民广场":
+                title_str = "2号线 人民公园 → 人民广场（1/2号线一票换乘）"
+            elif rkey.startswith("l0018:"):
+                title_str = f"4号线 {prev_e['name']} → {cur_e['name']}"
+            else:
+                title_str = f"{prev_e['name']} → {cur_e['name']}"
             ev = {
                 "id": f"rn-{rkey}-{ri}",
                 "time": cur_e["time"],
                 "date": dt_str,
                 "type": "rename",
-                "title": f"{prefix}{prev_e['name']} → {cur_e['name']}",
+                "title": title_str,
                 "detail": cur_e.get("note", "车站更名"),
-                "pauseMs": 1400,
-                "focusZoom": 13.2,
+                "pauseMs": 2200,
+                "focusZoom": 13.6 if rkey in ("l0016:人民广场", "国家会展中心") else 13.4,
                 "stationName": cur_e["name"],
+                "oldName": prev_e["name"],
+                "newName": cur_e["name"],
+                "rkey": rkey,
             }
+            if ":" in rkey:
+                ev["lineIds"] = [rkey.split(":", 1)[0]]
             if coord:
                 ev["coord"] = coord
             events.append(ev)
