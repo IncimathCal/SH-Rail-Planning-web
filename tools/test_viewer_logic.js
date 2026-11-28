@@ -35,6 +35,8 @@
 // 2026-11-23 增：线路信息面板（parseLineInfo——lineinfo.md 手填介绍解析：多组/字段区切分/
 // 链接节/转义注入/恶意 URL 拒绝/空文件与缺组防御；safeLinkUrl 白名单）；同日放宽节绑定＝
 //「线组 id 或线 id」（lineInfoEntryOf：有组线组节优先、查不到落线自身 id、无名线退线 id）。
+// 2026-11-28 增：相关链接（parseLinks——links.md 独立文件解析：一行一链＋多 tag、注释块
+// 跳过/无 tag 行忽略/恶意 URL 整条剔除；lineLinksOf 兜底＝组 id 优先、组无命中落线自身 id）。
 // 用法：node tools/test_viewer_logic.js（纯 node，不引 jsdom/DOM/maplibre）
 
 const V = require(path_join('src', 'viewer_core.js'));
@@ -1796,6 +1798,76 @@ eq(V.lineInfoEntryOf('l1', lim, ligEmpty, { l1: { fields: [['a', 'b']], bodyHtml
 // 防御：空 id／lineInfo 缺失 → null
 eq(V.lineInfoEntryOf(null, lim, lig, lix), null, '空 id → null');
 eq(V.lineInfoEntryOf('l1', lim, lig, undefined), null, 'lineInfo 缺失 → null');
+
+// ---------- parseLinks / lineLinksOf（links.md 相关链接，2026-11-28：链接从 lineinfo.md 剥离） ----------
+console.log('parseLinks / lineLinksOf:');
+// 空文件/非字符串 → 空结构（一切线路无链接区，不报错）
+eq(V.parseLinks(''), { items: [], byTag: {} }, '空文件 → 空结构');
+eq(V.parseLinks(null), { items: [], byTag: {} }, 'null → 空结构');
+eq(V.parseLinks(42), { items: [], byTag: {} }, '非字符串 → 空结构');
+// 基本收法：一行一链＋多 tag、文件原序、一链多挂（手造 fixture 含说明行/注释块/标题行）
+const lkMd = [
+  '# 相关链接——手填格式模板',
+  '',
+  '<!--',
+  '  注释块内的示例不会被收：- [假链接](https://no.example) #lg01',
+  '  跨行注释第二行 - [也不收](javascript:alert(1)) #l3',
+  '-->',
+  '本文件说明文字行（无链接结构不收）。',
+  '- [机场联络线专题](https://example.com/sjc) #lg01',
+  '* [2号线延伸报道](https://example.com/l2ext) #l0016 同一行尾注文字',
+  '[全网新闻](https://example.com/news) #lg02 #lg03',
+  '- [无 tag 的链接](https://example.com/void)',
+  '- [恶意](javascript:alert(1)) #lg01',
+  '- [也恶意](data:text/html,1) #l3 #lg03',
+  '- [组线双 tag](https://example.com/both) #lg01 #l1',
+  '- [只挂主线 id](https://example.com/l1only) #l1',
+  '- [相对路径](docs/intro.html) #l3',
+  '尾行再挂一链 [追加](https://example.com/more) #lg01 #lg01',
+].join('\n');
+const lk = V.parseLinks(lkMd);
+eq(lk.items, [
+  { text: '机场联络线专题', url: 'https://example.com/sjc' },
+  { text: '2号线延伸报道', url: 'https://example.com/l2ext' },
+  { text: '全网新闻', url: 'https://example.com/news' },
+  { text: '组线双 tag', url: 'https://example.com/both' },
+  { text: '只挂主线 id', url: 'https://example.com/l1only' },
+  { text: '相对路径', url: 'docs/intro.html' },
+  { text: '追加', url: 'https://example.com/more' },
+], '一条链接一行、文件原序；无 tag 行／恶意 URL 行／注释块内示例一律不收');
+eq(lk.byTag, {
+  lg01: [0, 3, 6],     // 机场联络线专题＋组线双 tag＋追加（恶意行整条剔除不影响其余索引）
+  l0016: [1],
+  lg02: [2], lg03: [2],
+  l1: [3, 4],
+  l3: [5],             // data: 行整条剔除 → l3 只剩相对路径
+}, 'tag 索引按链接结构之后的 # token 收（行尾注文字不影响）；同行重复 tag 去重');
+// 恶意 URL 拒绝：javascript:/data: 整条剔除（条目与 tag 均无痕）
+ok(lk.items.every((it) => /^https?:|^docs\//.test(it.url)), '白名单外 URL 一条不剩');
+// 同行开闭注释＋行内注释段：抠掉注释段后照收
+const lkInline = V.parseLinks([
+  '- [好链](https://example.com/ok) #lg01 <!-- 行内注释 - [坏](x) #l2 -->',
+  '- 前段 <!-- 注释 --> 后段 [跨注释](https://example.com/cc) #l3',
+].join('\n'));
+eq(lkInline.items, [
+  { text: '好链', url: 'https://example.com/ok' },
+  { text: '跨注释', url: 'https://example.com/cc' },
+], '行内注释段抠掉后照收');
+eq(lkInline.byTag, { lg01: [0], l3: [1] }, '注释段内 tag 不误收');
+// lineLinksOf：组 id 优先（组命中即止，不叠加线 id 独有链）、组无命中落线自身 id
+eq(V.lineLinksOf('l1', lim, lig, lk), [lk.items[0], lk.items[3], lk.items[6]],
+  '有组线 → 组 id 命中（组优先，「只挂主线 id」那条 #l1 独有链不叠加）');
+eq(V.lineLinksOf('l2', lim, lig, lk), [lk.items[0], lk.items[3], lk.items[6]], '组内支线同样解析到组 id');
+eq(V.lineLinksOf('l2', lim, lig, { items: lk.items, byTag: { l2: [3] } }), [lk.items[3]],
+  '组 tag 无命中 → 兜底线自身 id（lineInfoEntryOf 同语义）');
+eq(V.lineLinksOf('l3', lim, lig, lk), [lk.items[5]], '无组线 → 线 id 直查');
+eq(V.lineLinksOf('l3', lim, ligEmpty, { items: lk.items, byTag: { l3: [5] } }), [lk.items[5]], '无组结构 → 线 id 直查');
+// 两处无命中／防御 → []（显示侧完全无痕）
+eq(V.lineLinksOf('l1', lim, lig, { items: [], byTag: {} }), [], '无任何链接 → []');
+eq(V.lineLinksOf(null, lim, lig, lk), [], '空 id → []');
+eq(V.lineLinksOf('l1', lim, lig, null), [], 'links 缺失 → []');
+eq(V.lineLinksOf('l1', lim, lig, undefined), [], 'links undefined → []');
+eq(V.lineLinksOf('l1', lim, lig, { items: '坏', byTag: 7 }), [], '结构不符防御 → []');
 
 // ---------- 地图单击聚焦（2026-11-27：isLineHitLayerId 线身层判定 / lineClickAction 点击目标分类） ----------
 console.log('isLineHitLayerId / lineClickAction:');

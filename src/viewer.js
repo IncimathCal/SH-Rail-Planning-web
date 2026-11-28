@@ -181,6 +181,13 @@
 // 信息节（固定字段区→正文→相关链接区，appendLineInfo），无数据的线完全无痕。同日放宽
 // 节绑定＝「线组 id 或线 id」（VIEWER_CORE.lineInfoEntryOf 解析：先按所属线组 id 查节、
 // 查不到再落线自身 id——没建组的单线按线 id 写的介绍同样显示）。
+// 2026-11-28 增：相关链接 links.md（链接从 lineinfo.md 剥离成独立文件，用户手填——一行
+// 一链＋若干「#<线路id>」tag、一链多挂）：fetch 同回退链（net/links.md → build/net/
+// links.md，缺失/失败＝静默无链接区），解析在 VIEWER_CORE.parseLinks（URL 白名单同
+// safeLinkUrl＋HTML 注释块跳过）；线路页（openLinePage）在信息区位置（lineinfo 之后、
+// 车站列表之前）显示 lineLinksOf 命中的链接（组 id 优先、未建组单线落线自身 id——
+// lineInfoEntryOf 同语义），链接样式＝既有 Wikipedia 深蓝下划线；同日取消无 lineinfo
+// 时的「无信息」占位提示（线路名/色块/KML 照旧，链接区独立于 lineinfo 显示）。
 // 2026-11-23 省级界线底图（用户明示授权外部地理底图数据——省界属底图范畴，不受地铁数据
 // 外部源禁令约束）：长三角省级界线（沪苏浙皖 bbox 裁剪，不要全国/九段线）常驻细灰线层。
 // source 'provinces'（初始空 FC，loadProvinces 异步读仓库静态件 basemap/provinces-wgs84.json
@@ -323,6 +330,7 @@
     fadeConnPlan: [],
     connLayerIds: [],
     lineInfo: {},                 // 线组id或线id → { fields, bodyHtml, links }（lineinfo.md 解析结果；boot 填充，缺失＝空表＝一切线路无信息节）
+    links: null,                  // { items, byTag }（links.md 相关链接解析结果；2026-11-28 链接从 lineinfo.md 剥离成独立文件；boot 填充，缺失/null＝一切线路无链接区）
     // ---------- 新 UI demo 状态（会话内不持久化，刷新回初始界面；与底图/分期同策） ----------
     ui: {
       view: 'splash',             // 'splash' 初始界面 | 'main' 主界面（列表） | 'station' 车站页 | 'line' 线路页（滑动层级见 VIEW_RANK）
@@ -396,7 +404,13 @@
       try {
         lineInfo = V.parseLineInfo(await fetchText(base + '/lineinfo.md', opts));
       } catch (e) { /* 无 lineinfo.md＝一切线组无信息节 */ }
-      return { linesFC, stopsFC, base, indexOrder, lineGroups, stationGroups, lineInfo };
+      // links.md（相关链接，2026-11-28：链接从 lineinfo.md 剥离成独立文件，用户手填；
+      // 一链多 tag）：缺失/失败＝静默无链接区（同 lineinfo 口径——没写是常态不是异常）
+      let links = null;
+      try {
+        links = V.parseLinks(await fetchText(base + '/links.md', opts));
+      } catch (e) { /* 无 links.md＝一切线路无链接区 */ }
+      return { linesFC, stopsFC, base, indexOrder, lineGroups, stationGroups, lineInfo, links };
     }
     throw lastErr || new Error('net/lines.geojson 与 build/net/lines.geojson 均不可用');
   }
@@ -2367,29 +2381,55 @@
       head.appendChild(chip);
     }
     body.appendChild(head);
-    // lineinfo（既有口径 lineInfoEntryOf：先线组 id、落线自身 id）；无信息＝只显示名称＋
-    // 标志色色块＋「无信息」提示（标题区即名称与色块）
+    // lineinfo（既有口径 lineInfoEntryOf：先线组 id、落线自身 id）；2026-11-28 起「无信息」
+    // 提示取消——无 lineinfo 时不再显示占位字样（线路名/色块/KML 照旧），相关链接区独立于
+    // lineinfo 显示（见下 lp-links），两区块各自有则显、无则不占空
     const hit = V.lineInfoEntryOf(lineId, S.linesMap, S.lineGroups, S.lineInfo);
     if (hit) {
       const sec = document.createElement('div');
       sec.className = 'lineinfo';
       appendLineInfo(sec, [hit.id], null);
       body.appendChild(sec);
-    } else {
-      const tip = document.createElement('div');
-      tip.className = 'lp-none';
-      tip.textContent = '无信息';
-      body.appendChild(tip);
     }
-    // 车站列表（2026-11-27）：信息（或「无信息」提示）下方——竖直线站序样式，主线段
+    // 相关链接（2026-11-28 links.md 独立文件，用户手填——链接从 lineinfo.md 剥离）：无论
+    // 有无 lineinfo 都显示；位置＝信息区（lineinfo 之后、车站列表分割线之前）。绑定口径同
+    // lineinfo（lineLinksOf＝lineInfoEntryOf 语义：组 id 优先、未建组单线落线自身 id）。
+    // 链接样式＝既有 Wikipedia 深蓝下划线（.lp-links a，与 .lineinfo a 同例外口径）；
+    // 无命中不建区块（不占空）。URL 渲染前 safeHref 再过一道（纵深防御，同 appendLineInfo）。
+    const lineLinks = V.lineLinksOf(lineId, S.linesMap, S.lineGroups, S.links);
+    if (lineLinks.length) {
+      const box = document.createElement('div');
+      box.className = 'lp-links';
+      const cap = document.createElement('div');
+      cap.className = 'lp-links-cap';
+      cap.textContent = '相关链接';
+      const ul = document.createElement('ul');
+      ul.className = 'lineinfo-links';
+      for (const lk of lineLinks) {
+        if (!lk || !safeHref(lk.url)) continue;
+        const li = document.createElement('li');
+        const a = document.createElement('a');
+        a.textContent = typeof lk.text === 'string' && lk.text ? lk.text : lk.url;
+        a.href = lk.url;   // 解析侧 safeLinkUrl 已限 http/https/相对路径
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        li.appendChild(a);
+        ul.appendChild(li);
+      }
+      if (ul.children.length) {
+        box.append(cap, ul);
+        body.appendChild(box);
+      }
+    }
+    // 车站列表（2026-11-27）：信息（lineinfo／相关链接，各有则显）下方——竖直线站序样式，主线段
     // ＋分割线＋每条支线一段；arrow 出省端画线端箭头＋「出省」小字；接入标注（往支线去向/
     // 往主线/联络对方线）＝V.lineStopSections 模型。lineinfo 有无与本列表无耦合。
     // 2026-11-27 增：站行 transfers（换乘信息，lineOrder 序与车站页一致）。
     const stopModel = V.lineStopSections(lineId, S.linesMap, S.stops, S.lineGroups, S.groupTree, S.lineOrder);
     if (stopModel) {
-      // 信息区与车站列表之间的分割线（2026-11-27 用户需求）：lineinfo／「无信息」态
-      //（名称＋色块＋虚线提示框）与下方列表目前无缝——复用 .lp-divider（支线分割同款
-      // 灰色语言，与整体黑白灰一致）。
+      // 信息区与车站列表之间的分割线（2026-11-27 用户需求）：lineinfo／相关链接（2026-11-28
+      // 起「无信息」占位取消，两区块无则不占空）与下方列表目前无缝——复用 .lp-divider
+      //（支线分割同款灰色语言，与整体黑白灰一致）。
       const dv = document.createElement('div');
       dv.className = 'lp-divider';
       body.appendChild(dv);
@@ -3303,6 +3343,7 @@
     S.linesMap = V.normalizeLines(net.linesFC);
     S.stops = V.stopList(net.stopsFC);
     S.lineInfo = net.lineInfo || {};   // 线路手填介绍（线组id → 信息；缺失＝空表＝全部无信息节）
+    S.links = net.links || null;       // 相关链接（links.md 解析结果；缺失＝null＝全部无链接区，lineLinksOf 防御直通）
     S.lineOrder = net.indexOrder || null;   // 线路列表自定义显示序（无则组内 id 升序）
     // 主支线线组归并（2026-11-22 用户裁定）：net/index.json lineGroups × line.groupId
     // 双向并集；无组信息（旧快照 @1）＝空结构，一切逐线独立＝旧行为

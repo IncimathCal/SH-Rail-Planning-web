@@ -423,11 +423,12 @@
       border: 1px solid var(--control-border); border-radius: 999px;
       padding: 2px 9px; white-space: nowrap;
     }
-    .lp-none {
-      margin-top: 14px; color: #000; font-size: 13px;
-      border: 1px dashed var(--control-border); border-radius: 10px;
-      padding: 18px 12px; text-align: center;
-    }
+    /* 相关链接区（2026-11-28：链接从 lineinfo.md 剥离为独立 links.md，用户手填）：列表
+       复用 .lineinfo-links；链接色沿用 lineinfo 的 Wikipedia 深蓝例外（唯一 <a> 蓝色口径，
+       两处同进退）。标题行＝低调小字灰（与 .lp-layer-chip 同灰阶语言）；无命中不建区块 */
+    .lp-links { margin-top: 12px; }
+    .lp-links-cap { font-size: 12px; color: #555555; margin-bottom: 2px; }
+    .lp-links a { color: #3366CC; text-decoration: underline; }
     .lp-foot { flex: none; padding: 12px 16px 14px; border-top: 1px solid var(--panel-border); }
     #btnKml {
       display: block; width: 100%; padding: 8px 0; cursor: pointer;
@@ -585,8 +586,8 @@
     .lineinfo-body ul { margin: 0 0 8px; padding-left: 18px; }
     .lineinfo-body li { margin: 2px 0; }
     /* lineinfo 链接色（2026-11-27 用户显式裁定）：Wikipedia 链接深蓝 #3366CC——全 UI
-       黑白灰钉死规则的唯一超链接例外（仅 lineinfo 内容里的 <a>，下划线保持）；其他
-       UI 元素仍黑白灰不动 */
+       黑白灰钉死规则的唯一超链接例外（lineinfo 内容里的 <a> 与线路页相关链接区 .lp-links
+       里的 <a>，两处同口径同进退，下划线保持）；其他 UI 元素仍黑白灰不动 */
     .lineinfo a { color: #3366CC; text-decoration: underline; }
     .lineinfo-links { margin: 8px 0 0; padding: 0; list-style: none; }
     .lineinfo-links li { margin: 2px 0; word-break: break-all; }
@@ -819,7 +820,7 @@
       </div>
     </div>
 
-    <!-- 线路页：顶条返回＋lineinfo（无信息＝名称＋色块＋「无信息」）＋KML 下载 -->
+    <!-- 线路页：顶条返回＋lineinfo／相关链接（各有则显、无则不占空；2026-11-28 起「无信息」占位取消）＋KML 下载 -->
     <div id="viewLine" class="pview" hidden>
       <div id="lineTop">
         <button id="btnLineBack" type="button">←</button>

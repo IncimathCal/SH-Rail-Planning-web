@@ -10,7 +10,8 @@
   1. validate.py 校验 <data>（不过即中止）；
   2. flatten.py 把 <data> 经 data/calibration.json 变换为 GeoJSON → <out>/net/
      （lines.geojson / stops.geojson / index.json＝线路显示顺序索引，随 net/ 整体产出；
-     lineinfo.md＝用户手填线路介绍，数据目录里有则原样透传进 net/）；
+     lineinfo.md＝用户手填线路介绍、links.md＝用户手填相关链接（2026-11-28 增，
+     链接从 lineinfo.md 剥离成独立文件），数据目录里有则原样透传进 net/）；
   3. 白名单拷贝：index.html、src/viewer*.js、assets/vendor/（vendored MapLibre）、
      assets/fonts/（UI 字体子集，index.html @font-face 引用；2026-11-23 增）、
      assets/logo.svg＋assets/qrcode-{gzh,bilibili}.png（新 UI 素材：favicon/初始页/右上
@@ -168,6 +169,12 @@ def main():
     if ((data_dir / "lineinfo.md").is_file()
             and not (out_dir / "net" / "lineinfo.md").is_file()):
         print("错误：net/lineinfo.md 缺失（flatten 未透传线路手填介绍）", file=sys.stderr)
+        sys.exit(1)
+    # links.md（相关链接，2026-11-28：链接从 lineinfo.md 剥离成独立文件）同 lineinfo 自检
+    # 口径：数据目录里有该文件，docs/net/ 里就必须有（数据目录没有＝合法的「无手填链接」态）
+    if ((data_dir / "links.md").is_file()
+            and not (out_dir / "net" / "links.md").is_file()):
+        print("错误：net/links.md 缺失（flatten 未透传相关链接）", file=sys.stderr)
         sys.exit(1)
 
     # 3. 白名单拷贝

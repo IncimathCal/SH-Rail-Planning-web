@@ -83,6 +83,12 @@ WGS84 经纬度 GeoJSON（MapLibre / Web 墨卡托可直接消费）：
                         （字节级拷贝；不解析、不进 GeoJSON——解析在查看器侧
                         VIEWER_CORE.parseLineInfo）。数据目录无此文件则不产出
                         （查看器静默无信息节）。
+  <out>/links.md       相关链接（2026-11-28：链接从 lineinfo.md 剥离成独立
+                        文件）：数据目录下用户手填的链接清单（一行一链＋若干
+                        「#<线路id>」tag，格式约定与模板见 data/links.md）
+                        **原样透传**（同 lineinfo 惯例：字节级拷贝、不解析、
+                        不进 GeoJSON——解析在查看器侧 VIEWER_CORE.parseLinks）。
+                        数据目录无此文件则不产出（查看器静默无链接区）。
 
 复用（绝不重推导）：
   - tools/svg_parse.py  path_from_d（= parse_path + flatten + ArcPath）：
@@ -691,6 +697,16 @@ def main():
         (out / "lineinfo.md").write_bytes(li_src.read_bytes())
         li_size = (out / "lineinfo.md").stat().st_size
 
+    # links.md（相关链接，2026-11-28：链接从 lineinfo.md 剥离成独立文件，用户手填——
+    # 一行一链＋若干「#<线路id>」tag）：同 lineinfo 惯例原样透传（字节级拷贝、不解析、
+    # 不进 GeoJSON——解析在查看器侧 VIEWER_CORE.parseLinks）；数据目录无此文件则跳过
+    #（查看器静默无链接区）
+    lk_src = Path(args.data) / "links.md"
+    lk_size = None
+    if lk_src.is_file():
+        (out / "links.md").write_bytes(lk_src.read_bytes())
+        lk_size = (out / "links.md").stat().st_size
+
     # 汇总（含有限性抽检：任一坐标非有限数即报错；兼容 LineString/Point 两层结构）
     n_pts = sum(len(f["geometry"]["coordinates"]) for f in line_feats)
     for f in line_feats + stop_feats:
@@ -711,6 +727,10 @@ def main():
         print(f"written: {out / 'lineinfo.md'}（{li_size} B，线路手填介绍原样透传）")
     else:
         print("提示：数据目录下没有 lineinfo.md（线路手填介绍），查看器一切线路无信息节")
+    if lk_size is not None:
+        print(f"written: {out / 'links.md'}（{lk_size} B，相关链接原样透传）")
+    else:
+        print("提示：数据目录下没有 links.md（相关链接），查看器一切线路无链接区")
     return 0
 
 
