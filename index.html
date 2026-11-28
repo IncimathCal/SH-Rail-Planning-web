@@ -717,6 +717,10 @@
       }
       .sheet-handle-bar { width: 44px; height: 5px; border-radius: 2.5px; background: rgba(0, 0, 0, 0.22); }
       #panelCollapse, #panelTab { display: none !important; }
+      /* 右下缩放控件让位收起把手（2026-11-28 真机反馈）：收起档＝面板只露把手（44px，
+         sheetSnapHeights hidden 档同值）横跨全宽贴底，桌面 bottom:8px 会被挡——移动端上提至
+         把手之上，余量沿用桌面 8px（44+8=52）；桌面回归零改动（本规则只在窄屏 media 内生效） */
+      .maplibregl-ctrl-bottom-right { bottom: 52px; }
       /* 初始页二维码双列（sheet 档高度下省纵向空间；卡片自身全宽设计适配半格） */
       .splash-cards { grid-template-columns: 1fr 1fr; gap: 8px; }
       /* 经纬读数尺等图上小字同步放大一档（站名标签放大走 viewer.js labelScale 断点乘数，
