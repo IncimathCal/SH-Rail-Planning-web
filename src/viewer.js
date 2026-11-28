@@ -1158,12 +1158,11 @@
   //（planblock z12 陆家嘴与 OSM 程序化配准、黄浦江中带中位差 -0.5px）。内部端点直连的
   // 性质与高德 appmaptile 同类（无 SLA）；shanghai_W 无 key 无配额、1–2 米级分辨率。
   const BASEMAP_LABEL_ZH = { off: '无', osm: 'OSM', gaode: '高德', 'gaode-plain': '高德·无字',
-    'gaode-sat': '高德·卫星', carto: 'CARTO无字', planblock: '用地', shanghai_W: '卫星' };
+    carto: 'CARTO无字', planblock: '用地', shanghai_W: '卫星' };
   const BASEMAP_ATTR_ZH = {
     osm: '底图 © OpenStreetMap 贡献者',
     gaode: '底图 © 高德',
     'gaode-plain': '底图 © 高德',   // 无字与有字同属高德服务，同一署名
-    'gaode-sat': '卫星影像 © 高德',  // 高德卫星图（GCJ02，与高德矢量同偏移体系）
     carto: '底图 © OpenStreetMap contributors © CARTO',   // CARTO 条款硬性署名（文字即可）
     planblock: '用地数据 © 上海市规划和自然资源局',   // 惯例署名（性质同省界：无硬性条款，礼貌标注）
     shanghai_W: '影像 © 上海市测绘院 · 低层影像 © Esri',   // shanghai_W＝上海测绘院正射影像；
@@ -1171,7 +1170,7 @@
     // 双层结构追加，署名行全 zoom 恒定不随层切换
   };
   function isGaodeBasemap(mode) {
-    return mode === 'gaode' || mode === 'gaode-plain' || mode === 'gaode-sat';
+    return mode === 'gaode' || mode === 'gaode-plain';
   }
   // 底图白色遮罩不透明度——按「底图明暗类」归档取值（2026-11-27 扩容重构，研究报告
   // 零散/底图研究-天地图卫星与用地图-261127.md 3.3 节建议；旧的两张平铺查表
@@ -1204,7 +1203,7 @@
   const BASEMAP_VEIL_BAND = {
     gaode: 'light', 'gaode-plain': 'light', osm: 'light',
     carto: 'pale',
-    planblock: 'dark', shanghai_W: 'darkSat', 'gaode-sat': 'darkSat',
+    planblock: 'dark', shanghai_W: 'darkSat',
   };
   // 深图类底图判定（dark/darkSat）：高亮策略按此分流——深图＝降透明度法、浅色＝白罩法
   //（2026-11-27 用户裁定；off／未知态兜底 light 档＝白罩法，纯防御）。改动点集中引用此
@@ -1281,12 +1280,6 @@
       tiles: [1, 2, 3, 4].map((n) =>
         'https://wprd0' + n + '.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=2&style=7&x={x}&y={y}&z={z}'),
     });
-    // 高德卫星图（2026-11-28 增）：webst01-04 style=6 纯卫星影像，GCJ02 偏移与高德矢量同源
-    map.addSource('basemap-gaode-sat', {
-      type: 'raster', tileSize: 256, maxzoom: 18,
-      tiles: [1, 2, 3, 4].map((n) =>
-        'https://webst0' + n + '.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}'),
-    });
     map.addSource('basemap-carto', {
       type: 'raster', tileSize: 256,
       tiles: ['https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png?key=cb1_5e93_1_df67d9c33ed32773609298af'],
@@ -1341,8 +1334,6 @@
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-gaode-plain', type: 'raster', source: 'basemap-gaode-plain',
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
-    map.addLayer({ id: 'basemap-gaode-sat', type: 'raster', source: 'basemap-gaode-sat',
-      layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-carto', type: 'raster', source: 'basemap-carto',
       layout: { visibility: 'none' }, paint: { 'raster-opacity': 1 } }, before);
     map.addLayer({ id: 'basemap-planblock', type: 'raster', source: 'basemap-planblock',
@@ -1376,7 +1367,6 @@
     vis('basemap-osm', S.basemap === 'osm');
     vis('basemap-gaode', S.basemap === 'gaode');
     vis('basemap-gaode-plain', S.basemap === 'gaode-plain');
-    vis('basemap-gaode-sat', S.basemap === 'gaode-sat');
     vis('basemap-carto', S.basemap === 'carto');
     vis('basemap-planblock', S.basemap === 'planblock');
     // 卫星态两 layer 同置 visible，zoom 分工在 layer 级 min/maxzoom（z12 分界，见
@@ -1386,7 +1376,7 @@
     // 遮罩随底图开关（不透明度＝veilOpacityFor 按底图明暗类归档取值：浅色矢量 60/40、
     // carto 35/30、用地 32/27、卫星 32/22——见 VEIL_BANDS 注）
     vis('basemap-veil', S.basemap !== 'off');
-    // 显示坐标变换：高德矢量/无字/卫星三态同走 GCJ02（同一偏移体系）；osm/carto/用地/上海卫星 WGS84 直通
+    // 显示坐标变换：高德矢量/无字同走 GCJ02；osm/carto/用地/上海卫星 WGS84 直通
     S.dispCoord = V.makeDispCoord(isGaodeBasemap(S.basemap) ? 'gaode'
       : (S.basemap === 'carto' ? 'carto' : 'none'));
     if (S.map.getSource('lines')) S.map.getSource('lines').setData(renderLinesFC());
